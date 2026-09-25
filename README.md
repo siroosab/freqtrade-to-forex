@@ -38,16 +38,27 @@ python3.11 --version
 اگر پروژه هنوز روی سرور نیست:
 
 ```bash
-git clone git@github.com:siroosab/freqtrade-to-forex.git
-mv freqtrade-to-forex ~/forex_bot
+git clone https://github.com/siroosab/freqtrade-to-forex.git ~/forex_bot
 cd ~/forex_bot
 ```
 
-اگر از روش HTTPS استفاده می‌کنید:
+چون مخزن خصوصی است، GitHub هنگام clone با HTTPS به نام کاربری و Personal
+Access Token نیاز دارد؛ رمز حساب GitHub را وارد نکنید.
+
+اگر می‌خواهید از SSH استفاده کنید، کلید باید روی خود VPS ساخته و به حساب
+GitHub اضافه شده باشد:
 
 ```bash
-git clone https://github.com/siroosab/freqtrade-to-forex.git
-mv freqtrade-to-forex ~/forex_bot
+ssh-keygen -t ed25519 -C "vps-forex-bot"
+cat ~/.ssh/id_ed25519.pub
+```
+
+مقدار نمایش‌داده‌شده را در GitHub در مسیر `Settings > SSH and GPG keys` اضافه
+کنید، سپس روی VPS تست کنید:
+
+```bash
+ssh -T git@github.com
+git clone git@github.com:siroosab/freqtrade-to-forex.git ~/forex_bot
 cd ~/forex_bot
 ```
 

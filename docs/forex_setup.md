@@ -9,10 +9,19 @@ directories, and writes a credential-free config skeleton.
 Clone the project into `~/forex_bot` and run the commands from that directory:
 
 ```bash
-git clone git@github.com:siroosab/freqtrade-to-forex.git ~/forex_bot
+git clone https://github.com/siroosab/freqtrade-to-forex.git ~/forex_bot
 cd ~/forex_bot
 chmod +x setup.sh
 ./setup.sh --install-forex
+```
+
+For this private repository, HTTPS requires your GitHub username and a
+Personal Access Token. Do not use your GitHub account password. Alternatively,
+create an SSH key on the VPS, add its public key to GitHub, verify it with
+`ssh -T git@github.com`, and clone with:
+
+```bash
+git clone git@github.com:siroosab/freqtrade-to-forex.git ~/forex_bot
 ```
 
 The command does not ask for broker credentials. It leaves the config at
