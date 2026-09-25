@@ -155,17 +155,37 @@ function install_redhat() {
     sudo yum install -y gcc gcc-c++ make autoconf libtool pkg-config wget git $(echo ${PYTHON}-devel | sed 's/\.//g')
 }
 
-# Upgrade the bot
-function update() {
-    git pull
-    if [ -f .env/bin/activate  ]; then
-        # Old environment found - updating to new environment.
-        recreate_environments
-    fi
-    updateenv
-    echo "Update completed."
-    echo_block "Don't forget to activate your virtual environment with 'source .venv/bin/activate'!"
+# Update the existing forex installation without recreating the virtual environment.
+function update_forex() {
+    echo_block "Updating the existing forex installation"
 
+    if [ ! -x .venv/bin/python ]; then
+        echo "No existing .venv installation found. Run ./setup.sh --install-forex first."
+        return 1
+    fi
+
+    if [ -n "$(git status --porcelain)" ]; then
+        echo "Local changes detected. Commit or stash them before updating."
+        return 1
+    fi
+
+    git pull --ff-only origin stable
+    if [ $? -ne 0 ]; then
+        echo "Git update failed. No Python dependencies were changed."
+        return 1
+    fi
+
+    .venv/bin/python -m pip install --upgrade pip wheel setuptools
+    .venv/bin/python -m pip install --upgrade -r requirements.txt
+    .venv/bin/python -m pip install --editable .
+    if [ $? -ne 0 ]; then
+        echo "Failed updating Python dependencies."
+        return 1
+    fi
+
+    config
+    echo "Update completed. The existing .venv and user_data/config.json were preserved."
+    echo_block "Restart the API service to load the updated code."
 }
 
 function check_git_changes() {
@@ -314,7 +334,8 @@ function help() {
     echo "usage:"
     echo "	-i,--install    Install freqtrade from scratch"
         echo "	-f,--install-forex  Install the forex project without prompts"
-    echo "	-u,--update     Command git pull to update."
+        echo "	-u,--update     Update the existing forex installation."
+        echo "	-U,--update-forex  Update without recreating .venv."
     echo "	-r,--reset      Hard reset your develop/stable branch."
     echo "	-c,--config     Easy config generator (Will override your existing file)."
     echo "	-p,--plot       Install dependencies for Plotting scripts."
@@ -332,7 +353,8 @@ install
 config
 ;;
 --update|-u)
-update
+--update-forex|--update|-U|-u)
+update_forex
 ;;
 --reset|-r)
 reset

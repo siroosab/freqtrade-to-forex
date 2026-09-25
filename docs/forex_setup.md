@@ -40,3 +40,18 @@ available commands:
 ```bash
 ./setup.sh --help
 ```
+
+## Updating an existing installation
+
+Run the update from the repository root while the virtual environment is not
+active:
+
+```bash
+./setup.sh --update-forex
+```
+
+The command fast-forwards the `stable` branch, updates Python dependencies,
+and refreshes the editable installation. It does not recreate `.venv` and it
+preserves `user_data/config.json`. Commit or stash local changes before running
+the update. Restart the API service after the update if it is managed by
+systemd.
