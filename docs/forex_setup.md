@@ -6,9 +6,11 @@ directories, and writes a credential-free config skeleton.
 
 ## Ubuntu
 
-From the repository root:
+Clone the project into `~/forex_bot` and run the commands from that directory:
 
 ```bash
+git clone git@github.com:siroosab/freqtrade-to-forex.git ~/forex_bot
+cd ~/forex_bot
 chmod +x setup.sh
 ./setup.sh --install-forex
 ```
@@ -43,15 +45,19 @@ available commands:
 
 ## Updating an existing installation
 
-Run the update from the repository root while the virtual environment is not
-active:
+Run the update from `~/forex_bot` while the virtual environment is not active:
 
 ```bash
+cd ~/forex_bot
 ./setup.sh --update-forex
 ```
 
-The command fast-forwards the `stable` branch, updates Python dependencies,
-and refreshes the editable installation. It does not recreate `.venv` and it
+The command fast-forwards the `stable` branch, updates Python dependencies, and
+refreshes the editable installation. It does not recreate `.venv` and it
 preserves `user_data/config.json`. Commit or stash local changes before running
-the update. Restart the API service after the update if it is managed by
-systemd.
+the update. Restart the user systemd service after the update if it is running:
+
+```bash
+systemctl --user restart freqtrade-forex
+```
+

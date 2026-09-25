@@ -39,14 +39,16 @@ python3.11 --version
 
 ```bash
 git clone git@github.com:siroosab/freqtrade-to-forex.git
-cd freqtrade-to-forex
+mv freqtrade-to-forex ~/forex_bot
+cd ~/forex_bot
 ```
 
 اگر از روش HTTPS استفاده می‌کنید:
 
 ```bash
 git clone https://github.com/siroosab/freqtrade-to-forex.git
-cd freqtrade-to-forex
+mv freqtrade-to-forex ~/forex_bot
+cd ~/forex_bot
 ```
 
 ### 3. نصب خودکار پروژه
@@ -105,27 +107,34 @@ OANDA Practice، حالت اجرا، ابزارهای معاملاتی و محد
 اگر API با `systemd` اجرا می‌شود آن را restart کنید:
 
 ```bash
-sudo systemctl restart freqtrade-forex
-sudo systemctl status freqtrade-forex
+systemctl --user restart freqtrade-forex
+systemctl --user status freqtrade-forex
 ```
 
 ## اجرای سرویس در پس‌زمینه
 
-برای اجرای دائمی روی Ubuntu می‌توانید از `systemd` استفاده کنید. نمونه فایل
-سرویس در `freqtrade.service` قرار دارد. مسیرهای داخل فایل را با مسیر واقعی
-پروژه روی سرور تطبیق دهید، سپس:
+برای اجرای دائمی روی Ubuntu می‌توانید از `systemd` استفاده کنید. نصب پروژه
+در این راهنما داخل `~/forex_bot` انجام شده است و فایل `freqtrade.service` نیز
+همین مسیر را استفاده می‌کند. سرویس کاربر را فعال کنید:
 
 ```bash
-sudo cp freqtrade.service /etc/systemd/system/freqtrade-forex.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now freqtrade-forex
-sudo systemctl status freqtrade-forex
+mkdir -p ~/.config/systemd/user
+cp ~/forex_bot/freqtrade.service ~/.config/systemd/user/freqtrade-forex.service
+systemctl --user daemon-reload
+systemctl --user enable --now freqtrade-forex
+systemctl --user status freqtrade-forex
 ```
 
 مشاهده لاگ‌ها:
 
 ```bash
-sudo journalctl -u freqtrade-forex -f
+journalctl --user -u freqtrade-forex -f
+```
+
+برای اجرای سرویس بعد از logout و reboot، یک‌بار lingering را فعال کنید:
+
+```bash
+sudo loginctl enable-linger "$USER"
 ```
 
 ## تنظیمات و امنیت

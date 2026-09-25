@@ -1,12 +1,11 @@
 [Unit]
-Description=Freqtrade Daemon
+Description=Forex Trading API
 After=network.target
 
 [Service]
-# Set WorkingDirectory and ExecStart to your file paths accordingly
-# NOTE: %h will be resolved to /home/<username>
-WorkingDirectory=%h/freqtrade
-ExecStart=/usr/bin/freqtrade trade
+# This is a user service. %h resolves to /home/<username>.
+WorkingDirectory=%h/forex_bot
+ExecStart=%h/forex_bot/.venv/bin/python -m uvicorn freqtrade.forex.api:app --host 0.0.0.0 --port 8090
 Restart=on-failure
 
 [Install]
