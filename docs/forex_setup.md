@@ -27,6 +27,22 @@ git clone git@github.com:siroosab/freqtrade-to-forex.git ~/forex_bot
 The command does not ask for broker credentials. It leaves the config at
 `user_data/config.json` and starts no network service.
 
+## Initial installation or failed installation
+
+Use these commands after the first clone, or when an earlier installation
+stopped before `.venv` was created completely:
+
+```bash
+cd ~/forex_bot
+git pull --ff-only origin stable
+chmod +x setup.sh
+./setup.sh --install-forex
+```
+
+This creates `.venv`, installs the dependencies, and creates the initial
+configuration. Do not use this path for routine updates because it recreates
+the virtual environment.
+
 Start the local API after installation:
 
 ```bash
@@ -54,7 +70,9 @@ available commands:
 
 ## Updating an existing installation
 
-Run the update from `~/forex_bot` while the virtual environment is not active:
+When the installation is already complete and you only need the latest project
+changes, run this from `~/forex_bot` while the virtual environment is not
+active:
 
 ```bash
 cd ~/forex_bot
