@@ -2071,6 +2071,10 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
     def dashboard() -> str:
         return _dashboard_html()
 
+    @app.get("/setup", response_class=HTMLResponse)
+    def setup_page() -> str:
+        return _setup_html()
+
     @app.on_event("startup")
     async def start_hyperopt_scheduler() -> None:
         async def scheduler_loop() -> None:
@@ -2102,6 +2106,26 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
 
 
 app = create_app()
+
+
+def _setup_html() -> str:
+    return """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Forex setup</title>
+<style>
+:root{font-family:system-ui,sans-serif;color:#18251f;background:#eef1e9;--line:#cbd3c8;--panel:#f9faf5;--accent:#d6663f}
+*{box-sizing:border-box}body{margin:0}.card{max-width:680px;margin:7vh auto;padding:32px;background:var(--panel);border:1px solid var(--line)}
+h1{margin:0 0 8px;font:400 2.4rem Georgia,serif}.intro{color:#66736c;margin:0 0 28px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}label{display:grid;gap:7px;font-size:.85rem;font-weight:700}input,select{width:100%;padding:11px;border:1px solid var(--line);background:#fff;font:inherit}button{margin-top:22px;padding:12px 18px;border:0;background:var(--accent);color:#fff;font-weight:700;cursor:pointer}.message{min-height:24px;margin-top:18px}.error{color:#a44}.success{color:#28724a}@media(max-width:640px){.card{margin:0;min-height:100vh;border:0}.grid{grid-template-columns:1fr}}
+</style></head>
+<body><main class="card"><h1>Forex setup</h1><p class="intro">Configure the OANDA Practice connection. Credentials are saved on this server.</p>
+<form id="setup-form"><div class="grid"><label>OANDA Practice token<input id="token" type="password" autocomplete="new-password" required></label><label>Account ID<input id="accountId" required></label><label>Instruments<input id="instruments" value="EUR_USD,GBP_USD" required></label><label>Risk fraction<input id="riskFraction" type="number" min="0.0001" max="1" step="0.0001" value="0.01" required></label><label>Execution mode<select id="executionMode"><option value="dry_run">Dry run</option><option value="practice">Practice</option></select></label></div><button type="submit">Save setup</button><p id="message" class="message"></p></form></main>
+<script>
+const form=document.getElementById('setup-form');const message=document.getElementById('message');
+fetch('/api/v1/setup/status').then(response=>response.json()).then(status=>{if(status.tokenConfigured)document.getElementById('token').placeholder='Already configured';if(status.accountIdConfigured)document.getElementById('accountId').placeholder='Already configured';if(status.instruments?.length)document.getElementById('instruments').value=status.instruments.join(',')}).catch(()=>{});
+form.addEventListener('submit',async event=>{event.preventDefault();message.className='message';message.textContent='Saving...';const payload={token:document.getElementById('token').value,accountId:document.getElementById('accountId').value,instruments:document.getElementById('instruments').value.split(',').map(value=>value.trim()).filter(Boolean),riskFraction:document.getElementById('riskFraction').value,executionMode:document.getElementById('executionMode').value,environment:'practice',pairTimeframes:{}};try{const response=await fetch('/api/v1/setup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const result=await response.json();if(!response.ok)throw new Error(result.detail||'Setup failed');message.className='message success';message.textContent='Setup saved. You can return to the dashboard.';form.reset()}catch(error){message.className='message error';message.textContent=error.message}});
+</script></body></html>"""
 
 
 def _dashboard_html() -> str:
