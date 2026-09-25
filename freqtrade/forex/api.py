@@ -17,7 +17,7 @@ from pathlib import Path
 import pandas as pd
 from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, Response
 
 from freqtrade.forex.backtest import ForexBacktester
 from freqtrade.forex.ai_strategy import ForexAIStrategyBaseline
@@ -30,6 +30,7 @@ from freqtrade.forex.oanda import OandaClient
 
 def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> FastAPI:
     app = FastAPI(title="Forex Dry-Run API", version="0.1.0")
+    ui_index = Path(__file__).resolve().parents[2] / "apps" / "ui" / "dist" / "index.html"
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[
@@ -2068,11 +2069,15 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             pass
 
     @app.get("/", response_class=HTMLResponse)
-    def dashboard() -> str:
+    def dashboard() -> Response:
+        if ui_index.exists():
+            return FileResponse(ui_index)
         return _dashboard_html()
 
     @app.get("/setup", response_class=HTMLResponse)
-    def setup_page() -> str:
+    def setup_page() -> Response:
+        if ui_index.exists():
+            return FileResponse(ui_index)
         return _setup_html()
 
     @app.on_event("startup")
@@ -2101,6 +2106,11 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
+
+    if ui_index.exists():
+        from fastapi.staticfiles import StaticFiles
+
+        app.mount("/", StaticFiles(directory=ui_index.parent, html=True), name="ui")
 
     return app
 

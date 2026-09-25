@@ -98,6 +98,9 @@ python -c "import freqtrade; print('Forex platform is ready')"
 python -m uvicorn freqtrade.forex.api:app --host 0.0.0.0 --port 8090
 ```
 
+این API build production رابط React را نیز از همان پورت سرو می‌کند؛ بنابراین
+برای استفاده معمول روی VPS نیازی به اجرای جداگانه Vite یا پورت `5173` نیست.
+
 حالا در مرورگر باز کنید:
 
 ```text

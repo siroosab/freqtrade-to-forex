@@ -50,6 +50,9 @@ source .venv/bin/activate
 python -m uvicorn freqtrade.forex.api:app --host 0.0.0.0 --port 8090
 ```
 
+The API serves the production React build from the same port, so a separate
+Vite process is not required on the VPS.
+
 Open `http://SERVER_IP:8090/setup` in a browser. Enter the OANDA Practice
 token, account ID, execution mode, instruments, and risk fraction there. The
 credentials are sent to the server-side API and are never placed in the
