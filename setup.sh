@@ -345,14 +345,15 @@ function help() {
 check_installed_python
 
 case $* in
+--install|-i|install)
 install
 ;;
 --install-forex|-f)
      install_forex
      ;;
+--config|-c|config)
 config
 ;;
---update|-u)
 --update-forex|--update|-U|-u)
 update_forex
 ;;
