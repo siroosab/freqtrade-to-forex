@@ -21,6 +21,7 @@ certifi==2026.6.17
 jsonschema==4.26.0
 tabulate==0.10.0
 joblib==1.5.3
+lightgbm==4.7.0
 rich==15.0.0
 pyarrow==25.0.1; platform_machine != 'armv7l'
 

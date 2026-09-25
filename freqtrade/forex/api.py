@@ -1236,7 +1236,15 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
     async def ai_model_comparison(pair: str = "EUR/USD", timeframe: str = "M5", count: int = 120) -> dict:
         """Compare research-only LightGBM metrics with the deterministic baseline using the pair's freqai settings."""
         from freqtrade.forex.ai_dataset import build_forex_ai_dataset
-        from freqtrade.forex.ai_lgbm import compare_research_models
+        try:
+            from freqtrade.forex.ai_lgbm import compare_research_models
+        except ModuleNotFoundError as exc:
+            if exc.name == "lightgbm":
+                raise HTTPException(
+                    status_code=503,
+                    detail="LightGBM is not installed. Run ./setup.sh --update-forex and retry.",
+                ) from exc
+            raise
 
         settings = OandaSettings.from_environment()
         normalized_pair = normalize_pair(pair)
