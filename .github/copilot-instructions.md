@@ -65,3 +65,64 @@ When you have sufficient tools and permissions to complete the work, perform the
 Only declare the task complete when all required TODO items have been implemented and verified.
 
 If a task genuinely cannot be completed because required information, credentials, permissions, an external service, or a user decision is unavailable, clearly identify the blocking issue and stop at that point.
+## Context Protection and Checkpoints
+
+For long-running tasks, protect the task from context exhaustion.
+
+### Checkpointing
+
+* For any task that requires multiple steps, maintain a clear TODO list.
+* After completing each significant milestone, update the TODO state.
+* Keep track of:
+
+  * completed work
+  * current work
+  * remaining work
+  * modified files
+  * important decisions
+  * test/build results
+  * known issues
+
+### Before Context Exhaustion
+
+If the available context is becoming limited:
+
+1. Do not start another large or unrelated operation.
+2. Complete the current atomic operation if possible.
+3. Update the TODO list with the exact current state.
+4. Record the remaining work clearly.
+5. Make sure the workspace is left in a consistent state.
+6. Prefer context compaction/summarization when available.
+7. Do not claim that the task is complete if work remains.
+
+### Long Tasks
+
+For large tasks, work in small verifiable milestones instead of trying to complete everything in one continuous context.
+
+After each milestone:
+
+* update TODOs
+* save all changes
+* run the relevant tests/checks
+* record the result
+* continue with the next milestone
+
+Never rely on the conversation history alone to remember unfinished work.
+
+### Recovery
+
+If the session is interrupted because of context limits, continue from the existing workspace and TODO state.
+
+First inspect:
+
+* the current TODO list
+* modified files
+* git diff/status when relevant
+* test/build results
+* unfinished requirements
+
+Then continue from the first genuinely unfinished item.
+
+Do not redo completed work unnecessarily.
+
+Do not declare completion until all requirements have been implemented and verified.
