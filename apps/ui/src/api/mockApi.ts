@@ -12,8 +12,12 @@ import type { ForexChartData } from '../components/ForexChart'
 
 export type RiskConfig = { pair: string; units: string; riskBudget: string; riskBudgetMode: 'percent' | 'absolute'; leverage: string; maxExposure: string; maxExposureMode: 'percent' | 'absolute'; side: string; stopLoss: string | null; stopLossMode: 'percent' | 'price'; takeProfit: string | null; takeProfitMode: 'percent' | 'price'; averageEntry: string | null; averageEntryMode: 'percent' | 'price'; maxAdds: string; source: string }
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8090').replace(/\/$/, '')
-const WS_BASE_URL = (import.meta.env.VITE_WS_BASE_URL ?? 'ws://127.0.0.1:8090').replace(/\/$/, '')
+const browserOrigin = typeof window !== 'undefined' ? window.location.origin : 'http://127.0.0.1:8090'
+const browserWebSocketOrigin = typeof window !== 'undefined'
+  ? `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`
+  : 'ws://127.0.0.1:8090'
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? browserOrigin).replace(/\/$/, '')
+const WS_BASE_URL = (import.meta.env.VITE_WS_BASE_URL ?? browserWebSocketOrigin).replace(/\/$/, '')
 
 export type AiFreqaiFeatureParameters = {
   labelPeriodCandles: number
