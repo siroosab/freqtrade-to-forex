@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 
 from sqlalchemy import select
 
-from freqtrade.exchange import timeframe_to_next_date
+from freqtrade.timeframe import timeframe_to_next_date
 from freqtrade.persistence.models import PairLock
 
 

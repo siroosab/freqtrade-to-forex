@@ -11,7 +11,7 @@ authors = [
   {name = "Freqtrade Team", email = "freqtrade@protonmail.com"},
 ]
 
-description = "Freqtrade - Crypto Trading Bot"
+description = "Independent Forex Trading Platform"
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "GPLv3"}
@@ -71,16 +71,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Legacy crypto / exchange integrations moved out of the default forex-native install.
-crypto = [
-  "ccxt>=4.5.4",
-  "python-telegram-bot>=20.1",
-  "pycoingecko>=3.2.0",
-  "jinja2",
-  "questionary",
-  "prompt-toolkit",
-  "rich",
-]
 # Requirements used for submodules
 plot = ["plotly>=4.0"]
 hyperopt = [
@@ -130,7 +120,7 @@ jupyter = [
   "nbstripout",
 ]
 all = [
-  "freqtrade[plot,hyperopt,freqai,freqai_rl,jupyter,crypto]",
+  "freqtrade[plot,hyperopt,freqai,freqai_rl,jupyter]",
 ]
 dev = [
   "freqtrade[all,develop]",
@@ -168,7 +158,7 @@ asyncio_default_fixture_loop_scope = "function"
 
 filterwarnings = [
     # aiohttp warns that enable_cleanup_closed is a no-op on Python 3.14+
-    # It's set internally by ccxt/aiohttp and out of our control.
+    # It's set internally by the HTTP client and out of our control.
     "ignore:enable_cleanup_closed ignored:DeprecationWarning:aiohttp.connector",
 ]
 
@@ -233,7 +223,6 @@ reportTypedDictNotRequiredAccess = false  # 27
 exclude-newer = "1 week"
 
 [tool.uv.exclude-newer-package]
-ccxt = false
 ruff = "5 days"
 cryptography = "5 days"
 

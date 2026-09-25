@@ -37,13 +37,13 @@ from freqtrade.constants import (
 )
 from freqtrade.enums import ExitType, TradingMode
 from freqtrade.exceptions import DependencyException, OperationalException
-from freqtrade.exchange import (
+from freqtrade.forex.native_precision import (
     ROUND_DOWN,
     ROUND_UP,
     amount_to_contract_precision,
     price_to_precision,
 )
-from freqtrade.exchange.exchange_types import CcxtOrder
+CcxtOrder = Any
 from freqtrade.leverage import interest
 from freqtrade.misc import safe_value_fallback
 from freqtrade.persistence.base import ModelBase, SessionType

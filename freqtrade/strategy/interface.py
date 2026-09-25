@@ -3,10 +3,13 @@ IStrategy interface
 This module defines the interface to apply for strategies
 """
 
+from __future__ import annotations
+
 import logging
 from abc import ABC, abstractmethod
 from datetime import UTC, datetime, timedelta
 from math import isinf, isnan
+from typing import TYPE_CHECKING
 
 from pandas import DataFrame
 from pydantic import ValidationError
@@ -15,7 +18,6 @@ from freqtrade.configuration import TimeRange
 from freqtrade.constants import CUSTOM_TAG_MAX_LENGTH, Config, IntOrInf, ListPairsWithTimeframes
 from freqtrade.data.converter import populate_dataframe_with_trades
 from freqtrade.data.converter.converter import reduce_dataframe_footprint
-from freqtrade.data.dataprovider import DataProvider
 from freqtrade.enums import (
     CandleType,
     ExitCheckTuple,
@@ -28,7 +30,7 @@ from freqtrade.enums import (
     TradingMode,
 )
 from freqtrade.exceptions import OperationalException, StrategyError
-from freqtrade.exchange import timeframe_to_minutes, timeframe_to_next_date, timeframe_to_seconds
+from freqtrade.timeframe import timeframe_to_minutes, timeframe_to_next_date, timeframe_to_seconds
 from freqtrade.ft_types import AnnotationType
 from freqtrade.misc import remove_entry_exit_signals
 from freqtrade.persistence import Order, PairLocks, Trade
@@ -43,7 +45,9 @@ from freqtrade.strategy.informative_decorator import (
 from freqtrade.strategy.strategy_validation import StrategyResultValidator
 from freqtrade.strategy.strategy_wrapper import strategy_safe_wrapper
 from freqtrade.util import dt_now, dt_ts
-from freqtrade.wallets import Wallets
+if TYPE_CHECKING:
+    from freqtrade.data.dataprovider import DataProvider
+    from freqtrade.wallets import Wallets
 
 
 logger = logging.getLogger(__name__)

@@ -1,5 +1,5 @@
 # flake8: noqa: F401
-from freqtrade.exchange import (
+from freqtrade.timeframe import (
     timeframe_to_minutes,
     timeframe_to_msecs,
     timeframe_to_next_date,

@@ -9,7 +9,7 @@ from pandas import DataFrame
 from freqtrade.candle_columns import get_candle_columns
 from freqtrade.enums import CandleType
 from freqtrade.exceptions import OperationalException
-from freqtrade.exchange import timeframe_to_seconds
+from freqtrade.timeframe import timeframe_to_seconds
 from freqtrade.strategy.strategy_helper import (
     _merge_prepared_informative_pair,
     _prepare_informative_pair,

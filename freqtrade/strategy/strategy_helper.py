@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from freqtrade.exchange import timeframe_to_minutes
+from freqtrade.timeframe import timeframe_to_minutes
 
 
 @dataclass(frozen=True, slots=True, eq=False)

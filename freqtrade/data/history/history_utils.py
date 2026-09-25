@@ -2,6 +2,7 @@ import logging
 import operator
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 from pandas import DataFrame, concat
 
@@ -25,8 +26,9 @@ from freqtrade.data.converter import (
 from freqtrade.data.history.datahandlers import IDataHandler, get_datahandler
 from freqtrade.enums import CandleType, TradingMode
 from freqtrade.exceptions import OperationalException
-from freqtrade.exchange import Exchange
-from freqtrade.exchange.exchange_utils import date_minus_candles
+from freqtrade.timeframe import date_minus_candles
+
+Exchange = Any
 from freqtrade.plugins.pairlist.pairlist_helpers import dynamic_expand_pairlist
 from freqtrade.util import (
     CustomProgress,

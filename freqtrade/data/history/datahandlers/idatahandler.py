@@ -29,7 +29,7 @@ from freqtrade.data.converter import (
 )
 from freqtrade.enums import CandleType, TradingMode
 from freqtrade.exceptions import OperationalException
-from freqtrade.exchange import timeframe_to_seconds
+from freqtrade.timeframe import timeframe_to_seconds
 
 
 logger = logging.getLogger(__name__)

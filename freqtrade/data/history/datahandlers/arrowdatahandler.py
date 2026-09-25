@@ -10,7 +10,7 @@ from freqtrade.candle_columns import get_candle_columns, get_candle_dtypes
 from freqtrade.configuration import TimeRange
 from freqtrade.constants import DEFAULT_TRADES_COLUMNS
 from freqtrade.enums import CandleType, TradingMode
-from freqtrade.exchange import timeframe_to_seconds
+from freqtrade.timeframe import timeframe_to_seconds
 
 from .idatahandler import IDataHandler
 

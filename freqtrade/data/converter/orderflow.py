@@ -42,7 +42,7 @@ def timeframe_to_DateOffset(timeframe: str) -> pd.DateOffset:
     form ('1m', '5m', '1h', '1d', '1w', etc.) to the number
     of seconds for one timeframe interval.
     """
-    from freqtrade.exchange import timeframe_to_seconds
+    from freqtrade.timeframe import timeframe_to_seconds
 
     timeframe_seconds = timeframe_to_seconds(timeframe)
     timeframe_minutes = timeframe_seconds // 60
