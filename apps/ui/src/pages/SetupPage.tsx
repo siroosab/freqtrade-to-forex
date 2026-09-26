@@ -2,7 +2,7 @@ import { useMutation, useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 import type { ChangeEvent, FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { controlRuntime, discoverSetupAccounts, getRuntimeStatus, getSetupFileUrl, saveSetup, uploadSetupFile, type SetupAccount, type SetupPayload } from '../api/mockApi'
+import { controlRuntime, discoverSetupAccounts, getRuntimeStatus, getSetupFileUrl, getSetupInstruments, saveSetup, uploadSetupFile, type SetupAccount, type SetupPayload } from '../api/mockApi'
 
 export function SetupPage() {
   const navigate = useNavigate()
@@ -26,6 +26,12 @@ export function SetupPage() {
   const runtimeQuery = useQuery({ queryKey: ['setup-runtime'], queryFn: getRuntimeStatus })
   const runtimeMutation = useMutation({ mutationFn: controlRuntime, onSuccess: (result) => { setOperationMessage(result.message); void runtimeQuery.refetch() } })
   const uploadMutation = useMutation({ mutationFn: ({ kind, file }: { kind: 'config' | 'strategy'; file: File }) => uploadSetupFile(kind, file), onSuccess: () => setOperationMessage('File uploaded. Reload the bot before the next cycle.') })
+  const instrumentsQuery = useQuery({
+    queryKey: ['setup-instruments', form.environment, form.token, selectedAccountId],
+    queryFn: () => getSetupInstruments({ token: form.token, accountId: selectedAccountId, environment: form.environment }),
+    enabled: Boolean(form.token.trim() && selectedAccountId && form.environment),
+    retry: false,
+  })
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -36,13 +42,32 @@ export function SetupPage() {
     })
   }
 
-  const updateInstruments = (value: string) => {
-    const instruments = value.split(',').map((item) => item.trim().toUpperCase().replace('/', '_')).filter(Boolean)
-    setForm((current) => ({
-      ...current,
-      instruments,
-      pairTimeframes: Object.fromEntries(instruments.map((instrument) => [instrument, current.pairTimeframes[instrument] ?? '5m'])),
-    }))
+  const addInstrument = (instrument: string) => {
+    setForm((current) => {
+      if (current.instruments.includes(instrument)) return current
+      return {
+        ...current,
+        instruments: [...current.instruments, instrument],
+        pairTimeframes: {
+          ...current.pairTimeframes,
+          [instrument]: current.pairTimeframes[instrument] ?? '5m',
+        },
+      }
+    })
+  }
+
+  const removeInstrument = (instrument: string) => {
+    setForm((current) => {
+      if (!current.instruments.includes(instrument)) return current
+      const nextInstruments = current.instruments.filter((item) => item !== instrument)
+      const nextTimeframes = { ...current.pairTimeframes }
+      delete nextTimeframes[instrument]
+      return {
+        ...current,
+        instruments: nextInstruments,
+        pairTimeframes: nextTimeframes,
+      }
+    })
   }
 
   const updatePairTimeframe = (pair: string, timeframe: string) => setForm((current) => ({ ...current, pairTimeframes: { ...current.pairTimeframes, [pair]: timeframe } }))
@@ -130,11 +155,31 @@ export function SetupPage() {
               <input type="number" min="0.0001" max="1" step="0.0001" required value={form.riskFraction} onChange={(event) => setForm((current) => ({ ...current, riskFraction: event.target.value }))} />
               <small>0.01 means 1% of account equity per risk unit.</small>
             </label>
-            <label className="field-block field-wide">
+            <div className="field-block field-wide">
               <span>Instruments</span>
-              <input value={form.instruments.join(', ')} onChange={(event) => updateInstruments(event.target.value)} placeholder="EUR_USD, GBP_USD" />
-              <small>Comma-separated OANDA instrument names.</small>
-            </label>
+              {instrumentsQuery.isLoading && <small>Loading available OANDA pairs...</small>}
+              {instrumentsQuery.isError && <small className="field-error">{instrumentsQuery.error instanceof Error ? instrumentsQuery.error.message : 'Unable to load the instrument list.'}</small>}
+              <div className="instrument-selector" aria-live="polite">
+                {(instrumentsQuery.data?.instruments ?? []).map((instrument) => {
+                  const selected = form.instruments.includes(instrument.name)
+                  return (
+                    <button
+                      type="button"
+                      key={instrument.name}
+                      className={`instrument-option ${selected ? 'selected' : ''} priority-${instrument.priority}`}
+                      onClick={() => (selected ? removeInstrument(instrument.name) : addInstrument(instrument.name))}
+                      aria-pressed={selected}
+                    >
+                      <span>{instrument.displayName}</span>
+                      <small>{instrument.priority === 'high' ? 'Priority' : instrument.priority === 'medium' ? 'Watch' : 'Available'}</small>
+                    </button>
+                  )
+                })}
+                {instrumentsQuery.data && instrumentsQuery.data.instruments.length === 0 && <small>No OANDA instruments were returned for this account.</small>}
+                {!instrumentsQuery.data && !instrumentsQuery.isLoading && !instrumentsQuery.isError && <small>Choose an account to load the OANDA instrument list.</small>}
+              </div>
+              <small>Use the list to add or remove pairs for this setup. The selected pairs are saved in the config when you click Save.</small>
+            </div>
 
             <div className="setup-section-heading"><span>03</span><div><strong>Pair timeframes</strong><small>Each instrument can run on its own candle timeframe.</small></div></div>
             <div className="pair-timeframe-list field-wide">

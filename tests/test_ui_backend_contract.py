@@ -347,6 +347,28 @@ def test_live_release_gate_requires_explicit_approval():
     assert allowed.json()['allowed'] is True
 
 
+def test_setup_instruments_endpoint_lists_supported_pairs(monkeypatch):
+    async def fake_get_instruments(self, instruments=None):
+        return [
+            type('Instrument', (), {'name': 'EUR_USD', 'display_name': 'EUR/USD'} )(),
+            type('Instrument', (), {'name': 'GBP_USD', 'display_name': 'GBP/USD'} )(),
+            type('Instrument', (), {'name': 'USD_JPY', 'display_name': 'USD/JPY'} )(),
+        ]
+
+    monkeypatch.setattr('freqtrade.forex.api.OandaClient.get_instruments', fake_get_instruments)
+
+    response = client.get(
+        '/api/v1/setup/instruments',
+        params={'token': 'demo-token', 'accountId': 'live-account', 'environment': 'practice'},
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload['environment'] == 'practice'
+    assert [item['name'] for item in payload['instruments'][:3]] == ['EUR_USD', 'GBP_USD', 'USD_JPY']
+    assert payload['instruments'][0]['priority'] in {'high', 'priority'}
+
+
 def test_setup_runtime_and_file_endpoints_work_with_configured_paths(monkeypatch, tmp_path):
     config_path = tmp_path / 'config' / 'custom-config.json'
     strategy_path = tmp_path / 'strategies' / 'custom_strategy.py'

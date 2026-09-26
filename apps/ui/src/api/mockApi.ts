@@ -498,6 +498,14 @@ export type SetupPayload = {
   riskFraction: string
 }
 
+export type SetupInstrument = {
+  name: string
+  displayName: string
+  baseCurrency?: string | null
+  quoteCurrency?: string | null
+  priority: 'high' | 'medium' | 'standard'
+}
+
 export type SetupAccount = {
   accountId: string
   accountTypeCode: '002' | '003' | 'PRACTICE'
@@ -524,6 +532,24 @@ export async function getSetupStatus(): Promise<SetupStatus> {
   const response = await fetch(buildApiUrl('/api/v1/setup/status'))
   if (!response.ok) throw new Error('Setup status unavailable')
   return response.json() as Promise<SetupStatus>
+}
+
+export async function getSetupInstruments(payload: {
+  token: string
+  accountId: string
+  environment: 'practice' | 'live'
+}): Promise<{ environment: 'practice' | 'live'; accountId: string; instruments: SetupInstrument[] }> {
+  const params = new URLSearchParams({
+    token: payload.token,
+    account_id: payload.accountId,
+    environment: payload.environment,
+  })
+  const response = await fetch(buildApiUrl(`/api/v1/setup/instruments?${params.toString()}`))
+  if (!response.ok) {
+    const detail = (await response.json().catch(() => ({}))) as { detail?: string }
+    throw new Error(detail.detail ?? 'Instrument list unavailable')
+  }
+  return response.json() as Promise<{ environment: 'practice' | 'live'; accountId: string; instruments: SetupInstrument[] }>
 }
 
 export async function discoverSetupAccounts(payload: {

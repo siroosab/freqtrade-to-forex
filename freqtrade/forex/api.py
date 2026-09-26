@@ -1063,6 +1063,60 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             "configFile": str(config_path),
         }
 
+    @app.get("/api/v1/setup/instruments")
+    async def setup_instruments(
+        token: str | None = None,
+        account_id: str | None = None,
+        environment: str = "practice",
+        accountId: str | None = None,
+    ) -> dict:
+        token_value = str(token or "").strip()
+        account_value = str(account_id or accountId or "").strip()
+        environment_name = str(environment or "practice").strip().lower()
+        if not token_value or not account_value:
+            raise HTTPException(status_code=400, detail="token and account_id are required")
+        if environment_name not in {"practice", "live"}:
+            raise HTTPException(status_code=400, detail="environment must be practice or live")
+        try:
+            env = OandaEnvironment(environment_name)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="environment must be practice or live") from exc
+
+        try:
+            async with OandaClient(token_value, account_value, env) as client:
+                metadata = await client.get_instruments()
+        except OandaAPIError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        priority_rank = {"high": 0, "medium": 1, "standard": 2}
+        priority_map = {
+            "EUR_USD": "high",
+            "GBP_USD": "high",
+            "USD_JPY": "high",
+            "AUD_USD": "high",
+            "NZD_USD": "medium",
+            "USD_CAD": "medium",
+            "USD_CHF": "medium",
+            "EUR_GBP": "medium",
+        }
+        items = []
+        for instrument in metadata:
+            name = str(getattr(instrument, "name", "") or "").strip().upper()
+            display_name = str(getattr(instrument, "display_name", getattr(instrument, "displayName", name)) or name)
+            base_currency = getattr(instrument, "base_currency", getattr(instrument, "baseCurrency", None))
+            quote_currency = getattr(instrument, "quote_currency", getattr(instrument, "quoteCurrency", None))
+            items.append({
+                "name": name,
+                "displayName": display_name,
+                "baseCurrency": base_currency,
+                "quoteCurrency": quote_currency,
+                "priority": priority_map.get(name, "standard"),
+            })
+        items.sort(key=lambda item: (priority_rank.get(item["priority"], 99), item["name"]))
+        return {"environment": env.value, "accountId": account_value, "instruments": items}
+
     @app.post("/api/v1/setup/discover")
     async def setup_discover(payload: dict) -> dict:
         token = str(payload.get("token", "")).strip()

@@ -1825,6 +1825,57 @@
   border-top: 1px solid rgba(148, 163, 184, 0.14);
 }
 
+.instrument-selector {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.instrument-option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 5px;
+  width: 100%;
+  padding: 11px 12px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 8px;
+  color: #dfeaf8;
+  background: rgba(2, 6, 23, 0.24);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.2s ease, background 0.2s ease, transform 0.2s ease;
+}
+
+.instrument-option:hover {
+  transform: translateY(-1px);
+  border-color: rgba(103, 232, 249, 0.5);
+}
+
+.instrument-option.selected {
+  border-color: rgba(103, 232, 249, 0.72);
+  background: rgba(8, 47, 73, 0.35);
+}
+
+.instrument-option.priority-high {
+  border-color: rgba(251, 191, 36, 0.38);
+}
+
+.instrument-option span {
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.instrument-option small {
+  color: #9fb6cb;
+  font-size: 0.67rem;
+}
+
+.field-error {
+  color: #fca5a5;
+}
+
 .pair-timeframe-list {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
