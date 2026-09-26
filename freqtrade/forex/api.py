@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import secrets
 import sqlite3
 import threading
@@ -27,6 +28,26 @@ from freqtrade.forex.health import OandaHealthCheck
 from freqtrade.forex.ledger import PaperLedger
 from freqtrade.forex.models import OandaEnvironment
 from freqtrade.forex.oanda import OandaAPIError, OandaClient, discover_oanda_accounts
+
+
+def _render_ui_index(ui_index: Path) -> str:
+    if not ui_index.exists():
+        return ""
+
+    html = ui_index.read_text(encoding="utf-8")
+    asset_dir = ui_index.parent / "assets"
+    if not asset_dir.exists():
+        return html
+
+    js_assets = sorted(asset_dir.glob("*.js"))
+    css_assets = sorted(asset_dir.glob("*.css"))
+
+    if js_assets:
+        html = re.sub(r'src="/assets/[^"]+\.js"', f'src="/assets/{js_assets[0].name}"', html)
+    if css_assets:
+        html = re.sub(r'href="/assets/[^"]+\.css"', f'href="/assets/{css_assets[0].name}"', html)
+
+    return html
 
 
 def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> FastAPI:
@@ -2214,13 +2235,13 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
     @app.get("/", response_class=HTMLResponse)
     def dashboard() -> Response:
         if ui_index.exists():
-            return FileResponse(ui_index)
+            return HTMLResponse(_render_ui_index(ui_index))
         return _dashboard_html()
 
     @app.get("/setup", response_class=HTMLResponse)
     def setup_page() -> Response:
         if ui_index.exists():
-            return FileResponse(ui_index)
+            return HTMLResponse(_render_ui_index(ui_index))
         return _setup_html()
 
     @app.on_event("startup")
