@@ -54,6 +54,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
     }
     ACTIVE_SESSIONS: dict[str, dict[str, str]] = {}
     AUDIT_LOGS: list[dict] = []
+    ORDER_HISTORY: list[dict] = []
 
     def redact_value(value: object) -> object:
         if isinstance(value, str):
@@ -718,6 +719,19 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
 
     @app.get("/api/v1/orders")
     async def orders() -> list[dict]:
+        if ORDER_HISTORY:
+            return [
+                {
+                    "id": str(item.get("orderId") or item.get("id") or "ORD-UNKNOWN"),
+                    "symbol": item.get("symbol", "EUR/USD"),
+                    "side": item.get("side", "BUY"),
+                    "volume": str(item.get("volume") or "0"),
+                    "status": str(item.get("status") or "Pending"),
+                    "createdAt": item.get("createdAt") or datetime.now(timezone.utc).isoformat(),
+                    "risk": item.get("risk", "0.75%"),
+                }
+                for item in reversed(ORDER_HISTORY)
+            ]
         return fallback_orders()
 
     @app.get("/api/v1/orders/chart")
@@ -964,7 +978,12 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "environment": payload.get("environment", "practice"),
                 "executionMode": payload.get("executionMode", "practice"),
                 "role": user_role,
+                "createdAt": datetime.now(timezone.utc).isoformat(),
+                "risk": f"{float(payload.get('riskPercent', payload.get('risk', 0.75)) or 0.75):.2f}%",
             }
+
+        ORDER_HISTORY.append(order)
+        ORDER_HISTORY[:] = ORDER_HISTORY[-20:]
         record_audit_event(
             "orders.market.submit",
             details={

@@ -23,6 +23,7 @@ export function DashboardPage() {
   const liveAccount = useUiStore((state) => state.accountFeed)
   const liveMarket = useUiStore((state) => state.marketFeed)
   const userRole = useUiStore((state) => state.userRole)
+  const setOrdersFeed = useUiStore((state) => state.setOrdersFeed)
 
   const account = liveAccount ?? accountQuery.data
   const market = liveMarket ?? marketQuery.data
@@ -50,6 +51,15 @@ export function DashboardPage() {
         },
         userRole,
       )
+      const nextOrder = {
+        id: result.orderId ?? `ui-order-${Date.now()}`,
+        symbol: result.symbol,
+        side: result.side === 'SELL' ? 'SELL' : 'BUY',
+        volume: result.volume ?? String(units),
+        status: result.status === 'filled' ? 'Filled' : result.status === 'queued' ? 'Pending' : 'Rejected',
+        createdAt: new Date().toISOString(),
+        risk: `${riskPercent}%`,
+      } as const
       setOrderStatus({
         status: result.status,
         orderId: result.orderId,
@@ -57,6 +67,8 @@ export function DashboardPage() {
         fillPrice: result.fillPrice,
         environment: result.environment,
       })
+      const feed = useUiStore.getState().ordersFeed ?? []
+      setOrdersFeed([nextOrder, ...feed].slice(0, 10))
       setConfirmOpen(false)
     } catch (error) {
       setOrderStatus({ status: 'rejected', orderId: undefined, transactionId: undefined, fillPrice: null, environment: undefined })
