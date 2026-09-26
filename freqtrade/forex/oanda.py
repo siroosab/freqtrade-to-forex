@@ -24,6 +24,101 @@ class OandaAPIError(RuntimeError):
     """Raised when OANDA rejects an API request."""
 
 
+_SUPPORTED_ACCOUNT_TAGS = {
+    "CFD": ("003", "CFD"),
+    "SPREAD_BETTING": ("002", "Spread Betting"),
+}
+
+
+def classify_oanda_account(tags: Any) -> dict[str, str] | None:
+    """Return the supported bot account class for OANDA's account tags."""
+    if isinstance(tags, str):
+        normalized_tags = {tags.strip().upper()}
+    elif isinstance(tags, Sequence):
+        normalized_tags = {str(tag).strip().upper() for tag in tags}
+    else:
+        normalized_tags = set()
+
+    for tag, (code, label) in _SUPPORTED_ACCOUNT_TAGS.items():
+        if tag in normalized_tags:
+            return {"code": code, "label": label}
+    return None
+
+
+async def discover_oanda_accounts(
+    token: str,
+    environment: OandaEnvironment,
+    *,
+    http_client: httpx.AsyncClient | None = None,
+) -> dict[str, Any]:
+    """Discover supported accounts using read-only OANDA GET endpoints."""
+    if not token.strip():
+        raise ValueError("OANDA token is required")
+
+    client = http_client or httpx.AsyncClient(
+        base_url=environment.rest_url,
+        headers={"Authorization": f"Bearer {token.strip()}", "Accept": "application/json"},
+        timeout=20.0,
+    )
+    owns_client = http_client is None
+    try:
+        response = await client.get("/v3/accounts")
+        if response.is_error:
+            raise OandaAPIError(f"OANDA account discovery failed with HTTP {response.status_code}")
+        payload = response.json()
+        accounts: list[dict[str, Any]] = []
+        excluded_count = 0
+        for account in payload.get("accounts", []):
+            account_id = str(account.get("id", "")).strip()
+            account_type = classify_oanda_account(account.get("tags", []))
+            if not account_id or account_type is None:
+                excluded_count += 1
+                continue
+
+            summary: dict[str, Any] | None = None
+            summary_response = await client.get(f"/v3/accounts/{account_id}/summary")
+            if not summary_response.is_error:
+                summary_payload = summary_response.json().get("account", {})
+                summary = {
+                    key: summary_payload[key]
+                    for key in (
+                        "alias",
+                        "currency",
+                        "balance",
+                        "NAV",
+                        "marginAvailable",
+                    )
+                    if key in summary_payload
+                }
+
+            accounts.append(
+                {
+                    "accountId": account_id,
+                    "accountTypeCode": account_type["code"],
+                    "accountType": account_type["label"],
+                    "tags": sorted(classify_tags(account.get("tags", []))),
+                    "summary": summary,
+                    "summaryAccessible": summary is not None,
+                }
+            )
+        return {"accounts": accounts, "excludedAccountCount": excluded_count}
+    except httpx.RequestError as exc:
+        raise OandaAPIError("Could not connect to the selected OANDA environment") from exc
+    except (ValueError, KeyError) as exc:
+        raise OandaAPIError("OANDA returned an invalid account discovery response") from exc
+    finally:
+        if owns_client:
+            await client.aclose()
+
+
+def classify_tags(tags: Any) -> set[str]:
+    if isinstance(tags, str):
+        return {tags.strip().upper()}
+    if isinstance(tags, Sequence):
+        return {str(tag).strip().upper() for tag in tags}
+    return set()
+
+
 class OandaClient:
     def __init__(
         self,

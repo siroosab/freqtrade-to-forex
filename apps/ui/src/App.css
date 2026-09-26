@@ -1474,6 +1474,238 @@
   letter-spacing: 0.08em;
 }
 
+.setup-mode-badge.live {
+  border-color: rgba(248, 113, 113, 0.4);
+  color: #fecaca;
+  background: rgba(127, 29, 29, 0.24);
+}
+
+.setup-environment-switch {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  padding: 5px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 8px;
+  background: rgba(2, 6, 23, 0.3);
+}
+
+.setup-environment-switch button {
+  min-height: 42px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: #aebdd0;
+  background: transparent;
+  font: inherit;
+  font-size: 0.82rem;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.setup-environment-switch button.selected {
+  border-color: rgba(103, 232, 249, 0.35);
+  color: #cffafe;
+  background: rgba(8, 145, 178, 0.2);
+}
+
+.setup-environment-switch button:last-child.selected {
+  border-color: rgba(248, 113, 113, 0.38);
+  color: #fee2e2;
+  background: rgba(127, 29, 29, 0.25);
+}
+
+.discovery-action {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.discovery-action > span {
+  color: #8293a7;
+  font-size: 0.74rem;
+}
+
+.account-discovery {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid rgba(103, 232, 249, 0.22);
+  border-radius: 8px;
+  background: rgba(8, 47, 73, 0.2);
+}
+
+.account-discovery-heading,
+.account-choice-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+}
+
+.account-discovery-heading strong,
+.account-discovery-heading small {
+  display: block;
+}
+
+.account-discovery-heading strong {
+  color: #e2e8f0;
+  font-size: 0.88rem;
+}
+
+.account-discovery-heading small {
+  margin-top: 4px;
+  color: #8293a7;
+  font-size: 0.72rem;
+}
+
+.account-discovery-heading > span {
+  padding: 5px 7px;
+  border: 1px solid rgba(74, 222, 128, 0.25);
+  border-radius: 4px;
+  color: #86efac;
+  font-size: 0.62rem;
+  font-weight: 800;
+}
+
+.account-choice-list {
+  display: grid;
+  gap: 8px;
+}
+
+.account-choice {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 12px;
+  width: 100%;
+  padding: 13px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 7px;
+  color: inherit;
+  text-align: left;
+  background: rgba(2, 6, 23, 0.28);
+  cursor: pointer;
+}
+
+.account-choice:hover:not(:disabled),
+.account-choice.selected {
+  border-color: rgba(103, 232, 249, 0.65);
+  background: rgba(8, 47, 73, 0.42);
+}
+
+.account-choice:focus-visible,
+.setup-environment-switch button:focus-visible {
+  outline: 2px solid #67e8f9;
+  outline-offset: 2px;
+}
+
+.account-choice:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+
+.account-choice-radio {
+  width: 15px;
+  height: 15px;
+  margin-top: 3px;
+  border: 1px solid #8293a7;
+  border-radius: 50%;
+}
+
+.account-choice.selected .account-choice-radio {
+  border: 5px solid #67e8f9;
+}
+
+.account-choice-main,
+.account-choice-id,
+.account-choice-meta,
+.account-choice-warning {
+  display: block;
+  min-width: 0;
+}
+
+.account-choice-title {
+  justify-content: flex-start;
+  color: #f1f5f9;
+  font-size: 0.84rem;
+  font-weight: 750;
+}
+
+.account-type-code {
+  padding: 4px 6px;
+  border: 1px solid rgba(103, 232, 249, 0.24);
+  border-radius: 4px;
+  color: #a5f3fc;
+  font-size: 0.65rem;
+  font-weight: 750;
+}
+
+.account-type-code.code-002 {
+  border-color: rgba(134, 239, 172, 0.25);
+  color: #bbf7d0;
+}
+
+.account-choice-id {
+  overflow-wrap: anywhere;
+  margin-top: 5px;
+  color: #aebdd0;
+  font: 0.72rem/1.45 ui-monospace, monospace;
+}
+
+.account-choice-meta,
+.account-choice-warning {
+  margin-top: 5px;
+  color: #8293a7;
+  font-size: 0.7rem;
+  line-height: 1.5;
+}
+
+.account-choice-warning {
+  color: #fca5a5;
+}
+
+.account-confirm {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 13px;
+  border: 1px solid rgba(134, 239, 172, 0.2);
+  border-radius: 7px;
+  color: #cbd5e1;
+  background: rgba(20, 83, 45, 0.14);
+  font-size: 0.74rem;
+  line-height: 1.55;
+}
+
+.account-confirm.live-confirm {
+  border-color: rgba(248, 113, 113, 0.3);
+  background: rgba(127, 29, 29, 0.18);
+}
+
+.setup-live-note {
+  margin: -6px 0 0;
+  padding: 11px 13px;
+  border-left: 3px solid #f87171;
+  color: #fecaca;
+  background: rgba(127, 29, 29, 0.16);
+  font-size: 0.74rem;
+  line-height: 1.55;
+}
+
+.setup-live-note code {
+  color: #fff;
+  font-size: 0.72rem;
+}
+
+.account-confirm input[type="checkbox"] {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin: 2px 0 0;
+  accent-color: #22c55e;
+}
+
 .setup-intro {
   max-width: 62ch;
   margin: 18px 0 30px;

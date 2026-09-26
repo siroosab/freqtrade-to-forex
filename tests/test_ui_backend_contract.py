@@ -174,6 +174,23 @@ def test_setup_runtime_and_file_endpoints_work_with_configured_paths(monkeypatch
     monkeypatch.setenv('OANDA_CONFIG_PATH', str(config_path))
     monkeypatch.setenv('FOREX_STRATEGY_PATH', str(strategy_path))
 
+    async def verified_accounts(token, environment):
+        assert token == 'demo-token'
+        assert environment.value == 'practice'
+        return {
+            'accounts': [{
+                'accountId': '101-000-1234567-001',
+                'accountTypeCode': '003',
+                'accountType': 'CFD',
+                'tags': ['CFD'],
+                'summary': {'alias': 'Primary', 'currency': 'GBP'},
+                'summaryAccessible': True,
+            }],
+            'excludedAccountCount': 0,
+        }
+
+    monkeypatch.setattr('freqtrade.forex.api.discover_oanda_accounts', verified_accounts)
+
     status = client.get('/api/v1/setup/status')
     assert status.status_code == 200, status.text
     assert status.json()['configFile'] == str(config_path)
@@ -183,6 +200,9 @@ def test_setup_runtime_and_file_endpoints_work_with_configured_paths(monkeypatch
         json={
             'token': 'demo-token',
             'accountId': '101-000-1234567-001',
+            'accountTypeCode': '003',
+            'accountConfirmed': True,
+            'liveConfirmed': False,
             'environment': 'practice',
             'executionMode': 'practice',
             'instruments': ['EUR_USD', 'GBP_USD'],
@@ -195,6 +215,49 @@ def test_setup_runtime_and_file_endpoints_work_with_configured_paths(monkeypatch
     payload = setup.json()
     assert payload['configured'] is True
     assert payload['executionMode'] == 'practice'
+    assert payload['accountTypeCode'] == '003'
+
+
+def test_setup_discovery_returns_only_supported_accounts_and_never_token(monkeypatch):
+    async def discover(token, environment):
+        assert token == 'private-token'
+        assert environment.value == 'live'
+        return {
+            'accounts': [
+                {'accountId': 'eligible-1', 'accountTypeCode': '002', 'accountType': 'Spread Betting', 'tags': ['SPREAD_BETTING'], 'summary': {'alias': 'SB', 'currency': 'GBP'}, 'summaryAccessible': True},
+            ],
+            'excludedAccountCount': 2,
+        }
+
+    monkeypatch.setattr('freqtrade.forex.api.discover_oanda_accounts', discover)
+    response = client.post('/api/v1/setup/discover', json={'token': 'private-token', 'environment': 'live'})
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload['accounts'][0]['accountTypeCode'] == '002'
+    assert payload['excludedAccountCount'] == 2
+    assert 'private-token' not in response.text
+
+
+def test_live_setup_requires_server_side_confirmation_flag(monkeypatch, tmp_path):
+    monkeypatch.delenv('OANDA_LIVE_CONFIRM', raising=False)
+    response = client.post(
+        '/api/v1/setup',
+        json={
+            'token': 'live-token',
+            'accountId': 'live-account',
+            'accountTypeCode': '003',
+            'accountConfirmed': True,
+            'liveConfirmed': True,
+            'environment': 'live',
+            'executionMode': 'dry_run',
+            'instruments': ['EUR_USD'],
+            'riskFraction': '0.01',
+            'configPath': str(tmp_path / 'live-config.json'),
+        },
+    )
+    assert response.status_code == 403
+    assert 'OANDA_LIVE_CONFIRM=1' in response.json()['detail']
+    assert not (tmp_path / 'live-config.json').exists()
 
     runtime = client.get('/api/v1/setup/runtime')
     assert runtime.status_code == 200, runtime.text

@@ -489,17 +489,57 @@ export type SetupStatus = {
 export type SetupPayload = {
   token: string
   accountId: string
-  environment: 'practice'
+  accountTypeCode: '002' | '003' | ''
+  accountConfirmed: boolean
+  liveConfirmed: boolean
+  environment: 'practice' | 'live'
   executionMode: 'dry_run' | 'practice'
   instruments: string[]
   pairTimeframes: Record<string, string>
   riskFraction: string
 }
 
+export type SetupAccount = {
+  accountId: string
+  accountTypeCode: '002' | '003'
+  accountType: 'CFD' | 'Spread Betting'
+  tags: string[]
+  summary: {
+    alias?: string
+    currency?: string
+    balance?: string
+    NAV?: string
+    marginAvailable?: string
+  } | null
+  summaryAccessible: boolean
+}
+
+export type SetupDiscovery = {
+  environment: 'practice' | 'live'
+  accounts: SetupAccount[]
+  excludedAccountCount: number
+}
+
 export async function getSetupStatus(): Promise<SetupStatus> {
   const response = await fetch(buildApiUrl('/api/v1/setup/status'))
   if (!response.ok) throw new Error('Setup status unavailable')
   return response.json() as Promise<SetupStatus>
+}
+
+export async function discoverSetupAccounts(payload: {
+  token: string
+  environment: 'practice' | 'live'
+}): Promise<SetupDiscovery> {
+  const response = await fetch(buildApiUrl('/api/v1/setup/discover'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!response.ok) {
+    const detail = (await response.json().catch(() => ({}))) as { detail?: string }
+    throw new Error(detail.detail ?? 'OANDA account discovery failed')
+  }
+  return response.json() as Promise<SetupDiscovery>
 }
 
 export async function saveSetup(payload: SetupPayload): Promise<SetupStatus> {

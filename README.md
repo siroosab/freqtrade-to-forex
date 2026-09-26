@@ -107,8 +107,27 @@ python -m uvicorn freqtrade.forex.api:app --host 0.0.0.0 --port 8090
 http://SERVER_IP:8090/setup
 ```
 
-به‌جای `SERVER_IP`، آدرس IP سرور را قرار دهید. در صفحه تنظیمات، اطلاعات حساب
-OANDA Practice، حالت اجرا، ابزارهای معاملاتی و محدودیت ریسک را وارد کنید.
+به‌جای `SERVER_IP`، آدرس IP سرور را قرار دهید. در `/setup`، محیط Practice یا
+Live و token همان محیط را انتخاب کنید. دکمه کشف حساب فقط درخواست‌های GET
+می‌فرستد؛ سپس از میان حساب‌های CFD با کد `003` یا Spread Betting با کد `002`
+یکی را انتخاب و تأیید کنید. حساب‌های دیگر قابل انتخاب نیستند.
+
+برای Live، تأیید جداگانه در صفحه لازم است و سرور نیز باید با
+`OANDA_LIVE_CONFIRM=1` راه‌اندازی شده باشد. ابتدا execution mode را روی Dry-run
+نگه دارید. بعد از تأیید حساب، ابزارهای معاملاتی و محدودیت ریسک را تنظیم کنید.
+
+اگر API را با systemd کاربر اجرا می‌کنید و عمداً می‌خواهید Live را در setup
+فعال کنید، این override را بسازید و سرویس را restart کنید:
+
+```bash
+mkdir -p ~/.config/systemd/user/freqtrade-forex.service.d
+printf '[Service]\nEnvironment=OANDA_LIVE_CONFIRM=1\n' > ~/.config/systemd/user/freqtrade-forex.service.d/live-confirm.conf
+systemctl --user daemon-reload
+systemctl --user restart freqtrade-forex
+```
+
+این flag فقط Live setup را مجاز می‌کند؛ تنظیمات setup همچنان execution را روی
+Dry-run نگه می‌دارند.
 
 ## به‌روزرسانی نصب موجود
 

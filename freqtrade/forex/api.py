@@ -25,7 +25,8 @@ from freqtrade.forex.ai_hyperopt import run_ai_hyperopt_robust
 from freqtrade.forex.config import OandaSettings, load_forex_config, save_forex_config
 from freqtrade.forex.health import OandaHealthCheck
 from freqtrade.forex.ledger import PaperLedger
-from freqtrade.forex.oanda import OandaClient
+from freqtrade.forex.models import OandaEnvironment
+from freqtrade.forex.oanda import OandaAPIError, OandaClient, discover_oanda_accounts
 
 
 def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> FastAPI:
@@ -956,6 +957,24 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             "configFile": str(config_path),
         }
 
+    @app.post("/api/v1/setup/discover")
+    async def setup_discover(payload: dict) -> dict:
+        token = str(payload.get("token", "")).strip()
+        environment_name = str(payload.get("environment", "practice")).strip().lower()
+        if not token:
+            raise HTTPException(status_code=400, detail="OANDA token is required")
+        try:
+            environment = OandaEnvironment(environment_name)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="environment must be practice or live") from exc
+        try:
+            result = await discover_oanda_accounts(token, environment)
+        except OandaAPIError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"environment": environment.value, **result}
+
     @app.post("/api/v1/setup")
     async def save_setup(payload: dict) -> dict:
         token = str(payload.get("token", "")).strip()
@@ -973,10 +992,39 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             raise HTTPException(status_code=400, detail="riskFraction must be a number") from exc
         if not token or not account_id:
             raise HTTPException(status_code=400, detail="token and accountId are required")
-        if environment != "practice":
-            raise HTTPException(status_code=400, detail="initial setup only supports the Practice environment")
+        if environment not in {"practice", "live"}:
+            raise HTTPException(status_code=400, detail="environment must be practice or live")
+        if payload.get("accountConfirmed") is not True:
+            raise HTTPException(status_code=400, detail="Confirm the selected OANDA account before saving")
+        expected_type_code = str(payload.get("accountTypeCode", ""))
+        if expected_type_code not in {"002", "003"}:
+            raise HTTPException(status_code=400, detail="Only Spread Betting (002) and CFD (003) accounts are supported")
+        if environment == "live":
+            if payload.get("liveConfirmed") is not True:
+                raise HTTPException(status_code=400, detail="Explicitly confirm that this is a Live OANDA account")
+            if os.environ.get("OANDA_LIVE_CONFIRM") != "1":
+                raise HTTPException(status_code=403, detail="Live setup is disabled. Set OANDA_LIVE_CONFIRM=1 on the server and restart the API.")
+        try:
+            environment_enum = OandaEnvironment(environment)
+            discovery = await discover_oanda_accounts(token, environment_enum)
+        except OandaAPIError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        selected_account = next(
+            (
+                account
+                for account in discovery["accounts"]
+                if account["accountId"] == account_id
+                and account["accountTypeCode"] == expected_type_code
+                and account["summaryAccessible"]
+            ),
+            None,
+        )
+        if selected_account is None:
+            raise HTTPException(status_code=400, detail="Selected account could not be verified as a supported OANDA account")
         if execution_mode not in {"dry_run", "practice"}:
             raise HTTPException(status_code=400, detail="executionMode must be dry_run or practice")
+        if environment == "live" and execution_mode != "dry_run":
+            raise HTTPException(status_code=400, detail="Live account setup is restricted to dry_run execution")
         if not instruments:
             raise HTTPException(status_code=400, detail="at least one instrument is required")
         if not Decimal("0") < risk_fraction <= Decimal("1"):
@@ -1003,6 +1051,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "oanda_execution_mode": execution_mode,
                 "oanda_token": token,
                 "account_id": account_id,
+                "oanda_account_type_code": selected_account["accountTypeCode"],
+                "oanda_account_type": selected_account["accountType"],
+                "oanda_account_tags": selected_account["tags"],
                 "pair_whitelist": instruments,
                 "oanda_risk_fraction": str(risk_fraction),
             },
@@ -1018,6 +1069,8 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             "configPath": str(saved_path),
             "environment": environment,
             "executionMode": execution_mode,
+            "accountTypeCode": selected_account["accountTypeCode"],
+            "accountType": selected_account["accountType"],
             "instruments": instruments,
             "pairTimeframes": pair_timeframes,
             "accountIdConfigured": True,

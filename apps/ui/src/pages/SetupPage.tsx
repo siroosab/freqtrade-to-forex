@@ -2,13 +2,16 @@ import { useMutation, useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 import type { ChangeEvent, FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { controlRuntime, getRuntimeStatus, getSetupFileUrl, saveSetup, uploadSetupFile, type SetupPayload } from '../api/mockApi'
+import { controlRuntime, discoverSetupAccounts, getRuntimeStatus, getSetupFileUrl, saveSetup, uploadSetupFile, type SetupAccount, type SetupPayload } from '../api/mockApi'
 
 export function SetupPage() {
   const navigate = useNavigate()
   const [form, setForm] = useState<SetupPayload>({
     token: '',
     accountId: '',
+    accountTypeCode: '',
+    accountConfirmed: false,
+    liveConfirmed: false,
     environment: 'practice',
     executionMode: 'dry_run',
     instruments: ['EUR_USD', 'GBP_USD'],
@@ -17,7 +20,10 @@ export function SetupPage() {
   })
   const [error, setError] = useState<string | null>(null)
   const [operationMessage, setOperationMessage] = useState<string | null>(null)
+  const [accounts, setAccounts] = useState<SetupAccount[]>([])
+  const [selectedAccountId, setSelectedAccountId] = useState('')
   const mutation = useMutation({ mutationFn: saveSetup })
+  const discoveryMutation = useMutation({ mutationFn: discoverSetupAccounts })
   const runtimeQuery = useQuery({ queryKey: ['setup-runtime'], queryFn: getRuntimeStatus })
   const runtimeMutation = useMutation({ mutationFn: controlRuntime, onSuccess: (result) => { setOperationMessage(result.message); void runtimeQuery.refetch() } })
   const uploadMutation = useMutation({ mutationFn: ({ kind, file }: { kind: 'config' | 'strategy'; file: File }) => uploadSetupFile(kind, file), onSuccess: () => setOperationMessage('File uploaded. Reload the bot before the next cycle.') })
@@ -51,6 +57,22 @@ export function SetupPage() {
     if (file) uploadMutation.mutate({ kind, file })
     event.target.value = ''
   }
+  const selectedAccount = accounts.find((account) => account.accountId === selectedAccountId)
+  const discoverAccounts = () => {
+    setError(null)
+    setAccounts([])
+    setSelectedAccountId('')
+    setForm((current) => ({ ...current, accountId: '', accountTypeCode: '', accountConfirmed: false, liveConfirmed: false }))
+    discoveryMutation.mutate({ token: form.token, environment: form.environment }, {
+      onSuccess: (result) => setAccounts(result.accounts),
+      onError: (reason) => setError(reason instanceof Error ? reason.message : 'OANDA account discovery failed'),
+    })
+  }
+  const selectAccount = (account: SetupAccount) => {
+    if (!account.summaryAccessible) return
+    setSelectedAccountId(account.accountId)
+    setForm((current) => ({ ...current, accountId: account.accountId, accountTypeCode: account.accountTypeCode, accountConfirmed: false, liveConfirmed: false }))
+  }
 
   return (
     <main className="setup-shell">
@@ -64,9 +86,9 @@ export function SetupPage() {
             </div>
           </div>
           <div className="setup-aside-copy">
-            <p className="setup-kicker">01 / CONNECTION</p>
+              <p className="setup-kicker">01 / ACCOUNT DISCOVERY</p>
             <h1 id="setup-title">Bring the workspace online.</h1>
-            <p>Connect the bot to an OANDA Practice account, choose its safe starting mode, and open the dashboard.</p>
+            <p>Choose Practice or Live, discover authorized OANDA accounts, then confirm a supported CFD or Spread Betting account.</p>
           </div>
           <div className="setup-checklist" aria-label="Setup steps">
             <div className="setup-check active"><span>01</span><div><strong>Broker connection</strong><small>Account and market access</small></div></div>
@@ -78,30 +100,37 @@ export function SetupPage() {
           <div className="setup-main-header">
             <div>
               <p className="setup-kicker">ACCOUNT SETTINGS</p>
-              <h2>Connect your Practice account</h2>
+              <h2>Discover your OANDA accounts</h2>
             </div>
-            <span className="setup-mode-badge">PRACTICE ONLY</span>
+            <span className={`setup-mode-badge ${form.environment === 'live' ? 'live' : ''}`}>{form.environment === 'live' ? 'LIVE' : 'PRACTICE'}</span>
           </div>
-          <p className="setup-intro">The terminal created the workspace. Finish the connection here; credentials are written only to the server-side config.</p>
+          <p className="setup-intro">Account discovery uses read-only requests. No order is created or changed. Your token is stored only after you confirm a supported account.</p>
 
           <form className="setup-form" onSubmit={submit}>
-            <div className="setup-section-heading"><span>01</span><div><strong>Broker access</strong><small>Use credentials from your OANDA Practice account.</small></div></div>
+            <div className="setup-section-heading"><span>01</span><div><strong>Environment and broker access</strong><small>Select the matching token environment. Practice and Live tokens are separate.</small></div></div>
+            <div className="setup-environment-switch field-wide" role="group" aria-label="OANDA environment">
+              <button type="button" aria-pressed={form.environment === 'practice'} className={form.environment === 'practice' ? 'selected' : ''} onClick={() => { discoveryMutation.reset(); setAccounts([]); setSelectedAccountId(''); setForm((current) => ({ ...current, token: '', environment: 'practice', accountId: '', accountTypeCode: '', accountConfirmed: false, liveConfirmed: false })) }}>Practice / Demo</button>
+              <button type="button" aria-pressed={form.environment === 'live'} className={form.environment === 'live' ? 'selected' : ''} onClick={() => { discoveryMutation.reset(); setAccounts([]); setSelectedAccountId(''); setForm((current) => ({ ...current, token: '', environment: 'live', executionMode: 'dry_run', accountId: '', accountTypeCode: '', accountConfirmed: false, liveConfirmed: false })) }}>Live</button>
+            </div>
+            {form.environment === 'live' && <p className="setup-live-note field-wide">Live account discovery is read-only. Saving Live settings also requires <code>OANDA_LIVE_CONFIRM=1</code> on this server. This setup keeps execution in Dry-run.</p>}
             <label className="field-block field-wide">
-              <span>OANDA Practice token</span>
-              <input type="password" autoComplete="new-password" required value={form.token} onChange={(event) => setForm((current) => ({ ...current, token: event.target.value }))} />
-              <small>Stored on the server. Never shown in the dashboard.</small>
+              <span>OANDA {form.environment === 'live' ? 'Live' : 'Practice'} token</span>
+              <input type="password" autoComplete="new-password" required value={form.token} onChange={(event) => { discoveryMutation.reset(); setAccounts([]); setSelectedAccountId(''); setForm((current) => ({ ...current, token: event.target.value, accountId: '', accountTypeCode: '', accountConfirmed: false, liveConfirmed: false })) }} />
+              <small>Sent to OANDA only for read-only account discovery. Saved on this server only after confirmation.</small>
             </label>
-            <label className="field-block field-wide">
-              <span>Practice account ID</span>
-              <input required placeholder="101-..." value={form.accountId} onChange={(event) => setForm((current) => ({ ...current, accountId: event.target.value }))} />
-            </label>
+            <div className="field-wide discovery-action"><button type="button" className="primary-action" onClick={discoverAccounts} disabled={!form.token.trim() || discoveryMutation.isPending}>{discoveryMutation.isPending ? 'Checking OANDA...' : 'Discover accounts'}</button>{discoveryMutation.isPending && <span>Reading account types and summaries. No trading request will be sent.</span>}</div>
+
+            {discoveryMutation.isSuccess && <section className="account-discovery field-wide" aria-live="polite"><div className="account-discovery-heading"><div><strong>{accounts.length ? 'Supported accounts found' : 'No supported accounts found'}</strong><small>{accounts.length} eligible · {discoveryMutation.data.excludedAccountCount} other account(s) excluded</small></div><span>READ ONLY</span></div>{accounts.length > 0 && <div className="account-choice-list">{accounts.map((account) => { const summary = account.summary; const selected = account.accountId === selectedAccountId; return <button type="button" key={account.accountId} className={`account-choice ${selected ? 'selected' : ''} ${!account.summaryAccessible ? 'unavailable' : ''}`} aria-pressed={selected} disabled={!account.summaryAccessible} onClick={() => selectAccount(account)}><span className="account-choice-radio" aria-hidden="true"/><span className="account-choice-main"><span className="account-choice-title">{summary?.alias || 'OANDA account'}<span className={`account-type-code code-${account.accountTypeCode}`}>{account.accountTypeCode} · {account.accountType}</span></span><span className="account-choice-id">{account.accountId}</span><span className="account-choice-meta">{summary?.currency || 'Currency unavailable'}{summary?.NAV ? ` · NAV ${summary.NAV}` : ''}{summary?.marginAvailable ? ` · Margin available ${summary.marginAvailable}` : ''}</span>{!account.summaryAccessible && <span className="account-choice-warning">Account summary could not be read; this account cannot be selected.</span>}</span></button> })}</div>}</section>}
+
+            {selectedAccount && <label className="account-confirm field-wide"><input type="checkbox" checked={form.accountConfirmed} onChange={(event) => setForm((current) => ({ ...current, accountConfirmed: event.target.checked }))}/><span>I confirm account {selectedAccount.accountId} is the {selectedAccount.accountType} ({selectedAccount.accountTypeCode}) account I want to connect in {form.environment.toUpperCase()}.</span></label>}
+            {selectedAccount && form.environment === 'live' && <label className="account-confirm live-confirm field-wide"><input type="checkbox" checked={form.liveConfirmed} onChange={(event) => setForm((current) => ({ ...current, liveConfirmed: event.target.checked }))}/><span>This is a real Live account. I understand that Live API access may expose real funds; I will keep execution in Dry-run until separately reviewed.</span></label>}
 
             <div className="setup-section-heading"><span>02</span><div><strong>Execution guardrails</strong><small>Start conservatively and widen only after review.</small></div></div>
             <label className="field-block">
               <span>Execution mode</span>
               <select value={form.executionMode} onChange={(event) => setForm((current) => ({ ...current, executionMode: event.target.value as SetupPayload['executionMode'] }))}>
                 <option value="dry_run">Dry-run · no broker orders</option>
-                <option value="practice">Practice · guarded orders</option>
+                {form.environment === 'practice' && <option value="practice">Practice · guarded orders</option>}
               </select>
             </label>
             <label className="field-block">
@@ -122,8 +151,8 @@ export function SetupPage() {
 
             {error && <p className="setup-error" role="alert">{error}</p>}
             <div className="setup-footer">
-              <span className="setup-secure-note">Practice environment · server-side config</span>
-              <button className="primary-action setup-submit" type="submit" disabled={mutation.isPending}>
+              <span className="setup-secure-note">{form.environment === 'live' ? 'Live account · server-side config' : 'Practice environment · server-side config'}</span>
+              <button className="primary-action setup-submit" type="submit" disabled={mutation.isPending || !selectedAccount || !form.accountConfirmed || (form.environment === 'live' && !form.liveConfirmed)}>
                 {mutation.isPending ? 'Saving configuration...' : 'Save and open dashboard'}
               </button>
             </div>

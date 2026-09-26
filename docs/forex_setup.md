@@ -53,10 +53,28 @@ python -m uvicorn freqtrade.forex.api:app --host 0.0.0.0 --port 8090
 The API serves the production React build from the same port, so a separate
 Vite process is not required on the VPS.
 
-Open `http://SERVER_IP:8090/setup` in a browser. Enter the OANDA Practice
-token, account ID, execution mode, instruments, and risk fraction there. The
-credentials are sent to the server-side API and are never placed in the
-installation command or browser URL.
+Open `http://SERVER_IP:8090/setup` in a browser. Choose Practice or Live and
+enter the token for that environment. Account discovery uses GET requests only;
+it lists supported CFD (`003`) and Spread Betting (`002`) accounts, including
+their read-only summaries. Select an account and confirm it before saving.
+Other account types cannot be selected. The token is not saved until the
+confirmed setup is submitted and is never placed in the browser URL.
+
+Live requires both the explicit confirmation in the page and the server
+environment variable `OANDA_LIVE_CONFIRM=1`. Keep execution mode on Dry-run
+until the Live configuration has been separately reviewed.
+
+For a user-level systemd service, enable the Live setup gate only when needed:
+
+```bash
+mkdir -p ~/.config/systemd/user/freqtrade-forex.service.d
+printf '[Service]\nEnvironment=OANDA_LIVE_CONFIRM=1\n' > ~/.config/systemd/user/freqtrade-forex.service.d/live-confirm.conf
+systemctl --user daemon-reload
+systemctl --user restart freqtrade-forex
+```
+
+This gate permits saving a Live account configuration; setup still restricts
+execution to Dry-run.
 
 The non-interactive config-only step can also be rerun safely:
 
