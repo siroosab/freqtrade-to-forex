@@ -2020,12 +2020,16 @@ def test_dashboard_and_setup_serve_react_ui_when_built(tmp_path) -> None:
     with TestClient(create_app(tmp_path / "dashboard.sqlite")) as client:
         dashboard = client.get("/")
         setup = client.get("/setup")
+        ui_dir = Path("apps/ui/dist").resolve()
+        assets = sorted((ui_dir / "assets").glob("*"))
+        asset_responses = [client.get(f"/assets/{asset.name}") for asset in assets]
 
     assert dashboard.status_code == 200
     assert '<div id="root"></div>' in dashboard.text
     assert "/assets/" in dashboard.text
     assert setup.status_code == 200
     assert setup.text == dashboard.text
+    assert all(response.status_code == 200 for response in asset_responses)
 
 
 @pytest.mark.asyncio

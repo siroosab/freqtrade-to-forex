@@ -2253,7 +2253,16 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
     if ui_index.exists():
         from fastapi.staticfiles import StaticFiles
 
-        app.mount("/", StaticFiles(directory=ui_index.parent, html=True), name="ui")
+        ui_dir = ui_index.parent
+        app.mount("/assets", StaticFiles(directory=str(ui_dir / "assets")), name="ui_assets")
+
+        @app.get("/favicon.svg")
+        def favicon() -> FileResponse:
+            return FileResponse(ui_dir / "favicon.svg")
+
+        @app.get("/icons.svg")
+        def icons() -> FileResponse:
+            return FileResponse(ui_dir / "icons.svg")
 
     return app
 
