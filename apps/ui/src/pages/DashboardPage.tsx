@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { getAccountSummary, getMarketSummary, submitMarketOrder } from '../api/mockApi'
 import { useForexSocket } from '../hooks/useForexSocket'
 import { useUiStore } from '../store/useUiStore'
@@ -9,6 +9,14 @@ const pnlSeries = [18, 36, 28, 52, 45, 68, 62, 80, 72, 88, 84, 96]
 export function DashboardPage() {
   useForexSocket()
   const [confirmOpen, setConfirmOpen] = useState(false)
+  const [instrument, setInstrument] = useState('EUR/USD')
+  const [side, setSide] = useState<'BUY' | 'SELL'>('BUY')
+  const [units, setUnits] = useState(1200)
+  const [riskPercent, setRiskPercent] = useState(0.75)
+  const [stopLoss, setStopLoss] = useState('1.0835')
+  const [takeProfit, setTakeProfit] = useState('1.0995')
+  const [orderStatus, setOrderStatus] = useState<{ status: string; orderId?: string; transactionId?: string; fillPrice?: string | null; environment?: string } | null>(null)
+  const [isSubmitting, setIsSubmitting] = useState(false)
 
   const accountQuery = useQuery({ queryKey: ['account'], queryFn: getAccountSummary })
   const marketQuery = useQuery({ queryKey: ['market'], queryFn: getMarketSummary })
@@ -19,23 +27,42 @@ export function DashboardPage() {
   const account = liveAccount ?? accountQuery.data
   const market = liveMarket ?? marketQuery.data
 
+  const recommendedUnits = useMemo(() => {
+    if (!Number.isFinite(units) || units <= 0) return 0
+    return Math.max(100, Math.round(units))
+  }, [units])
+
   const handleOrderSubmit = async () => {
     if (userRole === 'viewer') {
       return
     }
 
+    setIsSubmitting(true)
     try {
-      await submitMarketOrder(
+      const result = await submitMarketOrder(
         {
-          symbol: 'EUR/USD',
-          side: 'BUY',
-          volume: '1200',
+          symbol: instrument,
+          side,
+          volume: units,
+          units,
+          stopLoss,
+          takeProfit,
         },
         userRole,
       )
+      setOrderStatus({
+        status: result.status,
+        orderId: result.orderId,
+        transactionId: result.transactionId,
+        fillPrice: result.fillPrice,
+        environment: result.environment,
+      })
       setConfirmOpen(false)
-    } catch {
-      setConfirmOpen(false)
+    } catch (error) {
+      setOrderStatus({ status: 'rejected', orderId: undefined, transactionId: undefined, fillPrice: null, environment: undefined })
+      console.error(error)
+    } finally {
+      setIsSubmitting(false)
     }
   }
 
@@ -243,17 +270,17 @@ export function DashboardPage() {
             <div className="field-row">
               <label>
                 <span>Instrument</span>
-                <select defaultValue="EUR/USD">
-                  <option>EUR/USD</option>
-                  <option>GBP/USD</option>
-                  <option>USD/JPY</option>
+                <select value={instrument} onChange={(event) => setInstrument(event.target.value)}>
+                  <option value="EUR/USD">EUR/USD</option>
+                  <option value="GBP/USD">GBP/USD</option>
+                  <option value="USD/JPY">USD/JPY</option>
                 </select>
               </label>
               <label>
                 <span>Side</span>
-                <select defaultValue="BUY">
-                  <option>BUY</option>
-                  <option>SELL</option>
+                <select value={side} onChange={(event) => setSide(event.target.value as 'BUY' | 'SELL')}>
+                  <option value="BUY">BUY</option>
+                  <option value="SELL">SELL</option>
                 </select>
               </label>
             </div>
@@ -261,36 +288,56 @@ export function DashboardPage() {
             <div className="field-row">
               <label>
                 <span>Units</span>
-                <input defaultValue="1200" />
+                <input type="number" value={units} onChange={(event) => setUnits(Number(event.target.value) || 0)} />
               </label>
               <label>
                 <span>Risk %</span>
-                <input defaultValue="0.75" />
+                <input type="number" step="0.01" value={riskPercent} onChange={(event) => setRiskPercent(Number(event.target.value) || 0)} />
               </label>
             </div>
 
             <div className="field-row">
               <label>
                 <span>Stop loss</span>
-                <input defaultValue="1.0835" />
+                <input value={stopLoss} onChange={(event) => setStopLoss(event.target.value)} />
               </label>
               <label>
                 <span>Take profit</span>
-                <input defaultValue="1.0995" />
+                <input value={takeProfit} onChange={(event) => setTakeProfit(event.target.value)} />
               </label>
+            </div>
+
+            <div className="field-row compact-row">
+              <div className="recommendation-box">
+                <span>Suggested size</span>
+                <strong>{recommendedUnits.toLocaleString()} units</strong>
+              </div>
+              <div className="status-box">
+                <span>Order status</span>
+                <strong>{orderStatus ? orderStatus.status : 'Idle'}</strong>
+              </div>
             </div>
 
             <div className="actions-row">
               <button
                 className="primary-action"
-                disabled={userRole === 'viewer'}
+                disabled={userRole === 'viewer' || isSubmitting}
                 onClick={() => setConfirmOpen(true)}
-                style={{ opacity: userRole === 'viewer' ? 0.5 : 1 }}
+                style={{ opacity: userRole === 'viewer' || isSubmitting ? 0.5 : 1 }}
               >
-                Submit order
+                {isSubmitting ? 'Submitting...' : 'Submit order'}
               </button>
-              <button className="secondary-action">Preview</button>
+              <button className="secondary-action" type="button" onClick={() => setOrderStatus(null)}>Reset</button>
             </div>
+
+            {orderStatus && (
+              <div className="status-rail">
+                <div><span>Environment</span><strong>{orderStatus.environment ?? 'practice'}</strong></div>
+                <div><span>Order ID</span><strong>{orderStatus.orderId ?? '—'}</strong></div>
+                <div><span>Transaction</span><strong>{orderStatus.transactionId ?? '—'}</strong></div>
+                <div><span>Fill price</span><strong>{orderStatus.fillPrice ?? '—'}</strong></div>
+              </div>
+            )}
           </div>
         </div>
 

@@ -124,6 +124,75 @@ def test_operation_preflight_validation_accepts_valid_session_and_rejects_invali
     assert invalid.status_code == 403, invalid.text
 
 
+def test_practice_order_submit_uses_real_oanda_gateway(monkeypatch):
+    class FakeResult:
+        order_id = 'practice-order-123'
+        transaction_id = 'practice-tx-123'
+        fill_price = '1.0950'
+
+    class FakeClient:
+        def __init__(self, token, account_id, environment, **kwargs):
+            self.token = token
+            self.account_id = account_id
+            self.environment = environment
+            self.kwargs = kwargs
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def create_market_order(self, instrument, units, *, stop_loss_price=None, take_profit_price=None, client_order_id=None):
+            assert instrument == 'EUR_USD'
+            assert units == 1200
+            assert stop_loss_price == '1.0850'
+            assert take_profit_price == '1.1100'
+            assert client_order_id.startswith('ui-')
+            return FakeResult()
+
+    monkeypatch.setattr('freqtrade.forex.api.OandaClient', FakeClient)
+    monkeypatch.setattr(
+        'freqtrade.forex.api.OandaSettings.from_environment',
+        lambda: type(
+            'Settings',
+            (),
+            {
+                'token': 'practice-token',
+                'account_id': 'practice-acct',
+                'environment': type('Env', (), {'value': 'practice'})(),
+                'execution_mode': 'practice',
+                'risk_fraction': '0.01',
+            },
+        )(),
+    )
+
+    login = client.post('/api/v1/auth/login', json={'username': 'operator', 'password': 'operator'})
+    token = login.json()['sessionToken']
+
+    response = client.post(
+        '/api/v1/orders/market',
+        json={
+            'symbol': 'EUR/USD',
+            'side': 'BUY',
+            'units': 1200,
+            'stopLoss': '1.0850',
+            'takeProfit': '1.1100',
+        },
+        headers={
+            'X-Session-Token': token,
+            'X-User-Role': 'operator',
+            'X-CSRF-Token': 'demo-token',
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload['environment'] == 'practice'
+    assert payload['status'] == 'filled'
+    assert payload['orderId'] == 'practice-order-123'
+
+
 def test_audit_log_redacts_tokens_and_exposes_only_metadata():
     login = client.post(
         '/api/v1/auth/login',

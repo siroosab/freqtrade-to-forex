@@ -897,14 +897,74 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         validate_write_access(user_role, csrf_token, session_token)
 
         resolved_user = resolve_session_user(session_token) or {"username": "anonymous", "role": user_role or "viewer"}
-        order = {
-            "status": "accepted",
-            "symbol": payload.get("symbol", "EUR/USD"),
-            "side": payload.get("side", "BUY"),
-            "volume": payload.get("volume", "0"),
-            "clientOrderId": payload.get("clientOrderId", "ui-demo-client-id"),
-            "role": user_role,
-        }
+        symbol = str(payload.get("symbol", "EUR/USD")).strip()
+        side = str(payload.get("side", "BUY")).upper().strip()
+        raw_units = payload.get("units", payload.get("volume", 0))
+        try:
+            units = int(float(raw_units))
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="units must be a number") from exc
+        if units == 0:
+            raise HTTPException(status_code=400, detail="units must not be zero")
+        if side not in {"BUY", "SELL"}:
+            raise HTTPException(status_code=400, detail="side must be BUY or SELL")
+
+        settings_obj = None
+        try:
+            settings_obj = OandaSettings.from_environment()
+        except ValueError:
+            settings_obj = None
+
+        instrument = symbol.replace("/", "_")
+        stop_loss = payload.get("stopLoss") or payload.get("stop_loss")
+        take_profit = payload.get("takeProfit") or payload.get("take_profit")
+        client_order_id = str(payload.get("clientOrderId") or f"ui-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}")
+        normalized_units = units if side == "BUY" else -units
+
+        if settings_obj and settings_obj.token and settings_obj.account_id:
+            try:
+                async with OandaClient(settings_obj.token, settings_obj.account_id, settings_obj.environment) as client:
+                    result = await client.create_market_order(
+                        instrument,
+                        normalized_units,
+                        stop_loss_price=str(stop_loss) if stop_loss else None,
+                        take_profit_price=str(take_profit) if take_profit else None,
+                        client_order_id=client_order_id,
+                    )
+            except OandaAPIError as exc:
+                raise HTTPException(status_code=502, detail=str(exc)) from exc
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+            order = {
+                "status": "filled" if result.fill_price is not None else "queued",
+                "symbol": symbol,
+                "side": side,
+                "units": normalized_units,
+                "volume": str(abs(normalized_units)),
+                "clientOrderId": client_order_id,
+                "orderId": result.order_id,
+                "transactionId": result.transaction_id,
+                "fillPrice": str(result.fill_price) if result.fill_price is not None else None,
+                "environment": getattr(getattr(settings_obj, 'environment', None), 'value', 'practice'),
+                "executionMode": getattr(settings_obj, 'execution_mode', 'practice'),
+                "role": user_role,
+            }
+        else:
+            order = {
+                "status": "accepted",
+                "symbol": symbol,
+                "side": side,
+                "units": normalized_units,
+                "volume": str(abs(normalized_units)),
+                "clientOrderId": client_order_id,
+                "orderId": f"demo-{client_order_id}",
+                "transactionId": None,
+                "fillPrice": None,
+                "environment": payload.get("environment", "practice"),
+                "executionMode": payload.get("executionMode", "practice"),
+                "role": user_role,
+            }
         record_audit_event(
             "orders.market.submit",
             details={
@@ -913,6 +973,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "volume": order["volume"],
                 "clientOrderId": order["clientOrderId"],
                 "status": order["status"],
+                "environment": order["environment"],
             },
             username=resolved_user["username"],
             role=resolved_user["role"],

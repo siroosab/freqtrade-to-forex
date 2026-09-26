@@ -772,12 +772,24 @@ export async function submitMarketOrder(
   order: {
     symbol: string
     side: 'BUY' | 'SELL'
-    volume: string
+    volume: number | string
     stopLoss?: string
     takeProfit?: string
+    units?: number | string
+    clientOrderId?: string
   },
   userRole: 'viewer' | 'operator' | 'admin' = 'operator',
 ) {
+  const payload = {
+    ...order,
+    units: order.units ?? order.volume,
+    clientOrderId: order.clientOrderId ?? `ui-${Date.now()}`,
+    role: userRole,
+    csrf_token: 'demo-token',
+    stopLoss: order.stopLoss,
+    takeProfit: order.takeProfit,
+  }
+
   const response = await fetch(buildApiUrl('/api/v1/orders/market'), {
     method: 'POST',
     headers: {
@@ -785,19 +797,21 @@ export async function submitMarketOrder(
       'X-User-Role': userRole,
       'X-CSRF-Token': 'demo-token',
     },
-    body: JSON.stringify({
-      ...order,
-      clientOrderId: `ui-${Date.now()}`,
-      role: userRole,
-      csrf_token: 'demo-token',
-    }),
+    body: JSON.stringify(payload),
   })
 
   if (!response.ok) {
-    throw new Error('Order submission rejected by backend')
+    let detail = 'Order submission rejected by backend'
+    try {
+      const errorPayload = await response.json() as { detail?: string }
+      detail = errorPayload.detail ?? detail
+    } catch {
+      // keep default detail if backend returned a non-JSON error body
+    }
+    throw new Error(detail)
   }
 
-  return response.json() as Promise<{ status: string; symbol: string; side: string; volume: string }>
+  return response.json() as Promise<{ status: string; symbol: string; side: string; volume: string; orderId?: string; transactionId?: string; fillPrice?: string | null; environment?: string; executionMode?: string }>
 }
 
 export { fallbackData }
