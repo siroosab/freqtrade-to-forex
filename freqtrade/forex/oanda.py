@@ -24,6 +24,10 @@ class OandaAPIError(RuntimeError):
     """Raised when OANDA rejects an API request."""
 
 
+class OandaMarketNotTradeableError(OandaAPIError):
+    """Raised when OANDA marks the instrument as non-tradeable or halted."""
+
+
 _SUPPORTED_ACCOUNT_TAGS = {
     "CFD": ("003", "CFD"),
     "SPREAD_BETTING": ("002", "Spread Betting"),
@@ -264,6 +268,18 @@ class OandaClient:
         )
         return [OandaPrice.from_payload(item) for item in payload["prices"]]
 
+    async def ensure_tradeable(self, instrument: str) -> OandaPrice:
+        prices = await self.get_prices((instrument,))
+        if not prices:
+            raise OandaMarketNotTradeableError(f"OANDA pricing is unavailable for {instrument}.")
+        price = prices[0]
+        if not price.tradeable:
+            raise OandaMarketNotTradeableError(
+                f"Order rejected: instrument {instrument} is not tradeable right now "
+                "(OANDA market halted, closed, or otherwise non-tradeable)."
+            )
+        return price
+
     async def get_account_summary(self) -> OandaAccountState:
         payload = await self._request(
             "GET", f"/v3/accounts/{self.account_id}/summary"
@@ -307,6 +323,7 @@ class OandaClient:
     ) -> OandaOrderResult:
         if units == 0:
             raise ValueError("OANDA order units cannot be zero")
+        await self.ensure_tradeable(instrument)
         order: dict[str, Any] = {
             "type": "MARKET",
             "instrument": instrument,

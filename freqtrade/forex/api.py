@@ -967,7 +967,8 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                         client_order_id=client_order_id,
                     )
             except OandaAPIError as exc:
-                raise HTTPException(status_code=502, detail=str(exc)) from exc
+                status_code = 409 if "not tradeable" in str(exc).lower() or "market halted" in str(exc).lower() else 502
+                raise HTTPException(status_code=status_code, detail=str(exc)) from exc
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
 

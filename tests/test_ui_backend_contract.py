@@ -248,6 +248,61 @@ def test_market_order_exposes_oanda_cancel_reason(monkeypatch):
     assert payload['reason'] == 'INSUFFICIENT_MARGIN'
 
 
+def test_market_order_rejects_non_tradeable_instrument(monkeypatch):
+    from freqtrade.forex.oanda import OandaMarketNotTradeableError
+
+    class FakeClient:
+        def __init__(self, token, account_id, environment, **kwargs):
+            self.token = token
+            self.account_id = account_id
+            self.environment = environment
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get_prices(self, instruments):
+            return [type('Price', (), {'tradeable': False, 'instrument': 'EUR_USD'})()]
+
+        async def create_market_order(self, instrument, units, *, stop_loss_price=None, take_profit_price=None, client_order_id=None):
+            raise OandaMarketNotTradeableError(
+                f"Order rejected: instrument {instrument} is not tradeable right now "
+                "(OANDA market halted, closed, or otherwise non-tradeable)."
+            )
+
+    monkeypatch.setattr('freqtrade.forex.api.OandaClient', FakeClient)
+    monkeypatch.setattr(
+        'freqtrade.forex.api.OandaSettings.from_environment',
+        lambda: type(
+            'Settings',
+            (),
+            {
+                'token': 'practice-token',
+                'account_id': 'practice-acct',
+                'environment': type('Env', (), {'value': 'practice'})(),
+                'execution_mode': 'practice',
+                'risk_fraction': '0.01',
+            },
+        )(),
+    )
+
+    login = client.post('/api/v1/auth/login', json={'username': 'operator', 'password': 'operator'})
+    token = login.json()['sessionToken']
+
+    response = client.post(
+        '/api/v1/orders/market',
+        json={'symbol': 'EUR/USD', 'side': 'BUY', 'units': 1200},
+        headers={'X-Session-Token': token, 'X-User-Role': 'operator', 'X-CSRF-Token': 'demo-token'},
+    )
+
+    assert response.status_code == 409, response.text
+    payload = response.json()
+    assert 'tradeable' in payload['detail'].lower()
+    assert 'market' in payload['detail'].lower()
+
+
 def test_audit_log_redacts_tokens_and_exposes_only_metadata():
     login = client.post(
         '/api/v1/auth/login',

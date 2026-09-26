@@ -73,7 +73,16 @@ export function DashboardPage() {
       setOrdersFeed([nextOrder, ...feed].slice(0, 10))
       setConfirmOpen(false)
     } catch (error) {
-      setOrderStatus({ status: 'rejected', orderId: undefined, transactionId: undefined, fillPrice: null, environment: undefined })
+      const message = error instanceof Error ? error.message : 'Order submission rejected by backend'
+      setOrderStatus({
+        status: 'rejected',
+        orderId: undefined,
+        transactionId: undefined,
+        fillPrice: null,
+        environment: undefined,
+        reason: message,
+        cancelReason: message,
+      })
       console.error(error)
     } finally {
       setIsSubmitting(false)

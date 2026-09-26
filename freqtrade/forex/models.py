@@ -211,6 +211,7 @@ class OandaPrice:
     time: str
     bid: Decimal
     ask: Decimal
+    tradeable: bool = True
 
     @property
     def spread(self) -> Decimal:
@@ -237,6 +238,7 @@ class OandaPrice:
             time=payload["time"],
             bid=Decimal(bid),
             ask=Decimal(ask),
+            tradeable=bool(payload.get("tradeable", True)),
         )
 
 
