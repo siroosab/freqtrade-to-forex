@@ -132,6 +132,38 @@ systemctl --user restart freqtrade-forex
 این flag فقط Live setup را مجاز می‌کند؛ در این پروژه حالت‌های مجاز فقط
 Practice و Live هستند.
 
+### 5.1. رفع خطای 404 فایل‌های UI بعد از به‌روزرسانی
+
+اگر بعد از `git pull` یا به‌روزرسانی پروژه، صفحه `/setup` باز می‌شود اما
+فایل‌های JavaScript و CSS داخل `/assets/...` با خطای `404 Not Found`
+برمی‌گردند، مشکل معمولاً مربوط به build قدیمی رابط کاربری است. این اتفاق
+زمانی رخ می‌دهد که فایل‌های Vite جدید تولید نشده‌اند و `index.html` به نام
+حافظه‌دار قدیمی اشاره می‌کند.
+
+در این حالت، پروژه را از شاخه `stable` بگیرید، محیط مجازی را فعال کنید، UI را
+بازسازی کنید و سپس سرور را دوباره راه‌اندازی کنید:
+
+```bash
+cd ~/forex_bot
+git fetch --all
+git checkout stable
+git pull --ff-only origin stable
+
+source .venv/bin/activate
+
+npm --prefix apps/ui install
+npm --prefix apps/ui run build
+
+pkill -f "uvicorn freqtrade.forex.api:app" || true
+python -m uvicorn freqtrade.forex.api:app --host 0.0.0.0 --port 8090
+```
+
+اگر فقط از ترمینال می‌خواهید اجرا کنید، همین دستور آخر بدون systemd کافی است.
+در این حالت نباید `/assets/index-*.js` 404 بدهد و رابط کاربری باید بدون خطای
+asset باز شود. اگر هنوز 404 مشاهده کردید، حتماً `Ctrl + F5` یا refresh کامل
+مرورگر را انجام دهید و مطمئن شوید یک نسخهٔ قبلی از uvicorn هنوز در حال اجرا
+نیست.
+
 ## به‌روزرسانی نصب موجود
 
 ### 6. به‌روزرسانی نصب سالم
