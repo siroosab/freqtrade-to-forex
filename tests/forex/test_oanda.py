@@ -123,10 +123,19 @@ def test_oanda_account_discovery_is_read_only_and_filters_supported_tags():
                     "accounts": [
                         {"id": "cfd-1", "tags": ["CFD"]},
                         {"id": "spread-1", "tags": ["SPREAD_BETTING", "MT4"]},
-                        {"id": "fx-1", "tags": []},
+                        {"id": "practice-v20", "tags": []},
+                        {"id": "practice-no-instruments", "tags": []},
+                        {"id": "unsupported-1", "tags": ["MT4"]},
                     ]
                 },
             )
+        if request.url.path.endswith("/instruments"):
+            instruments = (
+                [{"name": "EUR_USD"}]
+                if "/practice-v20/" in request.url.path
+                else []
+            )
+            return httpx.Response(200, json={"instruments": instruments})
         return httpx.Response(
             200,
             json={"account": {"alias": "Primary", "currency": "GBP", "NAV": "10000", "marginAvailable": "9000"}},
@@ -150,11 +159,38 @@ def test_oanda_account_discovery_is_read_only_and_filters_supported_tags():
         "label": "Spread Betting",
     }
     assert classify_oanda_account(["MT4"]) is None
-    assert [account["accountTypeCode"] for account in result["accounts"]] == ["003", "002"]
+    assert [account["accountTypeCode"] for account in result["accounts"]] == [
+        "003",
+        "002",
+        "PRACTICE",
+    ]
     assert result["accounts"][1]["tags"] == ["MT4", "SPREAD_BETTING"]
-    assert result["excludedAccountCount"] == 1
+    assert result["excludedAccountCount"] == 2
+    assert result["accounts"][2]["instrumentCount"] == 1
     assert methods and set(methods) == {"GET"}
     assert "test-token" not in repr(result)
+
+
+def test_untagged_oanda_live_account_is_not_accepted_as_practice_fallback():
+    methods: list[str] = []
+
+    def response_for(request: httpx.Request) -> httpx.Response:
+        methods.append(request.method)
+        return httpx.Response(200, json={"accounts": [{"id": "live-untagged", "tags": []}]})
+
+    async def discover():
+        async with httpx.AsyncClient(
+            base_url=OandaEnvironment.LIVE.rest_url,
+            transport=httpx.MockTransport(response_for),
+        ) as http_client:
+            return await discover_oanda_accounts(
+                "test-token", OandaEnvironment.LIVE, http_client=http_client
+            )
+
+    result = asyncio.run(discover())
+
+    assert result == {"accounts": [], "excludedAccountCount": 1}
+    assert methods == ["GET"]
 
 
 def test_units_for_fixed_risk_uses_stop_distance() -> None:

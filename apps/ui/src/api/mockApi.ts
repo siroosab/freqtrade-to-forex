@@ -489,7 +489,7 @@ export type SetupStatus = {
 export type SetupPayload = {
   token: string
   accountId: string
-  accountTypeCode: '002' | '003' | ''
+  accountTypeCode: '002' | '003' | 'PRACTICE' | ''
   accountConfirmed: boolean
   liveConfirmed: boolean
   environment: 'practice' | 'live'
@@ -501,8 +501,8 @@ export type SetupPayload = {
 
 export type SetupAccount = {
   accountId: string
-  accountTypeCode: '002' | '003'
-  accountType: 'CFD' | 'Spread Betting'
+  accountTypeCode: '002' | '003' | 'PRACTICE'
+  accountType: 'CFD' | 'Spread Betting' | 'Practice / V20'
   tags: string[]
   summary: {
     alias?: string
@@ -512,6 +512,7 @@ export type SetupAccount = {
     marginAvailable?: string
   } | null
   summaryAccessible: boolean
+  instrumentCount?: number | null
 }
 
 export type SetupDiscovery = {

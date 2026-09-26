@@ -1646,6 +1646,11 @@
   color: #bbf7d0;
 }
 
+.account-type-code.code-PRACTICE {
+  border-color: rgba(251, 191, 36, 0.3);
+  color: #fde68a;
+}
+
 .account-choice-id {
   overflow-wrap: anywhere;
   margin-top: 5px;

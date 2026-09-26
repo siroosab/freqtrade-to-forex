@@ -259,6 +259,46 @@ def test_live_setup_requires_server_side_confirmation_flag(monkeypatch, tmp_path
     assert 'OANDA_LIVE_CONFIRM=1' in response.json()['detail']
     assert not (tmp_path / 'live-config.json').exists()
 
+
+def test_untagged_practice_v20_account_can_be_confirmed(monkeypatch, tmp_path):
+    async def verified_practice_account(token, environment):
+        assert token == 'practice-token'
+        assert environment.value == 'practice'
+        return {
+            'accounts': [{
+                'accountId': 'practice-account',
+                'accountTypeCode': 'PRACTICE',
+                'accountType': 'Practice / V20',
+                'tags': [],
+                'summary': {'alias': 'Practice', 'currency': 'GBP'},
+                'summaryAccessible': True,
+                'instrumentCount': 123,
+            }],
+            'excludedAccountCount': 0,
+        }
+
+    monkeypatch.setattr(
+        'freqtrade.forex.api.discover_oanda_accounts', verified_practice_account
+    )
+    response = client.post(
+        '/api/v1/setup',
+        json={
+            'token': 'practice-token',
+            'accountId': 'practice-account',
+            'accountTypeCode': 'PRACTICE',
+            'accountConfirmed': True,
+            'liveConfirmed': False,
+            'environment': 'practice',
+            'executionMode': 'dry_run',
+            'instruments': ['EUR_USD'],
+            'riskFraction': '0.01',
+            'configPath': str(tmp_path / 'practice-config.json'),
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()['accountType'] == 'Practice / V20'
+
     runtime = client.get('/api/v1/setup/runtime')
     assert runtime.status_code == 200, runtime.text
     assert runtime.json()['state'] in {'running', 'paused', 'stopped'}

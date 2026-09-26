@@ -55,10 +55,12 @@ Vite process is not required on the VPS.
 
 Open `http://SERVER_IP:8090/setup` in a browser. Choose Practice or Live and
 enter the token for that environment. Account discovery uses GET requests only;
-it lists supported CFD (`003`) and Spread Betting (`002`) accounts, including
-their read-only summaries. Select an account and confirm it before saving.
-Other account types cannot be selected. The token is not saved until the
-confirmed setup is submitted and is never placed in the browser URL.
+for Live it lists supported CFD (`003`) and Spread Betting (`002`) accounts.
+Practice accounts whose API response omits type tags are listed as
+`Practice / V20` only when both the account summary and tradable instruments
+are readable. Select an account and confirm it before saving. Other accounts
+cannot be selected. The token is not saved until the confirmed setup is
+submitted and is never placed in the browser URL.
 
 Live requires both the explicit confirmation in the page and the server
 environment variable `OANDA_LIVE_CONFIRM=1`. Keep execution mode on Dry-run

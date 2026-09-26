@@ -34,7 +34,7 @@ def classify_oanda_account(tags: Any) -> dict[str, str] | None:
     """Return the supported bot account class for OANDA's account tags."""
     if isinstance(tags, str):
         normalized_tags = {tags.strip().upper()}
-    elif isinstance(tags, Sequence):
+    elif isinstance(tags, Sequence | set | frozenset):
         normalized_tags = {str(tag).strip().upper() for tag in tags}
     else:
         normalized_tags = set()
@@ -70,8 +70,12 @@ async def discover_oanda_accounts(
         excluded_count = 0
         for account in payload.get("accounts", []):
             account_id = str(account.get("id", "")).strip()
-            account_type = classify_oanda_account(account.get("tags", []))
-            if not account_id or account_type is None:
+            tags = classify_tags(account.get("tags", []))
+            account_type = classify_oanda_account(tags)
+            practice_v20_candidate = (
+                environment is OandaEnvironment.PRACTICE and not tags
+            )
+            if not account_id or (account_type is None and not practice_v20_candidate):
                 excluded_count += 1
                 continue
 
@@ -91,14 +95,33 @@ async def discover_oanda_accounts(
                     if key in summary_payload
                 }
 
+            instrument_count: int | None = None
+            if practice_v20_candidate:
+                instruments_response = await client.get(
+                    f"/v3/accounts/{account_id}/instruments"
+                )
+                if not instruments_response.is_error:
+                    instruments = instruments_response.json().get("instruments", [])
+                    instrument_count = len(instruments)
+                if summary is not None and instrument_count:
+                    account_type = {"code": "PRACTICE", "label": "Practice / V20"}
+                else:
+                    excluded_count += 1
+                    continue
+
+            if account_type is None:
+                excluded_count += 1
+                continue
+
             accounts.append(
                 {
                     "accountId": account_id,
                     "accountTypeCode": account_type["code"],
                     "accountType": account_type["label"],
-                    "tags": sorted(classify_tags(account.get("tags", []))),
+                    "tags": sorted(tags),
                     "summary": summary,
                     "summaryAccessible": summary is not None,
+                    "instrumentCount": instrument_count,
                 }
             )
         return {"accounts": accounts, "excludedAccountCount": excluded_count}

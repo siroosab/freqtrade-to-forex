@@ -997,8 +997,14 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         if payload.get("accountConfirmed") is not True:
             raise HTTPException(status_code=400, detail="Confirm the selected OANDA account before saving")
         expected_type_code = str(payload.get("accountTypeCode", ""))
-        if expected_type_code not in {"002", "003"}:
-            raise HTTPException(status_code=400, detail="Only Spread Betting (002) and CFD (003) accounts are supported")
+        supported_type = expected_type_code in {"002", "003"} or (
+            environment == "practice" and expected_type_code == "PRACTICE"
+        )
+        if not supported_type:
+            raise HTTPException(
+                status_code=400,
+                detail="Live supports Spread Betting (002) and CFD (003); Practice also supports verified V20 accounts.",
+            )
         if environment == "live":
             if payload.get("liveConfirmed") is not True:
                 raise HTTPException(status_code=400, detail="Explicitly confirm that this is a Live OANDA account")
