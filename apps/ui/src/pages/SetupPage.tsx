@@ -1,11 +1,14 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { ChangeEvent, FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { controlRuntime, discoverSetupAccounts, getRuntimeStatus, getSetupFileUrl, getSetupInstruments, saveSetup, uploadSetupFile, type SetupAccount, type SetupPayload } from '../api/mockApi'
+import { useUiStore } from '../store/useUiStore'
 
 export function SetupPage() {
   const navigate = useNavigate()
+  const sharedInstruments = useUiStore((state) => state.selectedInstruments)
+  const setSelectedInstruments = useUiStore((state) => state.setSelectedInstruments)
   const [form, setForm] = useState<SetupPayload>({
     token: '',
     accountId: '',
@@ -13,8 +16,8 @@ export function SetupPage() {
     accountConfirmed: false,
     liveConfirmed: false,
     environment: 'practice',
-    instruments: ['EUR_USD', 'GBP_USD'],
-    pairTimeframes: { EUR_USD: '5m', GBP_USD: '1h' },
+    instruments: sharedInstruments.map((item) => item.replace('/', '_')),
+    pairTimeframes: Object.fromEntries(sharedInstruments.map((item) => [item.replace('/', '_'), item.includes('GBP') ? '1h' : '5m'])),
     riskFraction: '0.01',
   })
   const [error, setError] = useState<string | null>(null)
@@ -33,11 +36,18 @@ export function SetupPage() {
     retry: false,
   })
 
+  useEffect(() => {
+    setSelectedInstruments(form.instruments.map((item) => item.replace(/_/g, '/')))
+  }, [form.instruments, setSelectedInstruments])
+
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     setError(null)
     mutation.mutate(form, {
-      onSuccess: () => navigate('/', { replace: true }),
+      onSuccess: () => {
+        setSelectedInstruments(form.instruments.map((item) => item.replace(/_/g, '/')))
+        navigate('/', { replace: true })
+      },
       onError: (reason) => setError(reason instanceof Error ? reason.message : 'Setup was rejected'),
     })
   }

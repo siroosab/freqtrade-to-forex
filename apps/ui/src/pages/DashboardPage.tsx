@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { getAccountSummary, getMarketSummary, submitMarketOrder } from '../api/mockApi'
 import { useForexSocket } from '../hooks/useForexSocket'
 import { useUiStore } from '../store/useUiStore'
@@ -9,7 +9,8 @@ const pnlSeries = [18, 36, 28, 52, 45, 68, 62, 80, 72, 88, 84, 96]
 export function DashboardPage() {
   useForexSocket()
   const [confirmOpen, setConfirmOpen] = useState(false)
-  const [instrument, setInstrument] = useState('EUR/USD')
+  const selectedInstruments = useUiStore((state) => state.selectedInstruments)
+  const [instrument, setInstrument] = useState(selectedInstruments[0] ?? 'EUR/USD')
   const [side, setSide] = useState<'BUY' | 'SELL'>('BUY')
   const [units, setUnits] = useState(1200)
   const [riskPercent, setRiskPercent] = useState(0.75)
@@ -27,6 +28,15 @@ export function DashboardPage() {
 
   const account = liveAccount ?? accountQuery.data
   const market = liveMarket ?? marketQuery.data
+
+  const instrumentOptions = selectedInstruments.length ? selectedInstruments : ['EUR/USD', 'GBP/USD', 'USD/JPY']
+  const activeInstrument = instrumentOptions.includes(instrument) ? instrument : instrumentOptions[0] ?? 'EUR/USD'
+
+  useEffect(() => {
+    if (instrument !== activeInstrument) {
+      setInstrument(activeInstrument)
+    }
+  }, [activeInstrument, instrument])
 
   const recommendedUnits = useMemo(() => {
     if (!Number.isFinite(units) || units <= 0) return 0
@@ -293,10 +303,10 @@ export function DashboardPage() {
             <div className="field-row">
               <label>
                 <span>Instrument</span>
-                <select value={instrument} onChange={(event) => setInstrument(event.target.value)}>
-                  <option value="EUR/USD">EUR/USD</option>
-                  <option value="GBP/USD">GBP/USD</option>
-                  <option value="USD/JPY">USD/JPY</option>
+                <select value={activeInstrument} onChange={(event) => setInstrument(event.target.value)}>
+                  {instrumentOptions.map((pair) => (
+                    <option key={pair} value={pair}>{pair}</option>
+                  ))}
                 </select>
               </label>
               <label>
@@ -410,7 +420,7 @@ export function DashboardPage() {
             <p className="eyebrow">Write action requires confirmation</p>
             <h3>Confirm order submission</h3>
             <p>
-              This action would submit a live order for <strong>EUR/USD</strong> with risk policy checks and a client order id.
+              This action would submit a live order for <strong>{activeInstrument}</strong> with risk policy checks and a client order id.
             </p>
             <div className="modal-actions">
               <button className="secondary-action" onClick={() => setConfirmOpen(false)}>

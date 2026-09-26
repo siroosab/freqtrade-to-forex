@@ -1,12 +1,17 @@
 import { useQuery } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { getOrders, getOrdersChart } from '../api/mockApi'
 import { ForexChart } from '../components/ForexChart'
 import { useUiStore } from '../store/useUiStore'
 
 export function OrdersPage() {
   const { data } = useQuery({ queryKey: ['orders'], queryFn: getOrders })
-  const [pair, setPair] = useState('EUR/USD')
+  const availablePairs = useUiStore((state) => state.selectedInstruments)
+  const [pair, setPair] = useState(availablePairs[0] ?? 'EUR/USD')
+  useEffect(() => {
+    if (!availablePairs.length) return
+    setPair((current) => (availablePairs.includes(current) ? current : availablePairs[0]))
+  }, [availablePairs])
   const [timeframe, setTimeframe] = useState('M15')
   const chartQuery = useQuery({ queryKey: ['orders-chart', pair, timeframe], queryFn: () => getOrdersChart(pair, timeframe), refetchInterval: 30000 })
   const liveOrders = useUiStore((state) => state.ordersFeed)
@@ -25,7 +30,7 @@ export function OrdersPage() {
       <section className="panel page-panel">
         <div className="panel-header compact">
           <div><p className="eyebrow">Market context</p><h3>Signals and trade map</h3></div>
-          <div className="chart-controls"><select value={pair} onChange={(event) => setPair(event.target.value)}><option>EUR/USD</option><option>GBP/USD</option><option>USD/JPY</option></select><select value={timeframe} onChange={(event) => setTimeframe(event.target.value)}><option>M5</option><option>M15</option><option>H1</option></select></div>
+          <div className="chart-controls"><select value={pair} onChange={(event) => setPair(event.target.value)}>{(availablePairs.length ? availablePairs : ['EUR/USD','GBP/USD','USD/JPY']).map((item) => <option key={item} value={item}>{item}</option>)}</select><select value={timeframe} onChange={(event) => setTimeframe(event.target.value)}><option>M5</option><option>M15</option><option>H1</option></select></div>
         </div>
         {chartQuery.isLoading && <p>Loading broker candles and approved strategy signals…</p>}
         {chartQuery.isError && <p>Chart data unavailable from the broker API.</p>}

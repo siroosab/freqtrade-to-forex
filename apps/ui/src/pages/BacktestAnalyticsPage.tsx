@@ -1,6 +1,7 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import { getBacktestJob, getBacktestSummary, runBacktest, type BacktestRunResult } from '../api/mockApi'
+import { useUiStore } from '../store/useUiStore'
 
 function readNumber(value: string | undefined) {
   const cleaned = Number.parseFloat((value ?? '0').replace(/[^\d.-]/g, ''))
@@ -10,7 +11,12 @@ function readNumber(value: string | undefined) {
 export function BacktestAnalyticsPage() {
   const { data, isLoading, isError, refetch } = useQuery({ queryKey: ['backtests'], queryFn: getBacktestSummary })
   const runMutation = useMutation({ mutationFn: runBacktest })
-  const [pair, setPair] = useState('EUR/USD')
+  const availablePairs = useUiStore((state) => state.selectedInstruments)
+  const [pair, setPair] = useState(availablePairs[0] ?? 'EUR/USD')
+  useEffect(() => {
+    if (!availablePairs.length) return
+    setPair((current) => (availablePairs.includes(current) ? current : availablePairs[0]))
+  }, [availablePairs])
   const [timeframe, setTimeframe] = useState('M5')
   const [historyMode, setHistoryMode] = useState<'candles' | 'days'>('candles')
   const [historyValue, setHistoryValue] = useState(250)
@@ -110,9 +116,7 @@ export function BacktestAnalyticsPage() {
           <label className="field-block">
             <span>Pair</span>
             <select value={pair} onChange={(event) => setPair(event.target.value)}>
-              <option value="EUR/USD">EUR/USD</option>
-              <option value="GBP/USD">GBP/USD</option>
-              <option value="USD/JPY">USD/JPY</option>
+              {(availablePairs.length ? availablePairs : ['EUR/USD','GBP/USD','USD/JPY']).map((item) => <option key={item} value={item}>{item}</option>)}
             </select>
           </label>
 

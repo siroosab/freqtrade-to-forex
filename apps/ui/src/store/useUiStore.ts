@@ -39,6 +39,23 @@ type OrdersFeed = Array<{
   risk: string
 }>
 
+const DEFAULT_INSTRUMENTS = ['EUR/USD', 'GBP/USD', 'USD/JPY']
+
+const normalizeInstrumentValue = (value: string) => {
+  const cleaned = String(value ?? '').trim().toUpperCase()
+  if (!cleaned) return null
+  return cleaned.includes('/') ? cleaned : cleaned.replace(/_/g, '/')
+}
+
+const normalizeInstrumentList = (items: string[]) => {
+  const picked = new Set<string>()
+  for (const item of items) {
+    const normalized = normalizeInstrumentValue(item)
+    if (normalized) picked.add(normalized)
+  }
+  return Array.from(picked)
+}
+
 type UiState = {
   executionMode: ExecutionMode
   environment: UiEnvironment
@@ -48,6 +65,7 @@ type UiState = {
   marketFeed: MarketFeed | null
   accountFeed: AccountFeed | null
   ordersFeed: OrdersFeed | null
+  selectedInstruments: string[]
   setExecutionMode: (mode: ExecutionMode) => void
   setEnvironment: (environment: UiEnvironment) => void
   setConnectionState: (state: UiState['connectionState']) => void
@@ -56,6 +74,9 @@ type UiState = {
   setMarketFeed: (snapshot: MarketFeed) => void
   setAccountFeed: (snapshot: AccountFeed) => void
   setOrdersFeed: (snapshot: OrdersFeed) => void
+  setSelectedInstruments: (instruments: string[]) => void
+  addSelectedInstrument: (instrument: string) => void
+  removeSelectedInstrument: (instrument: string) => void
 }
 
 const safeStorage = {
@@ -105,6 +126,7 @@ export const useUiStore = create<UiState>()(
       marketFeed: null,
       accountFeed: null,
       ordersFeed: null,
+      selectedInstruments: DEFAULT_INSTRUMENTS,
       setExecutionMode: (mode) => set({ executionMode: mode }),
       setEnvironment: (environment) =>
         set((state) => {
@@ -130,6 +152,19 @@ export const useUiStore = create<UiState>()(
       setMarketFeed: (snapshot) => set({ marketFeed: snapshot }),
       setAccountFeed: (snapshot) => set({ accountFeed: snapshot }),
       setOrdersFeed: (snapshot) => set({ ordersFeed: snapshot }),
+      setSelectedInstruments: (instruments) => set({ selectedInstruments: normalizeInstrumentList(instruments) }),
+      addSelectedInstrument: (instrument) =>
+        set((state) => {
+          const normalized = normalizeInstrumentValue(instrument)
+          if (!normalized || state.selectedInstruments.includes(normalized)) return state
+          return { selectedInstruments: [...state.selectedInstruments, normalized] }
+        }),
+      removeSelectedInstrument: (instrument) =>
+        set((state) => {
+          const normalized = normalizeInstrumentValue(instrument)
+          if (!normalized) return state
+          return { selectedInstruments: state.selectedInstruments.filter((item) => item !== normalized) }
+        }),
     }),
     {
       name: 'fx-control-ui-preferences',
@@ -138,6 +173,7 @@ export const useUiStore = create<UiState>()(
         executionMode: state.executionMode,
         environment: state.environment,
         userRole: state.userRole,
+        selectedInstruments: state.selectedInstruments,
       }),
       version: 1,
     },
