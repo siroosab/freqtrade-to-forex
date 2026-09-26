@@ -980,7 +980,6 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         token = str(payload.get("token", "")).strip()
         account_id = str(payload.get("accountId", "")).strip()
         environment = str(payload.get("environment", "practice")).strip().lower()
-        execution_mode = str(payload.get("executionMode", "dry_run")).strip().lower()
         instruments = [
             str(item).strip().upper().replace("/", "_")
             for item in payload.get("instruments", ["EUR_USD", "GBP_USD"])
@@ -994,6 +993,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             raise HTTPException(status_code=400, detail="token and accountId are required")
         if environment not in {"practice", "live"}:
             raise HTTPException(status_code=400, detail="environment must be practice or live")
+        execution_mode = environment
         if payload.get("accountConfirmed") is not True:
             raise HTTPException(status_code=400, detail="Confirm the selected OANDA account before saving")
         expected_type_code = str(payload.get("accountTypeCode", ""))
@@ -1027,10 +1027,6 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         )
         if selected_account is None:
             raise HTTPException(status_code=400, detail="Selected account could not be verified as a supported OANDA account")
-        if execution_mode not in {"dry_run", "practice"}:
-            raise HTTPException(status_code=400, detail="executionMode must be dry_run or practice")
-        if environment == "live" and execution_mode != "dry_run":
-            raise HTTPException(status_code=400, detail="Live account setup is restricted to dry_run execution")
         if not instruments:
             raise HTTPException(status_code=400, detail="at least one instrument is required")
         if not Decimal("0") < risk_fraction <= Decimal("1"):

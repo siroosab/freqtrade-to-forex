@@ -477,7 +477,7 @@ export async function getSettings(): Promise<AppSettings> {
 export type SetupStatus = {
   configured: boolean
   environment: 'practice' | 'live'
-  executionMode: 'dry_run' | 'practice'
+  executionMode: 'dry_run' | 'practice' | 'live'
   instruments: string[]
   pairTimeframes: Record<string, string>
   accountIdConfigured: boolean
@@ -493,7 +493,6 @@ export type SetupPayload = {
   accountConfirmed: boolean
   liveConfirmed: boolean
   environment: 'practice' | 'live'
-  executionMode: 'dry_run' | 'practice'
   instruments: string[]
   pairTimeframes: Record<string, string>
   riskFraction: string

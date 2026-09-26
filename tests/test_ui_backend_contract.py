@@ -204,7 +204,7 @@ def test_setup_runtime_and_file_endpoints_work_with_configured_paths(monkeypatch
             'accountConfirmed': True,
             'liveConfirmed': False,
             'environment': 'practice',
-            'executionMode': 'practice',
+            'executionMode': 'dry_run',
             'instruments': ['EUR_USD', 'GBP_USD'],
             'pairTimeframes': {'EUR_USD': '5m', 'GBP_USD': '1h'},
             'riskFraction': '0.01',
@@ -249,7 +249,7 @@ def test_live_setup_requires_server_side_confirmation_flag(monkeypatch, tmp_path
             'accountConfirmed': True,
             'liveConfirmed': True,
             'environment': 'live',
-            'executionMode': 'dry_run',
+            'executionMode': 'practice',
             'instruments': ['EUR_USD'],
             'riskFraction': '0.01',
             'configPath': str(tmp_path / 'live-config.json'),
@@ -258,6 +258,48 @@ def test_live_setup_requires_server_side_confirmation_flag(monkeypatch, tmp_path
     assert response.status_code == 403
     assert 'OANDA_LIVE_CONFIRM=1' in response.json()['detail']
     assert not (tmp_path / 'live-config.json').exists()
+
+
+def test_live_mode_maps_environment_to_live_execution(monkeypatch, tmp_path):
+    monkeypatch.setenv('OANDA_LIVE_CONFIRM', '1')
+
+    async def verified_live_account(token, environment):
+        assert token == 'live-token'
+        assert environment.value == 'live'
+        return {
+            'accounts': [{
+                'accountId': 'live-account',
+                'accountTypeCode': '003',
+                'accountType': 'CFD',
+                'tags': ['CFD'],
+                'summary': {'alias': 'Live CFD', 'currency': 'GBP'},
+                'summaryAccessible': True,
+            }],
+            'excludedAccountCount': 0,
+        }
+
+    monkeypatch.setattr('freqtrade.forex.api.discover_oanda_accounts', verified_live_account)
+    response = client.post(
+        '/api/v1/setup',
+        json={
+            'token': 'live-token',
+            'accountId': 'live-account',
+            'accountTypeCode': '003',
+            'accountConfirmed': True,
+            'liveConfirmed': True,
+            'environment': 'live',
+            'executionMode': 'dry_run',
+            'instruments': ['EUR_USD'],
+            'riskFraction': '0.01',
+            'configPath': str(tmp_path / 'live-config.json'),
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()['executionMode'] == 'live'
+    saved = json.loads((tmp_path / 'live-config.json').read_text(encoding='utf-8'))
+    assert saved['exchange']['oanda_environment'] == 'live'
+    assert saved['exchange']['oanda_execution_mode'] == 'live'
 
 
 def test_untagged_practice_v20_account_can_be_confirmed(monkeypatch, tmp_path):
@@ -289,7 +331,7 @@ def test_untagged_practice_v20_account_can_be_confirmed(monkeypatch, tmp_path):
             'accountConfirmed': True,
             'liveConfirmed': False,
             'environment': 'practice',
-            'executionMode': 'dry_run',
+            'executionMode': 'live',
             'instruments': ['EUR_USD'],
             'riskFraction': '0.01',
             'configPath': str(tmp_path / 'practice-config.json'),
@@ -298,6 +340,7 @@ def test_untagged_practice_v20_account_can_be_confirmed(monkeypatch, tmp_path):
 
     assert response.status_code == 200, response.text
     assert response.json()['accountType'] == 'Practice / V20'
+    assert response.json()['executionMode'] == 'practice'
 
     runtime = client.get('/api/v1/setup/runtime')
     assert runtime.status_code == 200, runtime.text

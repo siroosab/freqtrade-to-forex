@@ -63,8 +63,8 @@ cannot be selected. The token is not saved until the confirmed setup is
 submitted and is never placed in the browser URL.
 
 Live requires both the explicit confirmation in the page and the server
-environment variable `OANDA_LIVE_CONFIRM=1`. Keep execution mode on Dry-run
-until the Live configuration has been separately reviewed.
+environment variable `OANDA_LIVE_CONFIRM=1`. In this project, the only setup
+modes are Practice and Live; there is no third execution selector.
 
 For a user-level systemd service, enable the Live setup gate only when needed:
 
@@ -75,8 +75,8 @@ systemctl --user daemon-reload
 systemctl --user restart freqtrade-forex
 ```
 
-This gate permits saving a Live account configuration; setup still restricts
-execution to Dry-run.
+This gate permits saving a Live account configuration; the only setup modes
+remain Practice and Live.
 
 The non-interactive config-only step can also be rerun safely:
 
