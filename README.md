@@ -132,7 +132,39 @@ systemctl --user restart freqtrade-forex
 این flag فقط Live setup را مجاز می‌کند؛ در این پروژه حالت‌های مجاز فقط
 Practice و Live هستند.
 
-### 5.1. رفع خطای 404 فایل‌های UI بعد از به‌روزرسانی
+### 5.1. رفتار صحیح سفارش‌های Market و علت لغو توسط OANDA
+
+در OANDA، پاسخ HTTP 200 از `POST /v3/accounts/{account}/orders` به‌تنهایی
+به معنای Filled شدن سفارش نیست. برای حالت Market Order باید پاسخ کامل
+بروکر بررسی شود و به‌ویژه فیلدهای `orderFillTransaction` و
+`orderCancelTransaction.reason` در نظر گرفته شوند.
+
+- اگر `orderFillTransaction` وجود داشته باشد، سفارش واقعی اجرا شده است و
+  فیلد `fillPrice` باید استفاده شود.
+- اگر `orderCancelTransaction` وجود داشته باشد، سفارش توسط OANDA لغو شده و
+  علت دقیق در `orderCancelTransaction.reason` آمده است؛ مثلاً
+  `INSUFFICIENT_MARGIN`, `CLIENT_REQUEST`, `MARKET_HALTED` و غیره.
+- عبارت سادهٔ `Order Cancelled` به‌تنهایی کافی نیست، چون علت واقعی باید در
+  UI و API نمایش داده شود.
+
+در این پروژه، نتیجهٔ سفارش API باید این شکل باشد:
+
+```json
+{
+  "status": "cancelled",
+  "orderId": "12345",
+  "transactionId": "67890",
+  "fillPrice": null,
+  "reason": "INSUFFICIENT_MARGIN",
+  "cancelReason": "INSUFFICIENT_MARGIN"
+}
+```
+
+این نکته برای تست‌های Practice و Live مهم است: نباید سفارش فقط به خاطر اینکه
+HTTP 200 برگشته است، به‌عنوان Filled فرض شود؛ باید وضعیت نهایی broker
+مشاهده و در داشبورد نشان داده شود.
+
+### 5.2. رفع خطای 404 فایل‌های UI بعد از به‌روزرسانی
 
 اگر بعد از `git pull` یا به‌روزرسانی پروژه، صفحه `/setup` باز می‌شود اما
 فایل‌های JavaScript و CSS داخل `/assets/...` با خطای `404 Not Found`

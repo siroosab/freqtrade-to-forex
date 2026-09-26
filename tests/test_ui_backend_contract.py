@@ -193,6 +193,61 @@ def test_practice_order_submit_uses_real_oanda_gateway(monkeypatch):
     assert payload['orderId'] == 'practice-order-123'
 
 
+def test_market_order_exposes_oanda_cancel_reason(monkeypatch):
+    class FakeResult:
+        order_id = 'practice-order-cancelled'
+        transaction_id = 'practice-tx-cancelled'
+        fill_price = None
+        cancel_reason = 'INSUFFICIENT_MARGIN'
+        units = 1200
+
+    class FakeClient:
+        def __init__(self, token, account_id, environment, **kwargs):
+            self.token = token
+            self.account_id = account_id
+            self.environment = environment
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def create_market_order(self, instrument, units, *, stop_loss_price=None, take_profit_price=None, client_order_id=None):
+            return FakeResult()
+
+    monkeypatch.setattr('freqtrade.forex.api.OandaClient', FakeClient)
+    monkeypatch.setattr(
+        'freqtrade.forex.api.OandaSettings.from_environment',
+        lambda: type(
+            'Settings',
+            (),
+            {
+                'token': 'practice-token',
+                'account_id': 'practice-acct',
+                'environment': type('Env', (), {'value': 'practice'})(),
+                'execution_mode': 'practice',
+                'risk_fraction': '0.01',
+            },
+        )(),
+    )
+
+    login = client.post('/api/v1/auth/login', json={'username': 'operator', 'password': 'operator'})
+    token = login.json()['sessionToken']
+
+    response = client.post(
+        '/api/v1/orders/market',
+        json={'symbol': 'EUR/USD', 'side': 'BUY', 'units': 1200},
+        headers={'X-Session-Token': token, 'X-User-Role': 'operator', 'X-CSRF-Token': 'demo-token'},
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload['status'] == 'cancelled'
+    assert payload['cancelReason'] == 'INSUFFICIENT_MARGIN'
+    assert payload['reason'] == 'INSUFFICIENT_MARGIN'
+
+
 def test_audit_log_redacts_tokens_and_exposes_only_metadata():
     login = client.post(
         '/api/v1/auth/login',

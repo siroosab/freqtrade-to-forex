@@ -811,7 +811,7 @@ export async function submitMarketOrder(
     throw new Error(detail)
   }
 
-  return response.json() as Promise<{ status: string; symbol: string; side: string; volume: string; orderId?: string; transactionId?: string; fillPrice?: string | null; environment?: string; executionMode?: string }>
+  return response.json() as Promise<{ status: string; symbol: string; side: string; volume: string; orderId?: string; transactionId?: string; fillPrice?: string | null; environment?: string; executionMode?: string; reason?: string | null; cancelReason?: string | null }>
 }
 
 export { fallbackData }

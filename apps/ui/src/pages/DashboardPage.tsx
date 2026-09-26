@@ -15,7 +15,7 @@ export function DashboardPage() {
   const [riskPercent, setRiskPercent] = useState(0.75)
   const [stopLoss, setStopLoss] = useState('1.0835')
   const [takeProfit, setTakeProfit] = useState('1.0995')
-  const [orderStatus, setOrderStatus] = useState<{ status: string; orderId?: string; transactionId?: string; fillPrice?: string | null; environment?: string } | null>(null)
+  const [orderStatus, setOrderStatus] = useState<{ status: string; orderId?: string; transactionId?: string; fillPrice?: string | null; environment?: string; reason?: string | null; cancelReason?: string | null } | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
 
   const accountQuery = useQuery({ queryKey: ['account'], queryFn: getAccountSummary })
@@ -56,7 +56,7 @@ export function DashboardPage() {
         symbol: result.symbol,
         side: result.side === 'SELL' ? 'SELL' : 'BUY',
         volume: result.volume ?? String(units),
-        status: result.status === 'filled' ? 'Filled' : result.status === 'queued' ? 'Pending' : 'Rejected',
+        status: result.status === 'filled' ? 'Filled' : result.status === 'cancelled' ? 'Cancelled' : result.status === 'queued' ? 'Pending' : 'Rejected',
         createdAt: new Date().toISOString(),
         risk: `${riskPercent}%`,
       } as const
@@ -66,6 +66,8 @@ export function DashboardPage() {
         transactionId: result.transactionId,
         fillPrice: result.fillPrice,
         environment: result.environment,
+        reason: result.reason ?? result.cancelReason ?? null,
+        cancelReason: result.cancelReason ?? result.reason ?? null,
       })
       const feed = useUiStore.getState().ordersFeed ?? []
       setOrdersFeed([nextOrder, ...feed].slice(0, 10))
@@ -348,6 +350,7 @@ export function DashboardPage() {
                 <div><span>Order ID</span><strong>{orderStatus.orderId ?? '—'}</strong></div>
                 <div><span>Transaction</span><strong>{orderStatus.transactionId ?? '—'}</strong></div>
                 <div><span>Fill price</span><strong>{orderStatus.fillPrice ?? '—'}</strong></div>
+                <div><span>Reason</span><strong>{orderStatus.reason ?? orderStatus.cancelReason ?? '—'}</strong></div>
               </div>
             )}
           </div>

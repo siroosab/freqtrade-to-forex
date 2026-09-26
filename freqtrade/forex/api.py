@@ -971,8 +971,10 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+            cancel_reason = getattr(result, 'cancel_reason', None) or None
+            final_status = "filled" if result.fill_price is not None else "cancelled" if cancel_reason else "queued"
             order = {
-                "status": "filled" if result.fill_price is not None else "queued",
+                "status": final_status,
                 "symbol": symbol,
                 "side": side,
                 "units": normalized_units,
@@ -984,6 +986,8 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "environment": getattr(getattr(settings_obj, 'environment', None), 'value', 'practice'),
                 "executionMode": getattr(settings_obj, 'execution_mode', 'practice'),
                 "role": user_role,
+                "reason": cancel_reason,
+                "cancelReason": cancel_reason,
             }
         else:
             order = {

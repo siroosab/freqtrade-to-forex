@@ -272,16 +272,19 @@ class OandaOrderResult:
     transaction_id: str
     fill_price: Decimal | None
     units: Decimal
+    cancel_reason: str | None = None
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> "OandaOrderResult":
         created = payload["orderCreateTransaction"]
         filled = payload.get("orderFillTransaction")
+        canceled = payload.get("orderCancelTransaction")
         return cls(
             order_id=created["id"],
             transaction_id=payload["lastTransactionID"],
             fill_price=Decimal(filled["price"]) if filled else None,
             units=Decimal(created["units"]),
+            cancel_reason=(canceled or {}).get("reason") if canceled else None,
         )
 
 
