@@ -177,6 +177,7 @@ function update_forex() {
 
     .venv/bin/python -m pip install --upgrade pip wheel setuptools
     .venv/bin/python -m pip install --upgrade -r requirements.txt
+    .venv/bin/python -m pip install --upgrade -r requirements-freqai.txt
     .venv/bin/python -m pip install --editable .
     if [ $? -ne 0 ]; then
         echo "Failed updating Python dependencies."
@@ -288,6 +289,7 @@ function install_forex() {
     echo "Installing mandatory Python dependencies..."
     ${PYTHON} -m pip install --upgrade pip wheel setuptools
     ${PYTHON} -m pip install --upgrade -r requirements.txt
+    ${PYTHON} -m pip install --upgrade -r requirements-freqai.txt
     ${PYTHON} -m pip install --editable .
     config
 
