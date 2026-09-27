@@ -58,11 +58,14 @@ def test_orders_chart_accepts_supported_timeframe_and_requested_count(monkeypatc
     monkeypatch.setattr('freqtrade.forex.api.ForexAIStrategyBaseline', FakeStrategy)
 
     response = client.get('/api/v1/orders/chart?pair=EUR%2FUSD&timeframe=H4&count=1000')
+    repeated_response = client.get('/api/v1/orders/chart?pair=EUR%2FUSD&timeframe=H4&count=1000')
 
     assert response.status_code == 200, response.text
     assert response.json()['timeframe'] == 'H4'
+    assert repeated_response.status_code == 200
     assert calls[0] == ('H4', 1000)
     assert calls[1][1] == 4000
+    assert len(calls) == 2
 
 
 def test_websocket_market_channel_connects():

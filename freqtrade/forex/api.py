@@ -95,6 +95,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
     ACTIVE_SESSIONS: dict[str, dict[str, str]] = {}
     AUDIT_LOGS: list[dict] = []
     ORDER_HISTORY: list[dict] = []
+    chart_cache: dict[tuple[str, str, int, str], tuple[float, dict]] = {}
+    chart_cache_ttl = 45.0
+    chart_cache_capacity = 128
 
     def redact_value(value: object) -> object:
         if isinstance(value, str):
@@ -778,7 +781,6 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
     async def orders_chart(pair: str = "EUR/USD", timeframe: str = "M15", count: int = 120) -> dict:
         """Return selected-view candles with signals from the pair's approved strategy timeframe."""
         try:
-            settings = OandaSettings.from_environment()
             normalized_pair = normalize_pair(pair)
             instrument_name = normalized_pair.replace("/", "_")
             view_timeframe = timeframe.upper()
@@ -793,6 +795,16 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 raise HTTPException(status_code=400, detail="Unsupported chart timeframe")
             count = max(30, min(int(count), 5000))
             pair_config = ai_config_for_pair(normalized_pair)
+            config_key = json.dumps(pair_config, sort_keys=True, default=str)
+            cache_key = (normalized_pair, view_timeframe, count, config_key)
+            now = asyncio.get_running_loop().time()
+            cached_chart = chart_cache.get(cache_key)
+            if cached_chart and cached_chart[0] > now:
+                return cached_chart[1]
+            if cached_chart:
+                chart_cache.pop(cache_key, None)
+
+            settings = OandaSettings.from_environment()
             approved_timeframe = str(pair_config.get("timeframe", "M5")).upper()
             approved_granularity = {"M5": "M5", "M15": "M15", "H1": "H1"}.get(approved_timeframe, "M5")
             async with OandaClient(settings.token, settings.account_id, environment=settings.environment) as client:
@@ -830,7 +842,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                             "entryThreshold": float(trace.get("entryThreshold", 0.0)),
                         })
                     previous = signal
-                return {
+                chart_data = {
                     "pair": normalized_pair,
                     "timeframe": view_timeframe,
                     "approvedTimeframe": approved_timeframe,
@@ -839,6 +851,10 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     "trades": [order for order in fallback_orders() if order["symbol"] == normalized_pair],
                     "indicators": {"ema": []},
                 }
+                if len(chart_cache) >= chart_cache_capacity:
+                    chart_cache.pop(next(iter(chart_cache)))
+                chart_cache[cache_key] = (now + chart_cache_ttl, chart_data)
+                return chart_data
         except HTTPException:
             raise
         except Exception as exc:  # pragma: no cover - API boundary

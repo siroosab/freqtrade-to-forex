@@ -1254,6 +1254,34 @@
   color: #f8fafc;
 }
 
+.chart-zoom-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.chart-zoom-controls button {
+  min-width: 30px;
+  height: 28px;
+  padding: 0 7px;
+  color: #cbd5e1;
+  background: rgba(15, 23, 42, 0.7);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.chart-zoom-controls button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.chart-zoom-controls .chart-zoom-reset {
+  width: auto;
+  font-size: 0.72rem;
+}
+
 .forex-chart {
   display: block;
   width: 100%;

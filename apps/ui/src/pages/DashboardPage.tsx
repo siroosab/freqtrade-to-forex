@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useEffect, useMemo, useState } from 'react'
 import { ForexChart } from '../components/ForexChart'
 import { ChartDataControls } from '../components/ChartDataControls'
-import { CHART_CANDLE_BASE_COUNT } from '../components/chartOptions'
+import { chartCandleCount } from '../components/chartOptions'
 import { getAccountSummary, getMarketSummary, getOrdersChart, getRiskSummary, submitMarketOrder } from '../api/mockApi'
 import { useForexSocket } from '../hooks/useForexSocket'
 import { useUiStore } from '../store/useUiStore'
@@ -27,7 +27,7 @@ export function DashboardPage() {
   const [chartCountMultiplier, setChartCountMultiplier] = useState(1)
   const chartQuery = useQuery({
     queryKey: ['dashboard-chart', instrument, chartTimeframe, chartCountMultiplier],
-    queryFn: () => getOrdersChart(instrument, chartTimeframe, CHART_CANDLE_BASE_COUNT * chartCountMultiplier),
+    queryFn: () => getOrdersChart(instrument, chartTimeframe, chartCandleCount(chartCountMultiplier)),
     refetchInterval: 60000,
   })
   const liveAccount = useUiStore((state) => state.accountFeed)

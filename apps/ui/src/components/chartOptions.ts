@@ -5,4 +5,13 @@ export const OANDA_CHART_TIMEFRAMES = [
   'D', 'W', 'M',
 ] as const
 
-export const CHART_CANDLE_BASE_COUNT = 500
+export const CHART_CANDLE_OPTIONS = [
+  { multiplier: 1, count: 100 },
+  { multiplier: 2, count: 200 },
+  { multiplier: 3, count: 350 },
+  { multiplier: 4, count: 900 },
+] as const
+
+export function chartCandleCount(multiplier: number) {
+  return CHART_CANDLE_OPTIONS.find((option) => option.multiplier === multiplier)?.count ?? CHART_CANDLE_OPTIONS[0].count
+}

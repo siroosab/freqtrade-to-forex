@@ -1,4 +1,4 @@
-import { CHART_CANDLE_BASE_COUNT, OANDA_CHART_TIMEFRAMES } from './chartOptions'
+import { CHART_CANDLE_OPTIONS, OANDA_CHART_TIMEFRAMES } from './chartOptions'
 
 type ChartDataControlsProps = {
   timeframe: string
@@ -14,7 +14,7 @@ export function ChartDataControls({ timeframe, countMultiplier, onTimeframeChang
         {OANDA_CHART_TIMEFRAMES.map((item) => <option key={item} value={item}>{item}</option>)}
       </select>
       <select aria-label="Candles to load" value={countMultiplier} onChange={(event) => onCountMultiplierChange(Number(event.target.value))}>
-        {[1, 2, 3, 4].map((multiplier) => <option key={multiplier} value={multiplier}>{multiplier}x ({multiplier * CHART_CANDLE_BASE_COUNT})</option>)}
+        {CHART_CANDLE_OPTIONS.map(({ multiplier, count }) => <option key={multiplier} value={multiplier}>{multiplier}x ({count})</option>)}
       </select>
     </div>
   )

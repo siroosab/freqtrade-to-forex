@@ -2,7 +2,7 @@ import { useMutation, useQuery } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import { ForexChart } from '../components/ForexChart'
 import { ChartDataControls } from '../components/ChartDataControls'
-import { CHART_CANDLE_BASE_COUNT } from '../components/chartOptions'
+import { chartCandleCount } from '../components/chartOptions'
 import { getOrdersChart, getRiskConfig, getRiskSummary, saveRiskConfig, type RiskConfig } from '../api/mockApi'
 import { useUiStore } from '../store/useUiStore'
 
@@ -17,7 +17,7 @@ export function RiskPage() {
   const [timeframe, setTimeframe] = useState('M15')
   const [countMultiplier, setCountMultiplier] = useState(1)
   const configQuery = useQuery({ queryKey: ['risk-config', pair], queryFn: () => getRiskConfig(pair) })
-  const chartQuery = useQuery({ queryKey: ['risk-chart', pair, timeframe, countMultiplier], queryFn: () => getOrdersChart(pair, timeframe, CHART_CANDLE_BASE_COUNT * countMultiplier), refetchInterval: 30000 })
+  const chartQuery = useQuery({ queryKey: ['risk-chart', pair, timeframe, countMultiplier], queryFn: () => getOrdersChart(pair, timeframe, chartCandleCount(countMultiplier)), refetchInterval: 30000 })
   const saveMutation = useMutation({ mutationFn: saveRiskConfig, onSuccess: () => void configQuery.refetch() })
   const [form, setForm] = useState<RiskConfig | null>(null)
   const [selection, setSelection] = useState<'stopLoss' | 'takeProfit' | 'averageEntry'>('stopLoss')

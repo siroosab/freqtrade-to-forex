@@ -32,14 +32,29 @@ export function ForexChart({ data, onPriceSelect }: { data: ForexChartData; onPr
   const padding = 28
   const [visible, setVisible] = useState({ candles: true, close: true, ema20: true, ema50: true, ema100: true, buy: true, sell: true, ai: true, trades: true })
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null)
+  const [zoomLevel, setZoomLevel] = useState(0)
+  const visibleCount = Math.max(1, Math.ceil(data.candles.length / (1.5 ** zoomLevel)))
+  const visibleStartIndex = Math.max(0, data.candles.length - visibleCount)
+  const visibleEndIndex = Math.max(visibleStartIndex, data.candles.length - 1)
   const chart = useMemo(() => {
     const closes = data.candles.map((candle) => candle.close)
-    const values = data.candles.flatMap((candle) => [candle.high, candle.low])
+    const visibleCandles = data.candles.slice(visibleStartIndex, visibleEndIndex + 1)
+    const values = visibleCandles.flatMap((candle) => [candle.high, candle.low])
     const ema20 = data.indicators.ema.length === closes.length ? data.indicators.ema : ChartIndicatorSet.ema(closes, 20)
     const ema50 = ChartIndicatorSet.ema(closes, 50)
     const ema100 = ChartIndicatorSet.ema(closes, 100)
-    const scaleX = (index: number) => padding + (index / Math.max(data.candles.length - 1, 1)) * (width - padding * 2)
-    const allPrices = [...values, ...ema20, ...ema50, ...ema100, ...data.signals.map((signal) => signal.price), ...data.trades.map((trade) => trade.price).filter((price): price is number => typeof price === 'number')]
+    const scaleX = (index: number) => padding + ((index - visibleStartIndex) / Math.max(visibleEndIndex - visibleStartIndex, 1)) * (width - padding * 2)
+    const startTime = Date.parse(visibleCandles[0]?.time ?? '')
+    const endTime = Date.parse(visibleCandles[visibleCandles.length - 1]?.time ?? '')
+    const visibleSignals = data.signals.filter((signal) => {
+      const time = Date.parse(signal.time)
+      return time >= startTime && time <= endTime
+    })
+    const visibleTrades = data.trades.filter((trade) => {
+      const time = Date.parse(trade.time ?? trade.createdAt ?? '')
+      return time >= startTime && time <= endTime
+    })
+    const allPrices = [...values, ...ema20.slice(visibleStartIndex, visibleEndIndex + 1), ...ema50.slice(visibleStartIndex, visibleEndIndex + 1), ...ema100.slice(visibleStartIndex, visibleEndIndex + 1), ...visibleSignals.map((signal) => signal.price), ...visibleTrades.map((trade) => trade.price).filter((price): price is number => typeof price === 'number')]
     const min = Math.min(...allPrices)
     const max = Math.max(...allPrices)
     const scaleY = (value: number) => height - padding - ((value - min) / Math.max(max - min, 0.00001)) * (height - padding * 2)
@@ -72,13 +87,17 @@ export function ForexChart({ data, onPriceSelect }: { data: ForexChartData; onPr
       if (index < 0) return null
       return { ...trade, x: scaleX(index), y: scaleY(trade.price ?? data.candles[index].close) }
     }).filter(Boolean) as Array<ChartTrade & { x: number; y: number }>
-    const candleWidth = Math.max(3, Math.min(14, (width - padding * 2) / Math.max(data.candles.length, 1) * 0.62))
+    const candleWidth = Math.max(3, Math.min(14, (width - padding * 2) / Math.max(visibleCount, 1) * 0.62))
     return { line, ema20, ema50, ema100, signalMarkers, tradeMarkers, scaleX, scaleY, min, max, candleWidth }
-  }, [data])
+  }, [data, visibleCount, visibleEndIndex, visibleStartIndex])
 
   const hoveredCandle = hoveredIndex === null ? null : data.candles[hoveredIndex]
   const hoveredSignal = hoveredCandle ? data.signals.find((signal) => signal.time === hoveredCandle.time) : undefined
   const toggle = (key: keyof typeof visible) => setVisible((current) => ({ ...current, [key]: !current[key] }))
+  const zoom = (direction: -1 | 1) => {
+    setHoveredIndex(null)
+    setZoomLevel((current) => Math.max(0, Math.min(4, current + direction)))
+  }
 
   return (
     <div className="forex-chart-shell">
@@ -87,13 +106,18 @@ export function ForexChart({ data, onPriceSelect }: { data: ForexChartData; onPr
         <span>{data.timeframe} view</span>
         <span>Signals: {data.approvedTimeframe} strategy</span>
         <span>{data.candles.length} candles</span>
+        <div className="chart-zoom-controls" aria-label="Chart zoom controls">
+          <button type="button" aria-label="Zoom out" title="Zoom out" onClick={() => zoom(-1)} disabled={zoomLevel === 0}>-</button>
+          <button type="button" aria-label="Zoom in" title="Zoom in" onClick={() => zoom(1)} disabled={zoomLevel === 4 || data.candles.length <= 1}>+</button>
+          <button type="button" className="chart-zoom-reset" onClick={() => { setZoomLevel(0); setHoveredIndex(null) }} disabled={zoomLevel === 0}>Reset zoom</button>
+        </div>
       </div>
       <div className="forex-chart-stage">
         <svg className="forex-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${data.pair} price chart`} onClick={() => { if (hoveredCandle) onPriceSelect?.(hoveredCandle.close) }} onMouseLeave={() => setHoveredIndex(null)} onMouseMove={(event) => {
           const bounds = event.currentTarget.getBoundingClientRect()
           const chartX = ((event.clientX - bounds.left) / bounds.width) * width
-          const index = Math.round(((chartX - padding) / (width - padding * 2)) * Math.max(data.candles.length - 1, 1))
-          setHoveredIndex(Math.max(0, Math.min(data.candles.length - 1, index)))
+          const index = visibleStartIndex + Math.round(((chartX - padding) / (width - padding * 2)) * Math.max(visibleEndIndex - visibleStartIndex, 1))
+          setHoveredIndex(Math.max(visibleStartIndex, Math.min(visibleEndIndex, index)))
         }}>
           {visible.candles && data.candles.map((candle, index) => {
             const x = chart.scaleX(index)

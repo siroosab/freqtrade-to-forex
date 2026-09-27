@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react'
 import { getOrders, getOrdersChart } from '../api/mockApi'
 import { ForexChart } from '../components/ForexChart'
 import { ChartDataControls } from '../components/ChartDataControls'
-import { CHART_CANDLE_BASE_COUNT } from '../components/chartOptions'
+import { chartCandleCount } from '../components/chartOptions'
 import { useUiStore } from '../store/useUiStore'
 
 export function OrdersPage() {
@@ -16,7 +16,7 @@ export function OrdersPage() {
   }, [availablePairs])
   const [timeframe, setTimeframe] = useState('M15')
   const [countMultiplier, setCountMultiplier] = useState(1)
-  const chartQuery = useQuery({ queryKey: ['orders-chart', pair, timeframe, countMultiplier], queryFn: () => getOrdersChart(pair, timeframe, CHART_CANDLE_BASE_COUNT * countMultiplier), refetchInterval: 30000 })
+  const chartQuery = useQuery({ queryKey: ['orders-chart', pair, timeframe, countMultiplier], queryFn: () => getOrdersChart(pair, timeframe, chartCandleCount(countMultiplier)), refetchInterval: 30000 })
   const liveOrders = useUiStore((state) => state.ordersFeed)
 
   const orders = liveOrders ?? data
