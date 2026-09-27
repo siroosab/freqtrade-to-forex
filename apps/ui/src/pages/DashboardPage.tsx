@@ -314,6 +314,45 @@ export function DashboardPage() {
               </tbody>
             </table>
           </div>
+
+          <div className="panel">
+            <div className="panel-header compact">
+              <div>
+                <p className="eyebrow">Exposure</p>
+                <h3>Risk heatmap</h3>
+              </div>
+            </div>
+
+            <div className="heatmap-grid">
+              {riskHeatmap.map((cell) => (
+                <div key={cell.pair} className={`heatmap-card ${cell.level}`}>
+                  <span>{cell.pair}</span>
+                  <strong>{cell.value}</strong>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="panel">
+            <div className="panel-header compact">
+              <div>
+                <p className="eyebrow">Alerts</p>
+                <h3>Risk & events</h3>
+              </div>
+            </div>
+
+            <div className="alert-list">
+              {market?.alerts.map((alert, index) => (
+                <div key={`${alert.title}-${index}`} className="alert-item">
+                  <span className="alert-dot" />
+                  <div>
+                    <strong>{alert.title}</strong>
+                    <p>{alert.detail}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
 
         <div className="side-column">
@@ -382,24 +421,6 @@ export function DashboardPage() {
           <div className="panel">
             <div className="panel-header compact">
               <div>
-                <p className="eyebrow">Exposure</p>
-                <h3>Risk heatmap</h3>
-              </div>
-            </div>
-
-            <div className="heatmap-grid">
-              {riskHeatmap.map((cell) => (
-                <div key={cell.pair} className={`heatmap-card ${cell.level}`}>
-                  <span>{cell.pair}</span>
-                  <strong>{cell.value}</strong>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div className="panel">
-            <div className="panel-header compact">
-              <div>
                 <p className="eyebrow">Leaderboard</p>
                 <h3>Pairs by exposure</h3>
               </div>
@@ -414,27 +435,6 @@ export function DashboardPage() {
                     <span>{item.value}</span>
                   </div>
                   <span className={item.pnl.startsWith('+') ? 'leaderboard-pnl positive' : 'leaderboard-pnl negative'}>{item.pnl}</span>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div className="panel">
-            <div className="panel-header compact">
-              <div>
-                <p className="eyebrow">Alerts</p>
-                <h3>Risk & events</h3>
-              </div>
-            </div>
-
-            <div className="alert-list">
-              {market?.alerts.map((alert, index) => (
-                <div key={`${alert.title}-${index}`} className="alert-item">
-                  <span className="alert-dot" />
-                  <div>
-                    <strong>{alert.title}</strong>
-                    <p>{alert.detail}</p>
-                  </div>
                 </div>
               ))}
             </div>
