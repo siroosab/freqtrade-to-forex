@@ -43,16 +43,26 @@ export function AiPage() {
     refetchInterval: (query) => (query.state.data?.status === 'running' ? 1000 : false),
   })
   const hyperoptReportQuery = useQuery({ queryKey: ['ai-hyperopt-report', selectedPair], queryFn: () => getAiHyperoptReport(selectedPair) })
+  const [hyperoptWarning, setHyperoptWarning] = useState<string | null>(null)
   const startHyperoptMutation = useMutation({
     mutationFn: startAiHyperopt,
-    onSuccess: () => { void hyperoptStatusQuery.refetch() },
+    onSuccess: (data) => {
+      if (data.warning) setHyperoptWarning(data.warning)
+      void hyperoptStatusQuery.refetch()
+    },
   })
   const stopHyperoptMutation = useMutation({
     mutationFn: () => stopAiHyperopt(selectedPair),
     onSuccess: () => { void hyperoptStatusQuery.refetch() },
   })
   const schedulerMutation = useMutation({ mutationFn: saveAiHyperoptScheduler, onSuccess: (data) => { setSchedulerPairs(data.pairs); setSchedulerIntervalDays(data.intervalDays); setSchedulerGapMinutes(data.gapMinutes); void schedulerQuery.refetch() } })
-  const schedulerRunMutation = useMutation({ mutationFn: runAiHyperoptSchedulerNow, onSuccess: () => { void schedulerQuery.refetch() } })
+  const schedulerRunMutation = useMutation({
+    mutationFn: runAiHyperoptSchedulerNow,
+    onSuccess: (data) => {
+      if (data.warnings?.length) setHyperoptWarning(data.warnings[0])
+      void schedulerQuery.refetch()
+    },
+  })
   const isHyperoptRunning = hyperoptStatusQuery.data?.status === 'running'
   useEffect(() => {
     if (!schedulerQuery.data) return
@@ -220,6 +230,11 @@ export function AiPage() {
 
             {startHyperoptMutation.error && <p>Hyperopt request failed: {startHyperoptMutation.error.message}</p>}
             {stopHyperoptMutation.error && <p>Stop request failed: {stopHyperoptMutation.error.message}</p>}
+            {hyperoptWarning && (
+              <div className="panel-header compact" style={{ marginTop: '12px' }}>
+                <span className="pill neutral">{hyperoptWarning}</span>
+              </div>
+            )}
 
             {hyperoptStatusQuery.data && (isHyperoptRunning || hyperoptStatusQuery.data.status === 'failed') && (
               <>

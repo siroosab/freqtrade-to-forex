@@ -1811,6 +1811,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         AI_HYPEROPT_SCHEDULER["lastError"] = None
         persist_hyperopt_scheduler()
         started: list[dict] = []
+        warnings: list[str] = []
         try:
             async def start_for_pair(pair: str) -> dict:
                 config = ai_config_for_pair(pair)
@@ -1829,8 +1830,18 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     "resetPrevious": False,
                 }
                 started_job = await ai_hyperopt_start(payload, user_role="operator", csrf_token="scheduled-hyperopt")
+                warning = str(started_job.get("warning") or "")
+                if warning:
+                    warnings.append(warning)
                 result = await wait_for_hyperopt_job(pair)
-                return {"pair": pair, "status": result.get("status", started_job.get("status")), "attemptsCompleted": result.get("attemptsCompleted", 0)}
+                item = {
+                    "pair": pair,
+                    "status": result.get("status", started_job.get("status")),
+                    "attemptsCompleted": result.get("attemptsCompleted", 0),
+                }
+                if warning:
+                    item["warning"] = warning
+                return item
 
             started = []
             for pair in pairs:
@@ -1847,7 +1858,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             AI_HYPEROPT_SCHEDULER["nextRuns"] = next_runs
             AI_HYPEROPT_SCHEDULER["nextRunAt"] = min(next_runs.values()) if next_runs else None
             persist_hyperopt_scheduler()
-            return {"status": "started", "pairs": pairs, "jobs": started}
+            return {"status": "started", "pairs": pairs, "jobs": started, "warnings": warnings}
         except Exception as exc:
             AI_HYPEROPT_SCHEDULER["lastError"] = str(exc)
             persist_hyperopt_scheduler()

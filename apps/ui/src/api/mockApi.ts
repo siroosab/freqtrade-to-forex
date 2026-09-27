@@ -153,7 +153,7 @@ export type AiHyperoptStatus = {
   hasLastReport?: boolean
 }
 
-export async function startAiHyperopt(payload: { pair: string; timeframe: string; steps: number; attempts: number; historyMode?: 'candles' | 'days'; historyValue?: number; resetPrevious?: boolean; hyperoptLoss?: string }): Promise<{ pair: string; status: string; attemptsTotal: number }> {
+export async function startAiHyperopt(payload: { pair: string; timeframe: string; steps: number; attempts: number; historyMode?: 'candles' | 'days'; historyValue?: number; resetPrevious?: boolean; hyperoptLoss?: string }): Promise<{ pair: string; status: string; attemptsTotal: number; warning?: string }> {
   const response = await fetch(buildApiUrl('/api/v1/ai/hyperopt/start'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-User-Role': 'operator', 'X-CSRF-Token': 'ai-hyperopt' },
@@ -169,7 +169,7 @@ export async function startAiHyperopt(payload: { pair: string; timeframe: string
     }
     throw new Error(`AI hyperopt rejected: ${detail}`)
   }
-  return response.json() as Promise<{ pair: string; status: string; attemptsTotal: number }>
+  return response.json() as Promise<{ pair: string; status: string; attemptsTotal: number; warning?: string }>
 }
 
 export async function getAiHyperoptStatus(pair = 'EUR/USD'): Promise<AiHyperoptStatus> {
@@ -236,13 +236,13 @@ export async function saveAiHyperoptScheduler(config: { enabled: boolean; interv
   return response.json() as Promise<AiHyperoptScheduler>
 }
 
-export async function runAiHyperoptSchedulerNow(): Promise<{ status: string; pairs: string[]; jobs?: Array<{ pair: string; status: string }> }> {
+export async function runAiHyperoptSchedulerNow(): Promise<{ status: string; pairs: string[]; jobs?: Array<{ pair: string; status: string; warning?: string }>; warnings?: string[] }> {
   const response = await fetch(buildApiUrl('/api/v1/ai/hyperopt/scheduler/run-now'), {
     method: 'POST',
     headers: { 'X-User-Role': 'operator', 'X-CSRF-Token': 'hyperopt-scheduler-run' },
   })
   if (!response.ok) throw new Error('Scheduled Hyperopt start rejected')
-  return response.json() as Promise<{ status: string; pairs: string[]; jobs?: Array<{ pair: string; status: string }> }>
+  return response.json() as Promise<{ status: string; pairs: string[]; jobs?: Array<{ pair: string; status: string; warning?: string }>; warnings?: string[] }>
 }
 
 export async function getAiHyperoptLossFunctions(): Promise<{ default: string; options: string[] }> {
