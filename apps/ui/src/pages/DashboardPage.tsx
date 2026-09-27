@@ -217,6 +217,30 @@ export function DashboardPage() {
 
       <section className="content-grid">
         <div className="main-column">
+          <div className="panel chart-panel">
+            <div className="panel-header compact">
+              <div>
+                <p className="eyebrow">Trend</p>
+                <h3>Equity trend</h3>
+              </div>
+              <div className="segmented">
+                {['M5', 'M15', 'H1'].map((timeframe) => (
+                  <button key={timeframe} type="button" className={chartTimeframe === timeframe ? 'segment active' : 'segment'} onClick={() => setChartTimeframe(timeframe)}>
+                    {timeframe}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {chartQuery.isLoading && <p className="chart-empty-state">Loading real chart data…</p>}
+            {chartQuery.isError && <p className="chart-empty-state">Real chart data unavailable; retrying from backend.</p>}
+            {chartQuery.data && (
+              <div className="real-chart-panel">
+                <ForexChart data={chartQuery.data} />
+              </div>
+            )}
+          </div>
+
           <div className="panel">
             <div className="panel-header">
               <div>
@@ -353,30 +377,6 @@ export function DashboardPage() {
                 <strong>{account?.drawdown ?? '4.10%'}</strong>
               </div>
             </div>
-          </div>
-
-          <div className="panel chart-panel">
-            <div className="panel-header compact">
-              <div>
-                <p className="eyebrow">Trend</p>
-                <h3>Equity trend</h3>
-              </div>
-              <div className="segmented">
-                {['M5', 'M15', 'H1'].map((timeframe) => (
-                  <button key={timeframe} type="button" className={chartTimeframe === timeframe ? 'segment active' : 'segment'} onClick={() => setChartTimeframe(timeframe)}>
-                    {timeframe}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {chartQuery.isLoading && <p className="chart-empty-state">Loading real chart data…</p>}
-            {chartQuery.isError && <p className="chart-empty-state">Real chart data unavailable; retrying from backend.</p>}
-            {chartQuery.data && (
-              <div className="real-chart-panel">
-                <ForexChart data={chartQuery.data} />
-              </div>
-            )}
           </div>
 
           <div className="panel">
