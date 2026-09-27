@@ -106,11 +106,34 @@ export function DashboardPage() {
     { label: 'Margin Used', value: account?.marginUsed ?? '0%', delta: 'Healthy', tone: 'neutral' },
   ]
 
+  const statCards = [
+    { label: 'Win rate', value: '62.4%', delta: '+4.1%', tone: 'emerald' },
+    { label: 'Sharpe', value: '1.84', delta: '+0.26', tone: 'cyan' },
+    { label: 'Risk budget', value: '72%', delta: 'Moderate', tone: 'violet' },
+    { label: 'Max DD', value: '4.1%', delta: '-0.6%', tone: 'amber' },
+  ]
+
   const marginBreakdown = [
     { pair: 'EUR/USD', value: '$42.6k', share: 42, color: '#67e8f9' },
     { pair: 'GBP/USD', value: '$31.2k', share: 31, color: '#a78bfa' },
     { pair: 'USD/JPY', value: '$18.4k', share: 19, color: '#34d399' },
     { pair: 'AUD/USD', value: '$7.8k', share: 8, color: '#fbbf24' },
+  ]
+
+  const equityTrendValues = [38, 42, 48, 47, 55, 58, 64, 60, 66, 71, 74, 82]
+  const riskHeatmap = [
+    { pair: 'EUR/USD', value: 82, level: 'high' },
+    { pair: 'GBP/USD', value: 71, level: 'mid' },
+    { pair: 'USD/JPY', value: 58, level: 'safe' },
+    { pair: 'AUD/USD', value: 63, level: 'mid' },
+    { pair: 'NZD/USD', value: 46, level: 'safe' },
+    { pair: 'USD/CAD', value: 74, level: 'high' },
+  ]
+  const pairLeaderboard = [
+    { pair: 'EUR/USD', pnl: '+$1,420', value: '2.4x' },
+    { pair: 'GBP/USD', pnl: '+$980', value: '1.8x' },
+    { pair: 'USD/JPY', pnl: '-$312', value: '0.8x' },
+    { pair: 'AUD/USD', pnl: '+$540', value: '1.1x' },
   ]
 
   const totalMargin = '$100.0k'
@@ -119,6 +142,10 @@ export function DashboardPage() {
   const donutStyle = {
     background: `conic-gradient(#67e8f9 0 42%, #a78bfa 42% 73%, #34d399 73% 92%, #fbbf24 92% 100%)`,
   }
+
+  const trendPoints = equityTrendValues
+    .map((value, index) => `${index * 18 + 10},${80 - value}`)
+    .join(' ')
 
   return (
     <>
@@ -143,6 +170,16 @@ export function DashboardPage() {
               <span className={`delta ${metric.tone}`}>{metric.delta}</span>
             </div>
             <strong>{metric.value}</strong>
+          </article>
+        ))}
+      </section>
+
+      <section className="stat-card-row">
+        {statCards.map((card) => (
+          <article key={card.label} className={`mini-stat-card tone-${card.tone}`}>
+            <span>{card.label}</span>
+            <strong>{card.value}</strong>
+            <small>{card.delta}</small>
           </article>
         ))}
       </section>
@@ -291,6 +328,34 @@ export function DashboardPage() {
             </div>
           </div>
 
+          <div className="panel chart-panel">
+            <div className="panel-header compact">
+              <div>
+                <p className="eyebrow">Trend</p>
+                <h3>Equity trend</h3>
+              </div>
+              <span className="pill positive">+12.4%</span>
+            </div>
+
+            <svg className="equity-trend-chart" viewBox="0 0 220 90" preserveAspectRatio="none" aria-label="Equity trend line chart">
+              <defs>
+                <linearGradient id="equityTrendFill" x1="0" x2="0" y1="0" y2="1">
+                  <stop offset="0%" stopColor="rgba(56, 189, 248, 0.45)" />
+                  <stop offset="100%" stopColor="rgba(56, 189, 248, 0.02)" />
+                </linearGradient>
+              </defs>
+              <path d={`M 0 80 L ${trendPoints} L 200 80 Z`} fill="url(#equityTrendFill)" opacity="0.6" />
+              <polyline fill="none" stroke="#67e8f9" strokeWidth="3" strokeLinejoin="round" strokeLinecap="round" points={trendPoints} />
+            </svg>
+
+            <div className="trend-axis">
+              <span>Jan</span>
+              <span>Mar</span>
+              <span>Jun</span>
+              <span>Sep</span>
+            </div>
+          </div>
+
           <div className="panel">
             <div className="panel-header compact">
               <div>
@@ -311,6 +376,46 @@ export function DashboardPage() {
                     <span>{strategy.quality}</span>
                   </div>
                   <p>{strategy.signal}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="panel">
+            <div className="panel-header compact">
+              <div>
+                <p className="eyebrow">Exposure</p>
+                <h3>Risk heatmap</h3>
+              </div>
+            </div>
+
+            <div className="heatmap-grid">
+              {riskHeatmap.map((cell) => (
+                <div key={cell.pair} className={`heatmap-card ${cell.level}`}>
+                  <span>{cell.pair}</span>
+                  <strong>{cell.value}</strong>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="panel">
+            <div className="panel-header compact">
+              <div>
+                <p className="eyebrow">Leaderboard</p>
+                <h3>Pairs by P/L</h3>
+              </div>
+            </div>
+
+            <div className="leaderboard-list">
+              {pairLeaderboard.map((item, index) => (
+                <div key={item.pair} className="leaderboard-row">
+                  <span className="leaderboard-rank">#{index + 1}</span>
+                  <div className="leaderboard-meta">
+                    <strong>{item.pair}</strong>
+                    <span>{item.value}</span>
+                  </div>
+                  <span className={item.pnl.startsWith('+') ? 'leaderboard-pnl positive' : 'leaderboard-pnl negative'}>{item.pnl}</span>
                 </div>
               ))}
             </div>
