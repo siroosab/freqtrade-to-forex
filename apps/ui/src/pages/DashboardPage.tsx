@@ -106,6 +106,20 @@ export function DashboardPage() {
     { label: 'Margin Used', value: account?.marginUsed ?? '0%', delta: 'Healthy', tone: 'neutral' },
   ]
 
+  const marginBreakdown = [
+    { pair: 'EUR/USD', value: '$42.6k', share: 42, color: '#67e8f9' },
+    { pair: 'GBP/USD', value: '$31.2k', share: 31, color: '#a78bfa' },
+    { pair: 'USD/JPY', value: '$18.4k', share: 19, color: '#34d399' },
+    { pair: 'AUD/USD', value: '$7.8k', share: 8, color: '#fbbf24' },
+  ]
+
+  const totalMargin = '$100.0k'
+  const usedMargin = '$68.0k'
+  const usedPercent = 68
+  const donutStyle = {
+    background: `conic-gradient(#67e8f9 0 42%, #a78bfa 42% 73%, #34d399 73% 92%, #fbbf24 92% 100%)`,
+  }
+
   return (
     <>
       <header className="topbar">
@@ -215,6 +229,41 @@ export function DashboardPage() {
         </div>
 
         <div className="side-column">
+          <div className="panel chart-panel">
+            <div className="panel-header compact">
+              <div>
+                <p className="eyebrow">Margin overview</p>
+                <h3>Portfolio allocation</h3>
+              </div>
+              <span className="pill neutral">{usedPercent}% used</span>
+            </div>
+
+            <div className="margin-donut-shell">
+              <div className="margin-donut" style={donutStyle} aria-label="Margin allocation donut chart">
+                <div className="margin-donut-center">
+                  <span>Total margin</span>
+                  <strong>{totalMargin}</strong>
+                  <small>{usedMargin} used</small>
+                </div>
+              </div>
+            </div>
+
+            <div className="margin-breakdown" aria-label="Margin breakdown by pair">
+              {marginBreakdown.map((item) => (
+                <div key={item.pair} className="margin-breakdown-row">
+                  <div className="margin-meta">
+                    <span className="margin-swatch" style={{ background: item.color }} />
+                    <span>{item.pair}</span>
+                  </div>
+                  <div className="margin-values">
+                    <strong>{item.value}</strong>
+                    <small>{item.share}%</small>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
           <div className="panel chart-panel">
             <div className="panel-header compact">
               <div>
