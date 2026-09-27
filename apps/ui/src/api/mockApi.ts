@@ -444,8 +444,8 @@ export async function getOrders(): Promise<Order[]> {
   return safeFetchWithFallback<Order[]>('/api/v1/orders', 'orders')
 }
 
-export async function getOrdersChart(pair = 'EUR/USD', timeframe = 'M15'): Promise<ForexChartData> {
-  const response = await fetch(buildApiUrl(`/api/v1/orders/chart?pair=${encodeURIComponent(pair)}&timeframe=${timeframe}&count=120`))
+export async function getOrdersChart(pair = 'EUR/USD', timeframe = 'M15', count = 500): Promise<ForexChartData> {
+  const response = await fetch(buildApiUrl(`/api/v1/orders/chart?pair=${encodeURIComponent(pair)}&timeframe=${encodeURIComponent(timeframe)}&count=${count}`))
   if (!response.ok) {
     let detail = `HTTP ${response.status}`
     try { detail = ((await response.json()) as { detail?: string }).detail ?? detail } catch { /* status is enough */ }

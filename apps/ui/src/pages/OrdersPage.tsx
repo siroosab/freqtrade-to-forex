@@ -2,6 +2,8 @@ import { useQuery } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import { getOrders, getOrdersChart } from '../api/mockApi'
 import { ForexChart } from '../components/ForexChart'
+import { ChartDataControls } from '../components/ChartDataControls'
+import { CHART_CANDLE_BASE_COUNT } from '../components/chartOptions'
 import { useUiStore } from '../store/useUiStore'
 
 export function OrdersPage() {
@@ -13,7 +15,8 @@ export function OrdersPage() {
     setPair((current) => (availablePairs.includes(current) ? current : availablePairs[0]))
   }, [availablePairs])
   const [timeframe, setTimeframe] = useState('M15')
-  const chartQuery = useQuery({ queryKey: ['orders-chart', pair, timeframe], queryFn: () => getOrdersChart(pair, timeframe), refetchInterval: 30000 })
+  const [countMultiplier, setCountMultiplier] = useState(1)
+  const chartQuery = useQuery({ queryKey: ['orders-chart', pair, timeframe, countMultiplier], queryFn: () => getOrdersChart(pair, timeframe, CHART_CANDLE_BASE_COUNT * countMultiplier), refetchInterval: 30000 })
   const liveOrders = useUiStore((state) => state.ordersFeed)
 
   const orders = liveOrders ?? data
@@ -30,7 +33,7 @@ export function OrdersPage() {
       <section className="panel page-panel">
         <div className="panel-header compact">
           <div><p className="eyebrow">Market context</p><h3>Signals and trade map</h3></div>
-          <div className="chart-controls"><select value={pair} onChange={(event) => setPair(event.target.value)}>{(availablePairs.length ? availablePairs : ['EUR/USD','GBP/USD','USD/JPY']).map((item) => <option key={item} value={item}>{item}</option>)}</select><select value={timeframe} onChange={(event) => setTimeframe(event.target.value)}><option>M5</option><option>M15</option><option>H1</option></select></div>
+          <div className="chart-controls"><select aria-label="Chart pair" value={pair} onChange={(event) => setPair(event.target.value)}>{(availablePairs.length ? availablePairs : ['EUR/USD','GBP/USD','USD/JPY']).map((item) => <option key={item} value={item}>{item}</option>)}</select><ChartDataControls timeframe={timeframe} countMultiplier={countMultiplier} onTimeframeChange={setTimeframe} onCountMultiplierChange={setCountMultiplier} /></div>
         </div>
         {chartQuery.isLoading && <p>Loading broker candles and approved strategy signals…</p>}
         {chartQuery.isError && <p>Chart data unavailable from the broker API.</p>}

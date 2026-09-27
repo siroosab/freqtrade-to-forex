@@ -782,7 +782,13 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             normalized_pair = normalize_pair(pair)
             instrument_name = normalized_pair.replace("/", "_")
             view_timeframe = timeframe.upper()
-            granularity = {"M5": "M5", "M15": "M15", "H1": "H1"}.get(view_timeframe)
+            supported_granularities = {
+                "S5", "S10", "S15", "S30",
+                "M1", "M2", "M4", "M5", "M10", "M15", "M30",
+                "H1", "H2", "H3", "H4", "H6", "H8", "H12",
+                "D", "W", "M",
+            }
+            granularity = view_timeframe if view_timeframe in supported_granularities else None
             if granularity is None:
                 raise HTTPException(status_code=400, detail="Unsupported chart timeframe")
             count = max(30, min(int(count), 5000))

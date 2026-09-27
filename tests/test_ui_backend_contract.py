@@ -25,6 +25,46 @@ def test_market_summary_endpoint_exists():
     assert 'strategySignals' in payload
 
 
+def test_orders_chart_accepts_supported_timeframe_and_requested_count(monkeypatch):
+    calls = []
+
+    class FakeCandle:
+        time = '2026-09-18T09:00:00Z'
+        open = high = low = close = '1.08'
+
+    class FakeClient:
+        def __init__(self, token, account_id, environment):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+        async def get_candles(self, instrument, granularity, *, count):
+            calls.append((granularity, count))
+            return [FakeCandle()]
+
+    class FakeStrategy:
+        def __init__(self, config):
+            pass
+
+        def signal_trace(self, window):
+            return {'signal': 'flat'}
+
+    monkeypatch.setattr('freqtrade.forex.api.OandaClient', FakeClient)
+    monkeypatch.setattr('freqtrade.forex.api.OandaSettings.from_environment', lambda: type('Settings', (), {'token': 'token', 'account_id': 'account', 'environment': 'practice'})())
+    monkeypatch.setattr('freqtrade.forex.api.ForexAIStrategyBaseline', FakeStrategy)
+
+    response = client.get('/api/v1/orders/chart?pair=EUR%2FUSD&timeframe=H4&count=1000')
+
+    assert response.status_code == 200, response.text
+    assert response.json()['timeframe'] == 'H4'
+    assert calls[0] == ('H4', 1000)
+    assert calls[1][1] == 4000
+
+
 def test_websocket_market_channel_connects():
     with client.websocket_connect('/ws/market') as websocket:
         message = websocket.receive_json()

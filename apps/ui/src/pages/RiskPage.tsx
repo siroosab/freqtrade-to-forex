@@ -1,6 +1,8 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import { ForexChart } from '../components/ForexChart'
+import { ChartDataControls } from '../components/ChartDataControls'
+import { CHART_CANDLE_BASE_COUNT } from '../components/chartOptions'
 import { getOrdersChart, getRiskConfig, getRiskSummary, saveRiskConfig, type RiskConfig } from '../api/mockApi'
 import { useUiStore } from '../store/useUiStore'
 
@@ -13,8 +15,9 @@ export function RiskPage() {
     setPair((current) => (availablePairs.includes(current) ? current : availablePairs[0]))
   }, [availablePairs])
   const [timeframe, setTimeframe] = useState('M15')
+  const [countMultiplier, setCountMultiplier] = useState(1)
   const configQuery = useQuery({ queryKey: ['risk-config', pair], queryFn: () => getRiskConfig(pair) })
-  const chartQuery = useQuery({ queryKey: ['risk-chart', pair, timeframe], queryFn: () => getOrdersChart(pair, timeframe), refetchInterval: 30000 })
+  const chartQuery = useQuery({ queryKey: ['risk-chart', pair, timeframe, countMultiplier], queryFn: () => getOrdersChart(pair, timeframe, CHART_CANDLE_BASE_COUNT * countMultiplier), refetchInterval: 30000 })
   const saveMutation = useMutation({ mutationFn: saveRiskConfig, onSuccess: () => void configQuery.refetch() })
   const [form, setForm] = useState<RiskConfig | null>(null)
   const [selection, setSelection] = useState<'stopLoss' | 'takeProfit' | 'averageEntry'>('stopLoss')
@@ -38,7 +41,7 @@ export function RiskPage() {
       </section>}
 
       <section className="panel page-panel">
-        <div className="panel-header compact"><div><p className="eyebrow">Risk map</p><h3>Price-based protection</h3></div><div className="chart-controls"><select aria-label="Risk pair" value={pair} onChange={(event) => setPair(event.target.value)}>{(availablePairs.length ? availablePairs : ['EUR/USD','GBP/USD','USD/JPY']).map((item) => <option key={item} value={item}>{item}</option>)}</select><select aria-label="Risk timeframe" value={timeframe} onChange={(event) => setTimeframe(event.target.value)}><option>M5</option><option>M15</option><option>H1</option></select></div></div>
+        <div className="panel-header compact"><div><p className="eyebrow">Risk map</p><h3>Price-based protection</h3></div><div className="chart-controls"><select aria-label="Risk pair" value={pair} onChange={(event) => setPair(event.target.value)}>{(availablePairs.length ? availablePairs : ['EUR/USD','GBP/USD','USD/JPY']).map((item) => <option key={item} value={item}>{item}</option>)}</select><ChartDataControls timeframe={timeframe} countMultiplier={countMultiplier} onTimeframeChange={setTimeframe} onCountMultiplierChange={setCountMultiplier} /></div></div>
         <p className="risk-helper">Select a protection level, then click the chart. Unconfigured fields use the default risk policy.</p>
         <div className="chart-controls risk-click-controls"><button type="button" className={selection === 'stopLoss' ? 'selected' : ''} onClick={() => setSelection('stopLoss')}>Set stop loss</button><button type="button" className={selection === 'takeProfit' ? 'selected' : ''} onClick={() => setSelection('takeProfit')}>Set take profit</button><button type="button" className={selection === 'averageEntry' ? 'selected' : ''} onClick={() => setSelection('averageEntry')}>Set average entry</button></div>
         {chartQuery.isLoading && <p>Loading broker chart…</p>}

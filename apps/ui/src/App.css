@@ -1327,6 +1327,9 @@
 
 .legend-line { width: 18px; height: 2px; background: #38bdf8; }
 .legend-line.ema { background: #fbbf24; border-top: 1px dashed #fbbf24; }
+.legend-line.ema50 { background: #c084fc; border-top: 1px dashed #c084fc; }
+.legend-line.ema100 { background: #f97316; border-top: 1px dashed #f97316; }
+.legend-dot.trade { background: #e2e8f0; transform: rotate(45deg); }
 .legend-dot { width: 8px; height: 8px; border-radius: 50%; }
 .legend-dot.buy { background: #34d399; }
 .legend-dot.sell { background: #fb7185; }

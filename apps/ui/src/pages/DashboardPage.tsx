@@ -1,6 +1,8 @@
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useMemo, useState } from 'react'
 import { ForexChart } from '../components/ForexChart'
+import { ChartDataControls } from '../components/ChartDataControls'
+import { CHART_CANDLE_BASE_COUNT } from '../components/chartOptions'
 import { getAccountSummary, getMarketSummary, getOrdersChart, getRiskSummary, submitMarketOrder } from '../api/mockApi'
 import { useForexSocket } from '../hooks/useForexSocket'
 import { useUiStore } from '../store/useUiStore'
@@ -22,9 +24,10 @@ export function DashboardPage() {
   const marketQuery = useQuery({ queryKey: ['market'], queryFn: getMarketSummary })
   const riskQuery = useQuery({ queryKey: ['risk'], queryFn: getRiskSummary })
   const [chartTimeframe, setChartTimeframe] = useState('H1')
+  const [chartCountMultiplier, setChartCountMultiplier] = useState(1)
   const chartQuery = useQuery({
-    queryKey: ['dashboard-chart', instrument, chartTimeframe],
-    queryFn: () => getOrdersChart(instrument, chartTimeframe),
+    queryKey: ['dashboard-chart', instrument, chartTimeframe, chartCountMultiplier],
+    queryFn: () => getOrdersChart(instrument, chartTimeframe, CHART_CANDLE_BASE_COUNT * chartCountMultiplier),
     refetchInterval: 60000,
   })
   const liveAccount = useUiStore((state) => state.accountFeed)
@@ -223,13 +226,7 @@ export function DashboardPage() {
                 <p className="eyebrow">Trend</p>
                 <h3>Equity trend</h3>
               </div>
-              <div className="segmented">
-                {['M5', 'M15', 'H1'].map((timeframe) => (
-                  <button key={timeframe} type="button" className={chartTimeframe === timeframe ? 'segment active' : 'segment'} onClick={() => setChartTimeframe(timeframe)}>
-                    {timeframe}
-                  </button>
-                ))}
-              </div>
+              <ChartDataControls timeframe={chartTimeframe} countMultiplier={chartCountMultiplier} onTimeframeChange={setChartTimeframe} onCountMultiplierChange={setChartCountMultiplier} />
             </div>
 
             {chartQuery.isLoading && <p className="chart-empty-state">Loading real chart data…</p>}
