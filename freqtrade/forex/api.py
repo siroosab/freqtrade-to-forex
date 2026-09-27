@@ -37,7 +37,7 @@ from freqtrade.forex.strategy_execution import (
     oanda_granularity,
     strategy_informative_timeframes,
 )
-from freqtrade.timeframe import timeframe_to_minutes
+from freqtrade.timeframe import timeframe_to_minutes, timeframe_to_seconds
 
 
 def _render_ui_index(ui_index: Path) -> str:

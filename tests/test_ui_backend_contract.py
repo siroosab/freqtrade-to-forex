@@ -793,3 +793,21 @@ def test_untagged_practice_v20_account_can_be_confirmed(monkeypatch, tmp_path):
         json={'fileName': 'NotAStrategy.py', 'content': 'class NotAStrategy: pass\n'},
     )
     assert invalid_strategy.status_code == 400
+
+
+def test_ai_hyperopt_days_history_resolves_timeframe_before_loss_validation():
+    response = client.post(
+        '/api/v1/ai/hyperopt/start',
+        json={
+            'pair': 'EUR/USD',
+            'timeframe': 'M5',
+            'historyMode': 'days',
+            'historyValue': 1,
+            'attempts': 1,
+            'hyperoptLoss': 'NotARealLoss',
+        },
+        headers={'X-User-Role': 'operator', 'X-CSRF-Token': 'ai-hyperopt'},
+    )
+
+    assert response.status_code == 400
+    assert 'Unsupported hyperoptLoss' in response.json()['detail']
