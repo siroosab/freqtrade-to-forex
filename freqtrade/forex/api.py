@@ -78,6 +78,46 @@ def _clear_cached_historical_data(pair: str | None = None, timeframe: str | None
     return removed
 
 
+def format_hyperopt_report(report: dict) -> str:
+    """Format baseline and generic strategy Hyperopt results."""
+    best_parameters = report.get("bestParameters") or {}
+    parameter_text = lambda parameters: " ".join(
+        f"{name}={value}{'%' if name == 'maxSpreadPct' else ''}"
+        for name, value in parameters.items()
+    ) or "none"
+    coverage_line = (
+        f"  {report['candidatesTested']} candidates tested ({report['attemptsRequested']} attempts requested)"
+        f" across {report['pairsTested']} pair(s) and {report['periodsTested']} period(s)"
+        f" ({report['coverage']} validation slices)."
+    )
+    lines = [
+        f"Hyperopt report - {report['pair']} ({report['timeframe']}) - {report['status']}",
+        "",
+        coverage_line,
+        f"  Strategy: {report.get('strategy', 'ForexAIStrategyBaseline')}",
+        f"  Loss function: {report.get('hyperoptLoss', 'ProfitDrawDownHyperOptLoss')}",
+        f"  Best parameters: {parameter_text(best_parameters)}",
+        f"  Objective: {report['objective']}",
+        f"  Train:      net P/L {report['train']['netPl']}  drawdown {report['train']['drawdown']}  trades {report['train']['trades']}",
+        f"  Validation: net P/L {report['validation']['netPl']}  drawdown {report['validation']['drawdown']}  trades {report['validation']['trades']}",
+        "",
+        "  Top candidates (validation net P/L):",
+    ]
+    for candidate in report["candidates"][:5]:
+        sign = "+" if float(candidate["validationNetPl"]) >= 0 else ""
+        parameters = candidate.get("parameters") or {
+            name: candidate[name]
+            for name in ("entryThreshold", "maxSpreadPct")
+            if name in candidate
+        }
+        lines.append(
+            f"    #{candidate['rank']} {parameter_text(parameters)}"
+            f" objective={candidate['objective']} val P/L={sign}{candidate['validationNetPl']}"
+            f" trades={candidate['validationTrades']}"
+        )
+    return "\n".join(lines)
+
+
 def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> FastAPI:
     app = FastAPI(title="Forex Dry-Run API", version="0.1.0")
     ui_index = Path(__file__).resolve().parents[2] / "apps" / "ui" / "dist" / "index.html"
@@ -590,36 +630,6 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
 
     def normalize_pair(pair: str) -> str:
         return pair.replace("_", "/").upper()
-
-    def format_hyperopt_report(report: dict) -> str:
-        """Render the hyperopt result as a readable report instead of raw JSON."""
-        best = report["bestParameters"]
-        coverage_line = (
-            f"  {report['candidatesTested']} candidates tested ({report['attemptsRequested']} attempts requested)"
-            f" across {report['pairsTested']} pair(s) and {report['periodsTested']} period(s)"
-            f" ({report['coverage']} validation slices)."
-        )
-        lines = [
-            f"Hyperopt report - {report['pair']} ({report['timeframe']}) - {report['status']}",
-            "",
-            coverage_line,
-            f"  Loss function: {report.get('hyperoptLoss', 'ProfitDrawDownHyperOptLoss')}",
-            f"  Best parameters: entryThreshold={best['entryThreshold']} maxSpreadPct={best['maxSpreadPct']}%",
-            f"  Objective: {report['objective']}",
-            f"  Train:      net P/L {report['train']['netPl']}  drawdown {report['train']['drawdown']}  trades {report['train']['trades']}",
-            f"  Validation: net P/L {report['validation']['netPl']}  drawdown {report['validation']['drawdown']}  trades {report['validation']['trades']}",
-            "",
-            "  Top candidates (validation net P/L):",
-        ]
-        for candidate in report["candidates"][:5]:
-            sign = "+" if float(candidate["validationNetPl"]) >= 0 else ""
-            candidate_line = (
-                f"    #{candidate['rank']} entry={candidate['entryThreshold']} spread={candidate['maxSpreadPct']}%"
-                f" objective={candidate['objective']} val P/L={sign}{candidate['validationNetPl']}"
-                f" trades={candidate['validationTrades']}"
-            )
-            lines.append(candidate_line)
-        return "\n".join(lines)
 
     def report_age_days(completed_at: str) -> int:
         completed = datetime.fromisoformat(completed_at)

@@ -3,7 +3,7 @@ from decimal import Decimal
 
 from fastapi.testclient import TestClient
 
-from freqtrade.forex.api import app
+from freqtrade.forex.api import app, format_hyperopt_report
 
 
 client = TestClient(app)
@@ -811,3 +811,33 @@ def test_ai_hyperopt_days_history_resolves_timeframe_before_loss_validation():
 
     assert response.status_code == 400
     assert 'Unsupported hyperoptLoss' in response.json()['detail']
+
+
+def test_hyperopt_report_formats_generic_strategy_parameters():
+    report = {
+        'pair': 'EUR/USD',
+        'timeframe': 'M5',
+        'status': 'completed',
+        'strategy': 'ForexEmaStrategy',
+        'candidatesTested': 1,
+        'attemptsRequested': 1,
+        'pairsTested': 1,
+        'periodsTested': 2,
+        'coverage': 2,
+        'bestParameters': {'fast_period_opt': 12, 'slow_period_opt': 26},
+        'objective': '100.00',
+        'train': {'netPl': '50.00', 'drawdown': '0.00', 'trades': 1},
+        'validation': {'netPl': '50.00', 'drawdown': '0.00', 'trades': 1},
+        'candidates': [{
+            'rank': 1,
+            'parameters': {'fast_period_opt': 12, 'slow_period_opt': 26},
+            'objective': '100.00',
+            'validationNetPl': '50.00',
+            'validationTrades': 1,
+        }],
+    }
+
+    formatted = format_hyperopt_report(report)
+
+    assert 'Strategy: ForexEmaStrategy' in formatted
+    assert 'fast_period_opt=12 slow_period_opt=26' in formatted
