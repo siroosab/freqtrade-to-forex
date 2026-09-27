@@ -46,6 +46,21 @@ def test_cors_allows_vite_frontend_origin():
     assert response.headers.get('access-control-allow-origin') == 'http://localhost:5173'
 
 
+def test_app_starts_without_built_ui_assets(tmp_path, monkeypatch):
+    project_root = tmp_path / 'project'
+    dist_dir = project_root / 'apps' / 'ui' / 'dist'
+    dist_dir.mkdir(parents=True)
+    (dist_dir / 'index.html').write_text('<html><body>fallback</body></html>', encoding='utf-8')
+
+    module_path = project_root / 'freqtrade' / 'forex' / 'api.py'
+    module_path.parent.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr('freqtrade.forex.api.__file__', str(module_path), raising=False)
+
+    created = __import__('freqtrade.forex.api', fromlist=['create_app']).create_app()
+    assert created is not None
+    assert created.state.ui_assets_available is False
+
+
 def test_order_submit_requires_operator_role_and_csrf_token():
     denied = client.post(
         '/api/v1/orders/market',
