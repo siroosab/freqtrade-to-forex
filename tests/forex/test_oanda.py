@@ -783,6 +783,8 @@ def test_oanda_settings_and_pair_mapping_from_freqtrade_config() -> None:
     settings = OandaSettings.from_freqtrade_config(
         {
             "timeframe": "5m",
+            "pair_timeframes": {"EUR_USD": "5m", "GBP_USD": "1h"},
+            "pair_strategies": {"EUR_USD": "ForexAIStrategyBaseline", "GBP_USD": "ForexEmaStrategy"},
             "exchange": {
                 "api_key": "config-token",
                 "account_id": "config-account",
@@ -797,6 +799,8 @@ def test_oanda_settings_and_pair_mapping_from_freqtrade_config() -> None:
     assert settings.account_id == "config-account"
     assert settings.risk_fraction == "0.02"
     assert settings.execution_mode == "dry_run"
+    assert settings.pair_timeframes == {"EUR_USD": "5m", "GBP_USD": "1h"}
+    assert settings.pair_strategies == {"EUR_USD": "ForexAIStrategyBaseline", "GBP_USD": "ForexEmaStrategy"}
     assert OandaMarketDataProvider.to_oanda_instrument("eur/usd") == "EUR_USD"
     assert OandaMarketDataProvider.to_freqtrade_pair("GBP_USD") == "GBP/USD"
 
@@ -1879,6 +1883,7 @@ def test_hyperopt_scheduler_requires_approved_pairs_and_staggers_all_pairs(tmp_p
             headers={"X-User-Role": "operator", "X-CSRF-Token": "hyperopt-scheduler"},
         )
         approved_pairs = []
+        pair_timeframes = {}
         for pair, timeframe in (("EUR/USD", "M5"), ("GBP/USD", "H1"), ("USD/JPY", "M15")):
             config = client.get(f"/api/v1/ai/config?pair={pair.replace('/', '%2F')}").json()
             if timeframe != config["timeframe"]:
@@ -1896,14 +1901,23 @@ def test_hyperopt_scheduler_requires_approved_pairs_and_staggers_all_pairs(tmp_p
             )
             assert response.status_code == 200
             approved_pairs.append(pair)
+            pair_timeframes[pair] = timeframe
         configured = client.post(
             "/api/v1/ai/hyperopt/scheduler",
-            json={"enabled": True, "intervalDays": 2, "gapMinutes": 120, "pairs": approved_pairs},
+            json={
+                "enabled": True,
+                "intervalDays": 2,
+                "gapMinutes": 120,
+                "pairs": approved_pairs,
+                "pairStrategies": {pair: "ForexAIStrategyBaseline" for pair in approved_pairs},
+                "pairTimeframes": pair_timeframes,
+            },
             headers={"X-User-Role": "operator", "X-CSRF-Token": "hyperopt-scheduler"},
         )
 
     assert blocked.status_code == 409
     assert configured.status_code == 200
+    assert configured.json()["pairTimeframes"] == pair_timeframes
     assert configured.json()["pairs"] == approved_pairs
     assert configured.json()["approvedPairs"] == approved_pairs
     next_runs = configured.json()["nextRuns"]
@@ -2006,14 +2020,21 @@ def test_backtest_api_runs_real_backtest_and_persists_history(monkeypatch, tmp_p
             json={"pair": "EUR/USD", "timeframe": "M5", "steps": 120},
             headers={"X-User-Role": "operator", "X-CSRF-Token": "demo-backtest"},
         )
+        second_strategy = client.post(
+            "/api/v1/backtests/run",
+            json={"pair": "EUR/USD", "timeframe": "M5", "strategyClass": "ForexEmaStrategy", "steps": 120},
+            headers={"X-User-Role": "operator", "X-CSRF-Token": "demo-backtest"},
+        )
         history = client.get("/api/v1/backtests")
 
     assert response.status_code == 200
     assert response.json()["status"] == "completed"
     assert response.json()["netPl"] == "1000.00"
     assert response.json()["trades"] == 2
+    assert second_strategy.status_code == 200, second_strategy.text
+    assert second_strategy.json()["strategy"] == "ForexEmaStrategy"
     assert history.status_code == 200
-    assert history.json()[0]["pair"] == "EUR/USD"
+    assert {item["strategy"] for item in history.json()} == {"ForexAIStrategyBaseline", "ForexEmaStrategy"}
 
 
 def test_dashboard_and_setup_serve_react_ui_when_built(tmp_path) -> None:

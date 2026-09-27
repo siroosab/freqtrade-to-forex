@@ -19,9 +19,11 @@ from freqtrade.forex.execution import ExecutionMode, OandaExecutionGateway
 from freqtrade.forex.paper import DryRunSession
 from freqtrade.forex.practice_runs import PracticeRunRecord, PracticeRunRecorder
 from freqtrade.forex.provider import OandaMarketDataProvider
-from freqtrade.forex.runner import DryRunWorker, WorkerConfig
+from freqtrade.forex.runner import DryRunPortfolioWorker, DryRunWorker, WorkerConfig
 from freqtrade.forex.strategy_loop import DryRunStrategyLoop, EmaCrossStrategy
+from freqtrade.forex.strategy_execution import FreqtradeStrategyAdapter, freqtrade_timeframe, load_strategy
 from freqtrade.forex.oanda import OandaClient
+from freqtrade.timeframe import timeframe_to_seconds
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -54,8 +56,9 @@ def build_parser() -> argparse.ArgumentParser:
     setup.add_argument("--risk-fraction", default="0.01")
     setup.add_argument("--force", action="store_true", help="Replace an existing config file")
     dry_run = subparsers.add_parser("dry-run", help="Run the live-price paper strategy safely")
-    dry_run.add_argument("--pair", default="EUR/USD")
-    dry_run.add_argument("--timeframe", default="5m", choices=("5m", "1h"))
+    dry_run.add_argument("--pair", default=None, help="Run one pair; defaults to all pairs in setup")
+    dry_run.add_argument("--timeframe", default=None)
+    dry_run.add_argument("--strategy", default=None, help="Override the pair's configured strategy class")
     dry_run.add_argument("--steps", type=int, default=1, help="Number of steps; default: 1")
     dry_run.add_argument("--stop-pips", type=Decimal, default=Decimal("10"))
     dry_run.add_argument("--ledger", default="user_data/oanda/paper.sqlite")
@@ -160,15 +163,24 @@ async def run_dry_run(settings: OandaSettings, args: argparse.Namespace) -> int:
         raise ValueError("--steps must be at least 1")
     if settings.execution_mode != ExecutionMode.DRY_RUN:
         raise ValueError("set OANDA_EXECUTION_MODE=dry_run before starting")
-    instrument_name = OandaMarketDataProvider.to_oanda_instrument(args.pair)
+    instrument_names = (
+        (OandaMarketDataProvider.to_oanda_instrument(args.pair),)
+        if args.pair
+        else tuple(settings.instruments)
+    )
+    if not instrument_names:
+        raise ValueError("setup must configure at least one instrument")
     async with OandaClient(
         settings.token, settings.account_id, environment=settings.environment
     ) as client:
-        metadata = await client.get_instruments((instrument_name,))
-        if not metadata:
-            raise ValueError(f"instrument not available: {instrument_name}")
+        metadata = await client.get_instruments(instrument_names)
+        metadata_by_name = {item.name: item for item in metadata}
+        missing = set(instrument_names) - set(metadata_by_name)
+        if missing:
+            raise ValueError(f"instruments not available: {', '.join(sorted(missing))}")
         account = await client.get_account_summary()
-        prices = await client.get_prices((instrument_name, "GBP_USD"))
+        price_instruments = tuple(dict.fromkeys((*instrument_names, "GBP_USD")))
+        prices = await client.get_prices(price_instruments)
         price_map = {price.instrument: price for price in prices}
         conversion = Decimal("1")
         if account.currency != "USD":
@@ -177,24 +189,31 @@ async def run_dry_run(settings: OandaSettings, args: argparse.Namespace) -> int:
                 raise ValueError("GBP_USD price is required for GBP account risk conversion")
             conversion = Decimal("1") / gbp_usd.midpoint
         ledger = PaperLedger(Path(args.ledger))
-        session = DryRunSession(client, OandaExecutionGateway(settings, ExecutionMode.DRY_RUN), (instrument_name,), ledger=ledger)
-        loop = DryRunStrategyLoop(
-            OandaMarketDataProvider(client, settings),
-            session,
-            EmaCrossStrategy(),
-            metadata[0],
-            account_equity=account.balance,
-            risk_fraction=Decimal(settings.risk_fraction),
-            stop_pips=args.stop_pips,
-            quote_to_account_rate=conversion,
-        )
-        interval = 300.0 if args.timeframe == "5m" else 3600.0
-        worker = DryRunWorker(
-            loop,
-            WorkerConfig(pair=args.pair, timeframe=args.timeframe, interval_seconds=interval),
-            on_result=lambda result: print(json.dumps(result.as_dict(), default=str)),
-        )
-        await worker.run(max_steps=args.steps)
+        session = DryRunSession(client, OandaExecutionGateway(settings, ExecutionMode.DRY_RUN), instrument_names, ledger=ledger)
+        provider = OandaMarketDataProvider(client, settings)
+        workers: list[DryRunWorker] = []
+        for instrument_name in instrument_names:
+            pair = instrument_name.replace("_", "/")
+            timeframe = args.timeframe or settings.pair_timeframes.get(instrument_name) or (settings.timeframes[0] if settings.timeframes else "5m")
+            strategy_class = args.strategy or settings.pair_strategies.get(instrument_name, "ForexEmaStrategy")
+            strategy = load_strategy(strategy_class, freqtrade_timeframe(timeframe), pair)
+            adapter = FreqtradeStrategyAdapter(strategy, pair)
+            loop = DryRunStrategyLoop(
+                provider,
+                session,
+                adapter,
+                metadata_by_name[instrument_name],
+                account_equity=account.balance,
+                risk_fraction=Decimal(settings.risk_fraction),
+                stop_pips=args.stop_pips,
+                quote_to_account_rate=conversion,
+            )
+            workers.append(DryRunWorker(
+                loop,
+                WorkerConfig(pair=pair, timeframe=timeframe, interval_seconds=float(timeframe_to_seconds(freqtrade_timeframe(timeframe)))),
+                on_result=lambda result: print(json.dumps(result.as_dict(), default=str)),
+            ))
+        await DryRunPortfolioWorker(tuple(workers)).run(max_steps=args.steps)
     return 0
 
 

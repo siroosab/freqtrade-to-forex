@@ -1,8 +1,10 @@
 """Configurable EMA crossover strategy for FX candles."""
 
+from copy import deepcopy
+
 from pandas import DataFrame
 
-from freqtrade.strategy import IStrategy
+from freqtrade.strategy import IStrategy, IntParameter
 
 from freqtrade.forex.features import ForexFeaturePipeline
 
@@ -18,15 +20,27 @@ class ForexEmaStrategy(IStrategy):
     stoploss = -0.10
     process_only_new_candles = True
 
-    fast_period = 12
-    slow_period = 26
+    fast_period_opt = IntParameter(2, 18, default=12, space="buy")
+    slow_period_opt = IntParameter(20, 60, default=26, space="buy")
 
     def __init__(self, config: dict) -> None:
         super().__init__(config)
-        self.fast_period = int(config.get("forex_fast_period", type(self).fast_period))
-        self.slow_period = int(config.get("forex_slow_period", type(self).slow_period))
+        self.fast_period_opt = deepcopy(type(self).fast_period_opt)
+        self.slow_period_opt = deepcopy(type(self).slow_period_opt)
+        if "forex_fast_period" in config:
+            self.fast_period_opt.value = int(config["forex_fast_period"])
+        if "forex_slow_period" in config:
+            self.slow_period_opt.value = int(config["forex_slow_period"])
         if self.fast_period < 2 or self.slow_period <= self.fast_period:
             raise ValueError("EMA periods must satisfy 2 <= fast_period < slow_period")
+
+    @property
+    def fast_period(self) -> int:
+        return int(self.fast_period_opt.value)
+
+    @property
+    def slow_period(self) -> int:
+        return int(self.slow_period_opt.value)
 
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         pipeline = ForexFeaturePipeline(

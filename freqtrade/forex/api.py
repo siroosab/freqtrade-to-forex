@@ -29,6 +29,15 @@ from freqtrade.forex.health import OandaHealthCheck
 from freqtrade.forex.ledger import PaperLedger
 from freqtrade.forex.models import OandaEnvironment
 from freqtrade.forex.oanda import OandaAPIError, OandaClient, discover_oanda_accounts
+from freqtrade.forex.strategy_catalog import discover_strategy_files, validate_strategy_upload
+from freqtrade.forex.strategy_execution import (
+    FreqtradeStrategyAdapter,
+    freqtrade_timeframe,
+    load_strategy,
+    oanda_granularity,
+    strategy_informative_timeframes,
+)
+from freqtrade.timeframe import timeframe_to_minutes
 
 
 def _render_ui_index(ui_index: Path) -> str:
@@ -263,6 +272,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
 
     AI_CONFIG: dict[str, object] = {
         "strategyName": "FX Trend Pulse",
+        "strategyClass": "ForexAIStrategyBaseline",
         "model": "hybrid",
         "timeframe": "M5",
         "riskBudget": "0.72%",
@@ -302,16 +312,27 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         normalized = pair.replace("_", "/").upper()
         if normalized not in AI_CONFIG_BY_PAIR:
             AI_CONFIG_BY_PAIR[normalized] = dict(AI_CONFIG)
+            setup = load_forex_config(Path(os.environ.get("OANDA_CONFIG_PATH", "user_data/config.json")))
+            pair_strategy = dict(setup.get("pair_strategies", {})).get(normalized.replace("/", "_"))
+            if pair_strategy:
+                AI_CONFIG_BY_PAIR[normalized]["strategyClass"] = pair_strategy
+            pair_timeframe = dict(setup.get("pair_timeframes", {})).get(normalized.replace("/", "_"))
+            timeframe_labels = {"1m": "M1", "5m": "M5", "15m": "M15", "30m": "M30", "1h": "H1", "2h": "H2", "4h": "H4", "6h": "H6", "8h": "H8", "12h": "H12", "1d": "D1", "1w": "W1", "1mo": "MN1"}
+            if pair_timeframe in timeframe_labels:
+                AI_CONFIG_BY_PAIR[normalized]["timeframe"] = timeframe_labels[pair_timeframe]
             AI_CONFIG_BY_PAIR[normalized]["configRevision"] = "r0"
             AI_CONFIG_REVISIONS[normalized] = [dict(AI_CONFIG_BY_PAIR[normalized])]
         return AI_CONFIG_BY_PAIR[normalized]
+
+    def hyperopt_scope(pair: str, strategy_class: str, timeframe: str) -> str:
+        return f"{normalize_pair(pair)}|{strategy_class}|{timeframe.upper()}"
 
     def validate_ai_config(candidate: dict[str, object]) -> None:
         model = str(candidate.get("model", "hybrid")).lower()
         if model not in {"rule-based", "ml", "hybrid"}:
             raise HTTPException(status_code=400, detail="AI model must be rule-based, ml, or hybrid")
         timeframe = str(candidate.get("timeframe", "M5")).upper()
-        if timeframe not in {"M5", "M15", "H1"}:
+        if timeframe not in {"M1", "M5", "M15", "M30", "H1", "H2", "H4", "H6", "H8", "H12", "D", "D1", "W", "W1", "M", "MN1"}:
             raise HTTPException(status_code=400, detail="Unsupported AI timeframe")
         try:
             if not 0 < float(candidate["entryThreshold"]) <= 10 or not 0 <= float(candidate["exitThreshold"]) <= 10:
@@ -377,12 +398,23 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             RISK_CONFIG_BY_PAIR[normalized] = defaults
         return RISK_CONFIG_BY_PAIR[normalized]
 
-    def reset_pair_research_state(pair: str) -> None:
+    def reset_pair_research_state(pair: str, strategy_class: str, timeframe: str) -> None:
         normalized = pair.replace("_", "/").upper()
-        AI_PENDING_OPTIMIZATION.pop(normalized, None)
+        scope_key = hyperopt_scope(normalized, strategy_class, timeframe)
+        AI_PENDING_OPTIMIZATION.pop(scope_key, None)
+        AI_HYPEROPT_REPORTS.pop(scope_key, None)
+        AI_HYPEROPT_JOBS.pop(scope_key, None)
         pair_config = ai_config_for_pair(normalized)
-        pair_config.pop("approvedHyperopt", None)
-        BACKTEST_HISTORY[:] = [item for item in BACKTEST_HISTORY if item.get("pair") != normalized]
+        approved_revisions = dict(pair_config.get("approvedRevisions") or {})
+        approved_revisions.pop(f"{strategy_class}|{timeframe.upper()}", None)
+        pair_config["approvedRevisions"] = approved_revisions
+        if pair_config.get("approvedRevision", {}).get("strategyClass") == strategy_class and pair_config.get("approvedRevision", {}).get("timeframe") == timeframe.upper():
+            pair_config.pop("approvedRevision", None)
+            pair_config.pop("approvedHyperopt", None)
+        BACKTEST_HISTORY[:] = [
+            item for item in BACKTEST_HISTORY
+            if not (item.get("pair") == normalized and item.get("timeframe", "").upper() == timeframe.upper() and item.get("strategy") == strategy_class)
+        ]
 
     def resolve_history_request(payload: dict, timeframe: str) -> tuple[str, int]:
         mode = str(payload.get("historyMode", "candles")).lower()
@@ -391,10 +423,12 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             return mode, min(value, 10000)
         if mode != "days":
             raise HTTPException(status_code=400, detail="historyMode must be candles or days")
-        candles_per_day = {"M5": 288, "M15": 96, "H1": 24}.get(timeframe.upper())
-        if candles_per_day is None:
-            raise HTTPException(status_code=400, detail=f"Days history is unsupported for timeframe {timeframe}")
-        return mode, min(value * candles_per_day, 10000)
+        try:
+            timeframe_seconds = timeframe_to_seconds(freqtrade_timeframe(timeframe))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"Days history is unsupported for timeframe {timeframe}") from exc
+        requested_candles = (value * 86400 + timeframe_seconds - 1) // timeframe_seconds
+        return mode, min(requested_candles, 10000)
     AI_REVIEW_STATE: dict[str, object] = {
         "status": "pending",
         "strategyName": "FX Trend Pulse",
@@ -409,7 +443,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         "notes": "Awaiting manual review before Practice-safe execution approval.",
         "lastUpdated": datetime.now(timezone.utc).isoformat(),
     }
-    AI_REVIEW_BY_SCOPE: dict[tuple[str, str], dict[str, object]] = {}
+    AI_REVIEW_BY_SCOPE: dict[tuple[str, str, str], dict[str, object]] = {}
     BACKTEST_HISTORY: list[dict] = []
     BACKTEST_JOBS: dict[str, dict] = {}
 
@@ -425,29 +459,35 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
     )
     revision_db.commit()
 
-    def persist_scope_revision(pair: str, timeframe: str) -> None:
+    def persist_scope_revision(pair: str, timeframe: str, strategy_class: str | None = None) -> None:
         normalized_pair = pair.replace("_", "/").upper()
-        scope = f"{normalized_pair}|{timeframe.upper()}"
+        selected_class = strategy_class or str(ai_config_for_pair(normalized_pair).get("strategyClass", "ForexAIStrategyBaseline"))
+        scope = f"{normalized_pair}|{timeframe.upper()}|{selected_class}"
         revision_db.execute(
             "INSERT OR REPLACE INTO ai_scope_revisions(scope, config_json, review_json) VALUES (?, ?, ?)",
             (
                 scope,
                 json.dumps(ai_config_for_pair(normalized_pair), default=str),
-                json.dumps(AI_REVIEW_BY_SCOPE.get((normalized_pair, timeframe.upper()), {}), default=str),
+                json.dumps(AI_REVIEW_BY_SCOPE.get((normalized_pair, timeframe.upper(), selected_class), {}), default=str),
             ),
         )
         revision_db.commit()
 
     def restore_scope_revisions() -> None:
         for scope, config_json, review_json in revision_db.execute("SELECT scope, config_json, review_json FROM ai_scope_revisions"):
-            pair, timeframe = scope.rsplit("|", 1)
+            parts = scope.split("|")
+            pair = parts[0]
+            if len(parts) == 2:
+                timeframe, strategy_class = parts[1], "ForexAIStrategyBaseline"
+            else:
+                timeframe, strategy_class = parts[1], parts[2]
             pair = pair.replace("_", "/").upper()
             config = json.loads(config_json)
             AI_CONFIG_BY_PAIR[pair] = config
             AI_CONFIG_REVISIONS.setdefault(pair, [dict(config)])
             review = json.loads(review_json)
             if review:
-                AI_REVIEW_BY_SCOPE[(pair, timeframe)] = review
+                AI_REVIEW_BY_SCOPE[(pair, timeframe, strategy_class)] = review
 
     restore_scope_revisions()
 
@@ -455,6 +495,10 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         "enabled": False,
         "intervalDays": 2,
         "gapMinutes": 120,
+        "strategyClass": "ForexAIStrategyBaseline",
+        "timeframe": "M5",
+        "pairStrategies": {},
+        "pairTimeframes": {},
         "pairs": [],
         "lastRunAt": None,
         "nextRunAt": None,
@@ -584,11 +628,28 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
     def fallback_ai_config() -> dict:
         return dict(AI_CONFIG)
 
-    def fallback_ai_review(pair: str | None = None, timeframe: str | None = None) -> dict:
+    def fallback_ai_review(
+        pair: str | None = None,
+        timeframe: str | None = None,
+        strategy_class: str | None = None,
+    ) -> dict:
         if pair is not None and timeframe is not None:
-            scoped = AI_REVIEW_BY_SCOPE.get((normalize_pair(pair), timeframe.upper()))
+            normalized_pair = normalize_pair(pair)
+            selected_class = strategy_class or str(ai_config_for_pair(normalized_pair).get("strategyClass", "ForexAIStrategyBaseline"))
+            scoped = AI_REVIEW_BY_SCOPE.get((normalized_pair, timeframe.upper(), selected_class))
             if scoped is not None:
                 return dict(scoped)
+            pair_config = ai_config_for_pair(normalized_pair)
+            return {
+                **AI_REVIEW_STATE,
+                "status": "pending",
+                "pair": normalized_pair,
+                "timeframe": timeframe.upper(),
+                "strategyClass": selected_class,
+                "model": pair_config.get("model", "hybrid"),
+                "notes": "Awaiting manual review for this pair, timeframe, and strategy.",
+                "approvedRevision": None,
+            }
         return dict(AI_REVIEW_STATE)
 
     def live_event(channel: str, event_type: str, data: dict | list[dict]) -> dict:
@@ -1092,12 +1153,14 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         account_id = exchange.get("account_id", "")
         instruments = exchange.get("pair_whitelist", ["EUR_USD", "GBP_USD"])
         pair_timeframes = persisted.get("pair_timeframes", {})
+        pair_strategies = persisted.get("pair_strategies", {})
         return {
             "configured": bool(token and account_id),
             "environment": exchange.get("oanda_environment", "practice"),
             "executionMode": exchange.get("oanda_execution_mode", "dry_run"),
             "instruments": instruments,
             "pairTimeframes": pair_timeframes,
+            "pairStrategies": pair_strategies,
             "accountIdConfigured": bool(account_id),
             "tokenConfigured": bool(token),
             "strategyFile": str(strategy_path),
@@ -1240,6 +1303,15 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         supported_timeframes = {"1m", "5m", "15m", "30m", "1h", "4h", "1d", "1w", "1mo"}
         if any(timeframe not in supported_timeframes for timeframe in pair_timeframes.values()):
             raise HTTPException(status_code=400, detail="pairTimeframes contains an unsupported timeframe")
+        pair_strategies = {
+            str(pair).strip().upper().replace("/", "_"): str(strategy).strip()
+            for pair, strategy in dict(payload.get("pairStrategies", {})).items()
+            if str(pair).strip() and str(strategy).strip()
+        }
+        available_strategy_names = {item.name for item in discover_strategy_files()}
+        unknown_strategies = sorted(set(pair_strategies.values()) - available_strategy_names)
+        if unknown_strategies:
+            raise HTTPException(status_code=400, detail=f"Unknown strategy class(es): {', '.join(unknown_strategies)}")
         config_path = Path(payload.get("configPath") or os.environ.get("OANDA_CONFIG_PATH", "user_data/config.json"))
         current = load_forex_config(config_path)
         current.update({
@@ -1247,6 +1319,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             "timeframe": "5m",
             "setup": {"configured": True, "credentials_source": "ui"},
             "pair_timeframes": pair_timeframes,
+            "pair_strategies": pair_strategies,
             "exchange": {
                 **current.get("exchange", {}),
                 "name": "oanda",
@@ -1261,6 +1334,14 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "oanda_risk_fraction": str(risk_fraction),
             },
         })
+        timeframe_labels = {"1m": "M1", "5m": "M5", "15m": "M15", "30m": "M30", "1h": "H1", "2h": "H2", "4h": "H4", "6h": "H6", "8h": "H8", "12h": "H12", "1d": "D1", "1w": "W1", "1mo": "MN1"}
+        for pair_key, strategy_class in pair_strategies.items():
+            normalized_pair = pair_key.replace("_", "/").upper()
+            if normalized_pair in AI_CONFIG_BY_PAIR:
+                AI_CONFIG_BY_PAIR[normalized_pair]["strategyClass"] = strategy_class
+                selected_pair_timeframe = pair_timeframes.get(pair_key)
+                if selected_pair_timeframe in timeframe_labels:
+                    AI_CONFIG_BY_PAIR[normalized_pair]["timeframe"] = timeframe_labels[selected_pair_timeframe]
         saved_path = save_forex_config(current, config_path)
         record_audit_event(
             "setup.saved",
@@ -1276,6 +1357,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             "accountType": selected_account["accountType"],
             "instruments": instruments,
             "pairTimeframes": pair_timeframes,
+            "pairStrategies": pair_strategies,
             "accountIdConfigured": True,
             "tokenConfigured": True,
         }
@@ -1320,8 +1402,13 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         return {"state": state, "reloadPending": reload_pending, "message": message}
 
     @app.get("/api/v1/setup/files/{file_kind}")
-    async def download_setup_file(file_kind: str) -> Response:
+    async def download_setup_file(file_kind: str, strategy_name: str | None = None) -> Response:
         config_path, strategy_path = resolve_setup_paths()
+        if file_kind == "strategy" and strategy_name:
+            selected = next((item for item in discover_strategy_files() if item.name == strategy_name), None)
+            if selected is None:
+                raise HTTPException(status_code=404, detail="strategy class is not available")
+            strategy_path = selected.path
         paths = {
             "config": config_path,
             "strategy": strategy_path,
@@ -1373,9 +1460,10 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         if path is None:
             raise HTTPException(status_code=404, detail="unknown setup file")
         content = str(payload.get("content", ""))
-        if not content.strip() or len(content.encode("utf-8")) > 2_000_000:
-            raise HTTPException(status_code=400, detail="file is empty or exceeds the 2 MB limit")
+        strategy_names: list[str] = []
         if file_kind == "config":
+            if not content.strip() or len(content.encode("utf-8")) > 2_000_000:
+                raise HTTPException(status_code=400, detail="file is empty or exceeds the 2 MB limit")
             try:
                 config_payload = json.loads(content)
             except json.JSONDecodeError as exc:
@@ -1383,18 +1471,26 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             if not isinstance(config_payload, dict):
                 raise HTTPException(status_code=400, detail="config.json must contain a JSON object")
         else:
-            stripped = content.lstrip()
-            if not any(
-                stripped.startswith(prefix)
-                for prefix in ("#", '"""', "from ", "import ", "class ", "def ", "@")
-            ):
-                raise HTTPException(status_code=400, detail="strategy file does not look like Python source")
+            file_name = str(payload.get("fileName") or strategy_path.name)
+            strategy_directory = Path(os.environ.get("FOREX_STRATEGIES_DIR", "user_data/strategies"))
+            path = strategy_directory / file_name
+            try:
+                strategy_names = validate_strategy_upload(
+                    file_name,
+                    content,
+                    replacing=path if path.exists() else None,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary_path = path.with_suffix(f"{path.suffix}.tmp")
         temporary_path.write_text(content, encoding="utf-8")
         temporary_path.replace(path)
         record_audit_event("setup.file_uploaded", details={"fileKind": file_kind, "path": str(path)}, allowed=True)
-        return {"uploaded": True, "fileKind": file_kind, "path": str(path), "reloadRequired": True}
+        result = {"uploaded": True, "fileKind": file_kind, "path": str(path), "reloadRequired": True}
+        if file_kind == "strategy":
+            result["strategyNames"] = strategy_names
+        return result
 
     @app.get("/api/v1/ai/config")
     async def ai_config(pair: str = "EUR/USD") -> dict:
@@ -1418,14 +1514,18 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             settings_obj = OandaSettings.from_environment()
         except ValueError:
             pass
-        latest_run = next((dict(item) for item in BACKTEST_HISTORY if item.get("pair") == pair.replace("_", "/").upper()), None)
-        pending_run = AI_PENDING_OPTIMIZATION.get(pair.replace("_", "/").upper())
+        normalized_pair = normalize_pair(pair)
+        selected_class = str(pair_config.get("strategyClass", "ForexAIStrategyBaseline"))
+        selected_timeframe = str(pair_config.get("timeframe", "M5")).upper()
+        latest_run = next((dict(item) for item in BACKTEST_HISTORY if item.get("pair") == normalized_pair and item.get("strategy") == selected_class), None)
+        pending_run = AI_PENDING_OPTIMIZATION.get(hyperopt_scope(normalized_pair, selected_class, selected_timeframe))
         last_optimization = pending_run.get("updatedAt") if pending_run else pair_config.get("lastOptimizationAttempt")
         independent_backtest = bool(
             pending_run and next(
                 (
                     item for item in BACKTEST_HISTORY
-                    if item.get("pair") == pair.replace("_", "/").upper()
+                    if item.get("pair") == normalized_pair
+                    and item.get("strategy") == selected_class
                     and item.get("timeframe") == pending_run.get("timeframe")
                     and item.get("historyMode", "candles") == pending_run.get("historyMode", "candles")
                     and int(item.get("historyValue", item.get("steps", 0))) == int(pending_run.get("historyValue", pending_run.get("steps", 0)))
@@ -1436,9 +1536,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         )
         return {
             "state": "research/backtest-ready",
-            "strategy": "ForexAIStrategyBaseline",
-            "strategyVersion": "baseline-v1",
-            "pair": pair.replace("_", "/").upper(),
+            "strategy": selected_class,
+            "strategyVersion": "baseline-v1" if selected_class == "ForexAIStrategyBaseline" else "custom",
+            "pair": normalized_pair,
             "modelMode": pair_config.get("model", "hybrid"),
             "configRevision": config_revision,
             "modelVersion": "baseline-v1",
@@ -1545,6 +1645,8 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         pairs: list[str],
         instrument_names: tuple[str, ...],
         timeframe: str,
+        strategy_class: str,
+        informative_candles: dict[str, pd.DataFrame],
         history_mode: str,
         history_value: int,
         attempts: int,
@@ -1558,7 +1660,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         schema_hash: str,
     ) -> None:
         """Run the CPU-bound search in a worker thread so /status and /stop stay responsive."""
-        from freqtrade.forex.ai_hyperopt import run_ai_hyperopt
+        from freqtrade.forex.ai_hyperopt import run_ai_hyperopt, run_strategy_hyperopt
 
         stop_event: threading.Event = job["stopEvent"]  # type: ignore[assignment]
 
@@ -1570,7 +1672,25 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             return stop_event.is_set()
 
         try:
-            if len(pairs) == 1:
+            if strategy_class != "ForexAIStrategyBaseline":
+                if len(pairs) != 1:
+                    raise ValueError("Custom strategy Hyperopt currently runs one pair per job")
+                candidates = run_strategy_hyperopt(
+                    candles_by_pair[instrument_names[0]],
+                    informative_candles,
+                    instruments[instrument_names[0]],
+                    pair=pairs[0].replace("_", "/").upper(),
+                    strategy_class=strategy_class,
+                    timeframe=freqtrade_timeframe(timeframe),
+                    starting_balance=starting_balance,
+                    risk_fraction=risk_fraction,
+                    spread=spreads[instrument_names[0]],
+                    max_attempts=attempts,
+                    hyperopt_loss=hyperopt_loss,
+                    on_attempt=on_attempt,
+                    should_stop=should_stop,
+                )
+            elif len(pairs) == 1:
                 single = run_ai_hyperopt(
                     candles_by_pair[instrument_names[0]],
                     instruments[instrument_names[0]],
@@ -1589,17 +1709,20 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 raise ValueError("Hyperopt was stopped before completing any attempt")
             best = candidates[0]
             normalized_pair = pairs[0].replace("_", "/").upper()
+            scope_key = hyperopt_scope(normalized_pair, strategy_class, timeframe)
             completed_at = datetime.now(timezone.utc).isoformat()
             ai_config_for_pair(normalized_pair)["lastOptimizationAttempt"] = completed_at
-            AI_PENDING_OPTIMIZATION[normalized_pair] = {
+            AI_PENDING_OPTIMIZATION[scope_key] = {
                 "pair": normalized_pair,
                 "timeframe": timeframe.upper(),
+                "strategyClass": strategy_class,
                 "steps": history_value,
                 "historyMode": history_mode,
                 "historyValue": history_value,
                 "attempts": attempts,
-                "entryThreshold": str(best["entryThreshold"]),
-                "maxSpreadPct": str(best["maxSpreadPct"]),
+                "entryThreshold": str(best.get("entryThreshold", "")),
+                "maxSpreadPct": str(best.get("maxSpreadPct", "")),
+                "parameters": best.get("parameters", {}),
                 "objective": str(best["objective"]),
                 "updatedAt": completed_at,
                 "dataRevision": completed_at,
@@ -1611,7 +1734,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "pair": normalized_pair,
                 "timeframe": timeframe.upper(),
                 "status": "stopped" if stop_event.is_set() else "completed",
-                "strategy": "ForexAIStrategyBaseline",
+                "strategy": strategy_class,
                 "dataSource": "OANDA historical candles",
                 "dataRevision": completed_at,
                 "dataHash": data_hash,
@@ -1627,10 +1750,10 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "historyValue": history_value,
                 "trainCandles": max(len(candle_frame) // 2 for candle_frame in candles_by_pair.values()),
                 "validationCandles": max(len(candle_frame) // 2 for candle_frame in candles_by_pair.values()),
-                "bestParameters": {
-                    "entryThreshold": str(best["entryThreshold"]),
-                    "maxSpreadPct": str(best["maxSpreadPct"]),
-                },
+                "bestParameters": dict(best.get("parameters") or {
+                    "entryThreshold": str(best.get("entryThreshold", "")),
+                    "maxSpreadPct": str(best.get("maxSpreadPct", "")),
+                }),
                 "objective": str(best["objective"]),
                 "train": {
                     "netPl": str(best["trainNetPl"]),
@@ -1648,8 +1771,8 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             job["status"] = report["status"]
             job["report"] = report
             job["completedAt"] = completed_at
-            AI_HYPEROPT_REPORTS[normalized_pair] = {"report": report, "completedAt": completed_at}
-            persist_hyperopt_report(normalized_pair, completed_at, report)
+            AI_HYPEROPT_REPORTS[scope_key] = {"report": report, "completedAt": completed_at}
+            persist_hyperopt_report(scope_key, completed_at, report)
         except Exception as exc:  # pragma: no cover - background worker boundary
             job["status"] = "failed"
             job["error"] = str(exc)
@@ -1664,13 +1787,16 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         pairs = [str(item) for item in payload.get("pairs", [payload.get("pair", "EUR/USD")])]
         pairs = list(dict.fromkeys(pairs))
         normalized_pair = pairs[0].replace("_", "/").upper()
-        existing_job = AI_HYPEROPT_JOBS.get(normalized_pair)
+        pair_config = ai_config_for_pair(normalized_pair)
+        timeframe = str(payload.get("timeframe", pair_config.get("timeframe", "M5")))
+        strategy_class_name = str(payload.get("strategyClass") or pair_config.get("strategyClass") or "ForexAIStrategyBaseline")
+        scope_key = hyperopt_scope(normalized_pair, strategy_class_name, timeframe)
+        existing_job = AI_HYPEROPT_JOBS.get(scope_key)
         if existing_job is not None and existing_job.get("status") == "running":
-            raise HTTPException(status_code=409, detail=f"Hyperopt already running for {normalized_pair}")
+            raise HTTPException(status_code=409, detail=f"Hyperopt already running for {normalized_pair}, {timeframe}, {strategy_class_name}")
         if payload.get("resetPrevious", True):
             for selected_pair in pairs:
-                reset_pair_research_state(selected_pair)
-        timeframe = str(payload.get("timeframe", ai_config_for_pair(str(payload.get("pair", "EUR/USD"))).get("timeframe", "M5")))
+                reset_pair_research_state(selected_pair, strategy_class_name, timeframe)
         history_mode, steps = resolve_history_request(payload, timeframe)
         history_value = int(payload.get("historyValue", steps))
         attempts = max(1, min(int(payload.get("attempts", 24)), 900))
@@ -1678,6 +1804,24 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         hyperopt_loss = str(payload.get("hyperoptLoss", DEFAULT_HYPEROPT_LOSS))
         if hyperopt_loss not in HYPEROPT_LOSS_FUNCTIONS:
             raise HTTPException(status_code=400, detail=f"Unsupported hyperoptLoss: {hyperopt_loss}")
+        try:
+            candidate_strategy = load_strategy(strategy_class_name, freqtrade_timeframe(timeframe), normalized_pair)
+            informative_timeframes = strategy_informative_timeframes(candidate_strategy, normalized_pair)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if strategy_class_name != "ForexAIStrategyBaseline":
+            from freqtrade.strategy.parameters import BaseParameter
+
+            optimizable_parameters = {
+                name: value
+                for strategy_type in reversed(type(candidate_strategy).__mro__)
+                for name, value in vars(strategy_type).items()
+                if isinstance(value, BaseParameter) and value.optimize
+            }
+            if not optimizable_parameters:
+                raise HTTPException(status_code=400, detail=f"{strategy_class_name} has no optimizable Freqtrade parameters")
+        if strategy_class_name != "ForexAIStrategyBaseline" and len(pairs) != 1:
+            raise HTTPException(status_code=400, detail="Custom strategy Hyperopt currently runs one pair per job")
         settings = OandaSettings.from_environment()
         if settings.execution_mode not in {"dry_run", "backtest", "practice"}:
             raise HTTPException(status_code=400, detail="AI hyperopt requires a safe execution mode")
@@ -1686,7 +1830,10 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             "before downloading fresh OANDA candles."
         )
         _clear_cached_historical_data(pair=normalized_pair, timeframe=timeframe)
-        granularity = {"M5": "M5", "M15": "M15", "H1": "H1"}.get(timeframe.upper(), "M5")
+        try:
+            granularity = oanda_granularity(freqtrade_timeframe(timeframe))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         try:
             async with OandaClient(settings.token, settings.account_id, environment=settings.environment) as client:
                 account = await client.get_account_summary()
@@ -1695,6 +1842,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 instruments = {item.name: item for item in metadata}
                 candles_by_pair: dict[str, pd.DataFrame] = {}
                 spreads: dict[str, Decimal] = {}
+                informative_candles: dict[str, pd.DataFrame] = {}
                 for pair in pairs:
                     instrument_name = pair.replace("/", "_").upper()
                     candles = df_from_raw_candles(await client.get_candles(instrument_name, granularity, count=steps))
@@ -1702,25 +1850,40 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                         raise HTTPException(status_code=400, detail=f"No historical candles returned for {pair}")
                     candles_by_pair[instrument_name] = candles
                     spreads[instrument_name] = (await client.get_prices((instrument_name,)))[0].spread
+                    if len(pairs) == 1:
+                        base_minutes = timeframe_to_minutes(freqtrade_timeframe(timeframe))
+                        for informative_timeframe in informative_timeframes:
+                            informative_minutes = timeframe_to_minutes(informative_timeframe)
+                            informative_count = min(5000, max(10, (steps * base_minutes + informative_minutes - 1) // informative_minutes + 5))
+                            informative_frame = df_from_raw_candles(await client.get_candles(
+                                instrument_name,
+                                oanda_granularity(informative_timeframe),
+                                count=informative_count,
+                            ))
+                            if informative_frame.empty:
+                                raise HTTPException(status_code=400, detail=f"No informative candles returned for {informative_timeframe}")
+                            informative_candles[informative_timeframe] = informative_frame
         except HTTPException:
             raise
         except Exception as exc:  # pragma: no cover - API boundary
             raise HTTPException(status_code=500, detail=f"AI hyperopt failed: {exc}") from exc
 
         data_hash = candle_frame_hash(candles_by_pair)
-        schema_hash = ai_feature_schema_hash(ai_config_for_pair(normalized_pair))
+        schema_hash = hashlib.sha256(f"{strategy_class_name}|{timeframe}|{ai_feature_schema_hash(pair_config)}".encode()).hexdigest()
         coverage = 2 if len(pairs) == 1 else len(pairs) * 2
         search_space_size = min(attempts, 900)
         job: dict[str, object] = {
             "pair": normalized_pair,
             "timeframe": timeframe.upper(),
+            "strategyClass": strategy_class_name,
+            "scopeKey": scope_key,
             "status": "running",
             "attemptsCompleted": 0,
             "attemptsTotal": search_space_size * coverage,
             "startedAt": datetime.now(timezone.utc).isoformat(),
             "stopEvent": threading.Event(),
         }
-        AI_HYPEROPT_JOBS[normalized_pair] = job
+        AI_HYPEROPT_JOBS[scope_key] = job
         loop = asyncio.get_running_loop()
         loop.run_in_executor(
             None,
@@ -1729,6 +1892,8 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             pairs,
             instrument_names,
             timeframe,
+            strategy_class_name,
+            informative_candles,
             history_mode,
             history_value,
             attempts,
@@ -1743,6 +1908,8 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         )
         return {
             "pair": normalized_pair,
+            "timeframe": timeframe.upper(),
+            "strategyClass": strategy_class_name,
             "status": "running",
             "attemptsTotal": job["attemptsTotal"],
             "warning": history_warning,
@@ -1754,13 +1921,19 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         return {"default": DEFAULT_HYPEROPT_LOSS, "options": list(HYPEROPT_LOSS_FUNCTIONS)}
 
     @app.get("/api/v1/ai/hyperopt/status")
-    async def ai_hyperopt_status(pair: str = "EUR/USD") -> dict:
+    async def ai_hyperopt_status(pair: str = "EUR/USD", strategy_class: str | None = None, timeframe: str | None = None) -> dict:
         normalized_pair = normalize_pair(pair)
-        job = AI_HYPEROPT_JOBS.get(normalized_pair)
+        pair_config = ai_config_for_pair(normalized_pair)
+        selected_class = strategy_class or str(pair_config.get("strategyClass", "ForexAIStrategyBaseline"))
+        selected_timeframe = (timeframe or str(pair_config.get("timeframe", "M5"))).upper()
+        scope_key = hyperopt_scope(normalized_pair, selected_class, selected_timeframe)
+        job = AI_HYPEROPT_JOBS.get(scope_key)
         if job is None:
-            last_report = AI_HYPEROPT_REPORTS.get(normalized_pair)
+            last_report = AI_HYPEROPT_REPORTS.get(scope_key) or AI_HYPEROPT_REPORTS.get(normalized_pair)
             return {
                 "pair": normalized_pair,
+                "strategyClass": selected_class,
+                "timeframe": selected_timeframe,
                 "status": "idle",
                 "attemptsCompleted": 0,
                 "attemptsTotal": 0,
@@ -1784,16 +1957,24 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
     ) -> dict:
         validate_write_access(user_role, csrf_token)
         normalized_pair = normalize_pair(str(payload.get("pair", "EUR/USD")))
-        job = AI_HYPEROPT_JOBS.get(normalized_pair)
+        pair_config = ai_config_for_pair(normalized_pair)
+        strategy_class = str(payload.get("strategyClass") or pair_config.get("strategyClass", "ForexAIStrategyBaseline"))
+        timeframe = str(payload.get("timeframe") or pair_config.get("timeframe", "M5"))
+        scope_key = hyperopt_scope(normalized_pair, strategy_class, timeframe)
+        job = AI_HYPEROPT_JOBS.get(scope_key)
         if job is None or job.get("status") != "running":
-            raise HTTPException(status_code=400, detail=f"No running hyperopt job for {normalized_pair}")
+            raise HTTPException(status_code=400, detail=f"No running hyperopt job for {normalized_pair}, {timeframe}, {strategy_class}")
         job["stopEvent"].set()  # type: ignore[union-attr]
-        return {"pair": normalized_pair, "status": "stopping"}
+        return {"pair": normalized_pair, "timeframe": timeframe, "strategyClass": strategy_class, "status": "stopping"}
 
     @app.get("/api/v1/ai/hyperopt/report")
-    async def ai_hyperopt_report(pair: str = "EUR/USD") -> dict:
+    async def ai_hyperopt_report(pair: str = "EUR/USD", strategy_class: str | None = None, timeframe: str | None = None) -> dict:
         normalized_pair = normalize_pair(pair)
-        entry = AI_HYPEROPT_REPORTS.get(normalized_pair)
+        pair_config = ai_config_for_pair(normalized_pair)
+        selected_class = strategy_class or str(pair_config.get("strategyClass", "ForexAIStrategyBaseline"))
+        selected_timeframe = (timeframe or str(pair_config.get("timeframe", "M5"))).upper()
+        scope_key = hyperopt_scope(normalized_pair, selected_class, selected_timeframe)
+        entry = AI_HYPEROPT_REPORTS.get(scope_key) or AI_HYPEROPT_REPORTS.get(normalized_pair)
         if entry is None:
             return {"pair": normalized_pair, "available": False}
         return {
@@ -1804,19 +1985,58 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             "report": entry["report"],
         }
 
+    def approved_scheduler_pairs_for(strategy_class: str, timeframe: str) -> list[str]:
+        timeframe = timeframe.upper()
+        return [
+            pair
+            for pair, scopes in approved_scheduler_scopes().items()
+            if any(scope["strategyClass"] == strategy_class and scope["timeframe"] == timeframe for scope in scopes)
+        ]
+
+    def approved_scheduler_scopes() -> dict[str, list[dict[str, str]]]:
+        setup = load_forex_config(Path(os.environ.get("OANDA_CONFIG_PATH", "user_data/config.json")))
+        configured_pairs = [normalize_pair(str(pair)) for pair in AI_HYPEROPT_SCHEDULER.get("pairs", [])]
+        setup_pairs = [normalize_pair(str(pair)) for pair in dict(setup.get("exchange", {})).get("pair_whitelist", [])]
+        candidates = list(dict.fromkeys([*configured_pairs, *setup_pairs, *sorted(AI_CONFIG_BY_PAIR)]))
+        approved: dict[str, list[dict[str, str]]] = {}
+        for pair in candidates:
+            pair_config = ai_config_for_pair(pair)
+            revisions = dict(pair_config.get("approvedRevisions") or {})
+            scopes = [
+                {"strategyClass": str(revision.get("strategyClass", "ForexAIStrategyBaseline")), "timeframe": str(revision.get("timeframe", "M5")).upper()}
+                for revision in revisions.values()
+                if isinstance(revision, dict)
+            ]
+            legacy = pair_config.get("approvedRevision")
+            if isinstance(legacy, dict):
+                legacy_scope = {"strategyClass": str(legacy.get("strategyClass", "ForexAIStrategyBaseline")), "timeframe": str(legacy.get("timeframe", "M5")).upper()}
+                if legacy_scope not in scopes:
+                    scopes.append(legacy_scope)
+            if scopes:
+                approved[pair] = scopes
+        return approved
+
     def approved_scheduler_pairs() -> list[str]:
-        configured = [normalize_pair(str(pair)) for pair in AI_HYPEROPT_SCHEDULER.get("pairs", [])]
-        candidates = list(dict.fromkeys([*configured, *sorted(AI_CONFIG_BY_PAIR)]))
-        return [pair for pair in candidates if isinstance(ai_config_for_pair(pair).get("approvedRevision"), dict)]
+        pair_strategies = dict(AI_HYPEROPT_SCHEDULER.get("pairStrategies") or {})
+        pair_timeframes = dict(AI_HYPEROPT_SCHEDULER.get("pairTimeframes") or {})
+        approved_scopes = approved_scheduler_scopes()
+        selected = []
+        for pair in AI_HYPEROPT_SCHEDULER.get("pairs", []):
+            normalized = normalize_pair(str(pair))
+            strategy_class = str(pair_strategies.get(normalized, AI_HYPEROPT_SCHEDULER.get("strategyClass", "ForexAIStrategyBaseline")))
+            timeframe = str(pair_timeframes.get(normalized, AI_HYPEROPT_SCHEDULER.get("timeframe", "M5"))).upper()
+            if {"strategyClass": strategy_class, "timeframe": timeframe} in approved_scopes.get(normalized, []):
+                selected.append(normalized)
+        return selected or list(approved_scopes)
 
     def schedule_pair_slots(pairs: list[str], *, anchor: datetime | None = None) -> dict[str, str]:
         base = anchor or (datetime.now(timezone.utc) + timedelta(minutes=5))
         gap = timedelta(minutes=int(AI_HYPEROPT_SCHEDULER["gapMinutes"]))
         return {pair: (base + index * gap).isoformat() for index, pair in enumerate(pairs)}
 
-    async def wait_for_hyperopt_job(pair: str) -> dict[str, object]:
+    async def wait_for_hyperopt_job(scope_key: str) -> dict[str, object]:
         while True:
-            job = AI_HYPEROPT_JOBS.get(pair, {})
+            job = AI_HYPEROPT_JOBS.get(scope_key, {})
             if job.get("status") in {"completed", "stopped", "failed"}:
                 return job
             await asyncio.sleep(2)
@@ -1837,13 +2057,20 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         try:
             async def start_for_pair(pair: str) -> dict:
                 config = ai_config_for_pair(pair)
-                revision = config.get("approvedRevision") or {}
+                strategy_class = str(dict(AI_HYPEROPT_SCHEDULER.get("pairStrategies") or {}).get(pair, ""))
+                timeframe = str(dict(AI_HYPEROPT_SCHEDULER.get("pairTimeframes") or {}).get(pair, "")).upper()
+                revisions = dict(config.get("approvedRevisions") or {})
+                revision = revisions.get(f"{strategy_class}|{timeframe}") if strategy_class and timeframe else None
+                if not isinstance(revision, dict):
+                    revision = config.get("approvedRevision") or {}
+                    strategy_class = str(revision.get("strategyClass", "ForexAIStrategyBaseline"))
+                    timeframe = str(revision.get("timeframe", "M5")).upper()
                 hyperopt = revision.get("hyperopt") or {}
-                timeframe = str(revision.get("timeframe", config.get("timeframe", "M5"))).upper()
                 history_value = int(hyperopt.get("historyValue") or 250)
                 payload = {
                     "pair": pair,
                     "timeframe": timeframe,
+                    "strategyClass": strategy_class,
                     "historyMode": hyperopt.get("historyMode", "candles"),
                     "historyValue": history_value,
                     "steps": history_value,
@@ -1855,7 +2082,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 warning = str(started_job.get("warning") or "")
                 if warning:
                     warnings.append(warning)
-                result = await wait_for_hyperopt_job(pair)
+                result = await wait_for_hyperopt_job(hyperopt_scope(pair, strategy_class, timeframe))
                 item = {
                     "pair": pair,
                     "status": result.get("status", started_job.get("status")),
@@ -1890,8 +2117,17 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             persist_hyperopt_scheduler()
 
     @app.get("/api/v1/ai/hyperopt/scheduler")
-    async def ai_hyperopt_scheduler() -> dict:
-        return {**AI_HYPEROPT_SCHEDULER, "approvedPairs": approved_scheduler_pairs()}
+    async def ai_hyperopt_scheduler(strategy_class: str | None = None, timeframe: str | None = None) -> dict:
+        selected_class = strategy_class or str(AI_HYPEROPT_SCHEDULER.get("strategyClass", "ForexAIStrategyBaseline"))
+        selected_timeframe = timeframe or str(AI_HYPEROPT_SCHEDULER.get("timeframe", "M5"))
+        result = {
+            **AI_HYPEROPT_SCHEDULER,
+            "strategyClass": selected_class,
+            "timeframe": selected_timeframe,
+            "approvedPairs": approved_scheduler_pairs_for(selected_class, selected_timeframe),
+            "approvedScopes": approved_scheduler_scopes(),
+        }
+        return result
 
     @app.post("/api/v1/ai/hyperopt/scheduler")
     async def save_ai_hyperopt_scheduler(
@@ -1901,16 +2137,34 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
     ) -> dict:
         validate_write_access(user_role, csrf_token)
         pairs = list(dict.fromkeys(normalize_pair(str(pair)) for pair in payload.get("pairs", [])))
-        unknown = [pair for pair in pairs if not isinstance(ai_config_for_pair(pair).get("approvedRevision"), dict)]
+        strategy_class = str(payload.get("strategyClass", AI_HYPEROPT_SCHEDULER["strategyClass"]))
+        timeframe = str(payload.get("timeframe", AI_HYPEROPT_SCHEDULER["timeframe"])).upper()
+        requested_strategies = {normalize_pair(str(pair)): str(value) for pair, value in dict(payload.get("pairStrategies", {})).items()}
+        requested_timeframes = {normalize_pair(str(pair)): str(value).upper() for pair, value in dict(payload.get("pairTimeframes", {})).items()}
+        approved_scopes = approved_scheduler_scopes()
+        selected_strategies: dict[str, str] = {}
+        selected_timeframes: dict[str, str] = {}
+        unknown: list[str] = []
+        for pair in pairs:
+            config = ai_config_for_pair(pair)
+            latest = config.get("approvedRevision")
+            fallback_strategy = str(latest.get("strategyClass", strategy_class)) if isinstance(latest, dict) else strategy_class
+            fallback_timeframe = str(latest.get("timeframe", timeframe)).upper() if isinstance(latest, dict) else timeframe
+            selected_strategy = requested_strategies.get(pair, fallback_strategy)
+            selected_timeframe = requested_timeframes.get(pair, fallback_timeframe)
+            selected_strategies[pair] = selected_strategy
+            selected_timeframes[pair] = selected_timeframe
+            if {"strategyClass": selected_strategy, "timeframe": selected_timeframe} not in approved_scopes.get(pair, []):
+                unknown.append(pair)
         if unknown:
-            raise HTTPException(status_code=409, detail=f"Pairs require an approved Hyperopt revision: {', '.join(unknown)}")
+            raise HTTPException(status_code=409, detail=f"Pairs require an approved strategy/timeframe revision matching the scheduler selection: {', '.join(unknown)}")
         interval_days = int(payload.get("intervalDays", AI_HYPEROPT_SCHEDULER["intervalDays"]))
         gap_minutes = int(payload.get("gapMinutes", AI_HYPEROPT_SCHEDULER["gapMinutes"]))
         if not 1 <= interval_days <= 30:
             raise HTTPException(status_code=400, detail="intervalDays must be between 1 and 30")
         if not 1 <= gap_minutes <= 1440:
             raise HTTPException(status_code=400, detail="gapMinutes must be between 1 and 1440")
-        AI_HYPEROPT_SCHEDULER.update({"enabled": bool(payload.get("enabled", False)), "intervalDays": interval_days, "gapMinutes": gap_minutes, "pairs": pairs})
+        AI_HYPEROPT_SCHEDULER.update({"enabled": bool(payload.get("enabled", False)), "intervalDays": interval_days, "gapMinutes": gap_minutes, "pairs": pairs, "strategyClass": strategy_class, "timeframe": timeframe, "pairStrategies": selected_strategies, "pairTimeframes": selected_timeframes})
         if AI_HYPEROPT_SCHEDULER["enabled"]:
             next_runs = schedule_pair_slots(pairs)
             AI_HYPEROPT_SCHEDULER["nextRuns"] = next_runs
@@ -1930,10 +2184,11 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         return await run_scheduled_hyperopt()
 
     @app.get("/api/v1/ai/review")
-    async def ai_review(pair: str = "EUR/USD", timeframe: str | None = None) -> dict:
+    async def ai_review(pair: str = "EUR/USD", timeframe: str | None = None, strategy_class: str | None = None) -> dict:
         normalized_pair = normalize_pair(pair)
         selected_timeframe = (timeframe or str(ai_config_for_pair(normalized_pair).get("timeframe", "M5"))).upper()
-        return fallback_ai_review(normalized_pair, selected_timeframe)
+        selected_class = strategy_class or str(ai_config_for_pair(normalized_pair).get("strategyClass", "ForexAIStrategyBaseline"))
+        return fallback_ai_review(normalized_pair, selected_timeframe, selected_class)
 
     @app.post("/api/v1/ai/review")
     async def save_ai_review(
@@ -1949,22 +2204,28 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         status = str(payload.get("status", "pending")).lower()
         pair = str(payload.get("pair", "EUR/USD")).replace("_", "/").upper()
         requested_timeframe = str(payload.get("timeframe", ai_config_for_pair(pair).get("timeframe", "M5"))).upper()
+        strategy_class = str(payload.get("strategyClass") or ai_config_for_pair(pair).get("strategyClass", "ForexAIStrategyBaseline"))
+        if strategy_class not in {item.name for item in discover_strategy_files()}:
+            raise HTTPException(status_code=400, detail=f"Unknown strategy class: {strategy_class}")
         if status not in {"pending", "approved", "rejected"}:
             raise HTTPException(status_code=400, detail="Invalid review status")
-        pending = AI_PENDING_OPTIMIZATION.get(pair)
+        scope_key = hyperopt_scope(pair, strategy_class, requested_timeframe)
+        pending = AI_PENDING_OPTIMIZATION.get(scope_key)
         if pending is None:
-            stored_report = AI_HYPEROPT_REPORTS.get(pair)
+            stored_report = AI_HYPEROPT_REPORTS.get(scope_key) or AI_HYPEROPT_REPORTS.get(pair)
             report = stored_report.get("report") if stored_report else None
             if isinstance(report, dict):
                 report_parameters = report.get("bestParameters") or {}
                 pending = {
                     "pair": pair,
                     "timeframe": str(report.get("timeframe", requested_timeframe)).upper(),
+                    "strategyClass": str(report.get("strategy", strategy_class)),
                     "historyMode": report.get("historyMode", "candles"),
                     "historyValue": int(report.get("historyValue", 0)),
                     "attempts": int(report.get("attemptsRequested", 0)),
-                    "entryThreshold": str(report_parameters.get("entryThreshold", "0.5")),
-                    "maxSpreadPct": str(report_parameters.get("maxSpreadPct", "1.0")),
+                    "entryThreshold": str(report_parameters.get("entryThreshold", "")),
+                    "maxSpreadPct": str(report_parameters.get("maxSpreadPct", "")),
+                    "parameters": report_parameters,
                     "objective": str(report.get("objective", "0")),
                     "updatedAt": str(stored_report.get("completedAt")),
                     "dataHash": report.get("dataHash"),
@@ -1975,10 +2236,11 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 }
         if pending is None:
             persisted_config = ai_config_for_pair(pair)
-            if "entryThreshold" in persisted_config and "maxSpreadPct" in persisted_config:
+            if strategy_class == "ForexAIStrategyBaseline" and "entryThreshold" in persisted_config and "maxSpreadPct" in persisted_config:
                 pending = {
                     "pair": pair,
                     "timeframe": requested_timeframe,
+                    "strategyClass": strategy_class,
                     "historyMode": "candles",
                     "historyValue": 0,
                     "attempts": 0,
@@ -1997,17 +2259,23 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 raise HTTPException(status_code=409, detail=f"Approval timeframe {requested_timeframe} does not match Hyperopt timeframe {pending['timeframe']} for {pair}")
             target_config = ai_config_for_pair(pair)
             target_config["timeframe"] = requested_timeframe
-            target_config["entryThreshold"] = pending["entryThreshold"]
-            target_config["maxSpreadPct"] = pending["maxSpreadPct"]
+            target_config["strategyClass"] = strategy_class
+            if pending.get("entryThreshold"):
+                target_config["entryThreshold"] = pending["entryThreshold"]
+                target_config["maxSpreadPct"] = pending["maxSpreadPct"]
             target_config["approvedHyperopt"] = dict(pending)
-            target_config["approvedRevision"] = {
+            approved_revision = {
                 "pair": pair,
                 "timeframe": requested_timeframe,
+                "strategyClass": strategy_class,
                 "configRevision": target_config.get("configRevision", "r0"),
                 "approvedAt": datetime.now(timezone.utc).isoformat(),
                 "hyperopt": dict(pending),
                 "freqai": dict(target_config.get("freqai") or {}),
             }
+            target_config["approvedRevisions"] = dict(target_config.get("approvedRevisions") or {})
+            target_config["approvedRevisions"][f"{strategy_class}|{requested_timeframe}"] = approved_revision
+            target_config["approvedRevision"] = approved_revision
         elif status == "approved":
             configured_timeframe = str(ai_config_for_pair(pair).get("timeframe", "M5")).upper()
             if requested_timeframe != configured_timeframe:
@@ -2030,8 +2298,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         scoped_review["pair"] = pair
         scoped_review["timeframe"] = requested_timeframe
         scoped_review["approvedRevision"] = ai_config_for_pair(pair).get("approvedRevision")
-        AI_REVIEW_BY_SCOPE[(pair, requested_timeframe)] = scoped_review
-        persist_scope_revision(pair, requested_timeframe)
+        scoped_review["strategyClass"] = strategy_class
+        AI_REVIEW_BY_SCOPE[(pair, requested_timeframe, strategy_class)] = scoped_review
+        persist_scope_revision(pair, requested_timeframe, strategy_class)
 
         record_audit_event(
             "ai.strategy.review",
@@ -2040,16 +2309,18 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             role=user_role,
             allowed=True,
         )
-        return fallback_ai_review(pair, requested_timeframe)
+        return fallback_ai_review(pair, requested_timeframe, strategy_class)
 
     @app.post("/api/v1/ai/config")
     async def save_ai_config(payload: dict, pair: str = "EUR/USD") -> dict:
         pair = str(payload.get("pair", pair))
         target_config = ai_config_for_pair(pair)
         candidate = dict(target_config)
-        for key in ("strategyName", "model", "timeframe", "riskBudget", "trainingMode", "entryThreshold", "exitThreshold", "volatilityWindow", "atrWindow", "maxSpreadPct"):
+        for key in ("strategyName", "strategyClass", "model", "timeframe", "riskBudget", "trainingMode", "entryThreshold", "exitThreshold", "volatilityWindow", "atrWindow", "maxSpreadPct"):
             if key in payload and isinstance(payload[key], str):
                 candidate[key] = payload[key]
+        if str(candidate.get("strategyClass")) not in {item.name for item in discover_strategy_files()}:
+            raise HTTPException(status_code=400, detail=f"Unknown strategy class: {candidate.get('strategyClass')}")
         if "featureSet" in payload and isinstance(payload["featureSet"], list):
             candidate["featureSet"] = payload["featureSet"]
         if "freqai" in payload and isinstance(payload["freqai"], dict):
@@ -2071,7 +2342,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         target_config.clear()
         target_config.update(candidate)
         AI_CONFIG_REVISIONS[pair.replace("_", "/").upper()].append(dict(candidate))
-        persist_scope_revision(pair, str(candidate.get("timeframe", "M5")))
+        persist_scope_revision(pair, str(candidate.get("timeframe", "M5")), str(candidate.get("strategyClass", "ForexAIStrategyBaseline")))
         if "strategyName" in AI_CONFIG:
             AI_REVIEW_STATE["strategyName"] = target_config["strategyName"]
         if "model" in target_config:
@@ -2081,6 +2352,13 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
     @app.get("/api/v1/strategies")
     async def strategies() -> list[dict]:
         return fallback_strategies()
+
+    @app.get("/api/v1/strategies/available")
+    async def available_strategies() -> list[dict[str, str | bool]]:
+        return [
+            {"name": item.name, "fileName": item.file_name, "builtin": item.builtin}
+            for item in discover_strategy_files()
+        ]
 
     @app.get("/api/v1/backtests")
     async def backtests() -> list[dict]:
@@ -2134,6 +2412,12 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         pair = str(payload.get("pair", "EUR/USD"))
         timeframe = str(payload.get("timeframe", "M5"))
         normalized_pair = normalize_pair(pair)
+        instrument_name = pair.replace("/", "_").upper()
+        pair_config = ai_config_for_pair(pair)
+        persisted_setup = load_forex_config(Path(os.environ.get("OANDA_CONFIG_PATH", "user_data/config.json")))
+        configured_strategy = dict(persisted_setup.get("pair_strategies", {})).get(instrument_name)
+        strategy_class_name = str(payload.get("strategyClass") or configured_strategy or pair_config.get("strategyClass") or "ForexAIStrategyBaseline")
+        selected_timeframe = freqtrade_timeframe(timeframe)
         history_notice = (
             f"Clearing previous cached historical data for {normalized_pair} at {timeframe} "
             "before downloading fresh OANDA candles."
@@ -2143,7 +2427,11 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         history_mode, steps = resolve_history_request(payload, timeframe)
         BACKTEST_HISTORY[:] = [
             item for item in BACKTEST_HISTORY
-            if not (item.get("pair") == normalized_pair and item.get("timeframe") == timeframe)
+            if not (
+                item.get("pair") == normalized_pair
+                and item.get("timeframe") == timeframe
+                and item.get("strategy") == strategy_class_name
+            )
         ]
         data_revision = datetime.now(timezone.utc).isoformat()
         settings = OandaSettings.from_environment()
@@ -2152,18 +2440,21 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         if settings.execution_mode.lower() not in {"dry_run", "backtest", "practice"}:
             raise HTTPException(status_code=400, detail="Backtest requires a safe OANDA execution mode")
 
-        instrument_name = pair.replace("/", "_").upper()
-        pair_config = ai_config_for_pair(pair)
-        approved_run = pair_config.get("approvedHyperopt")
+        approved_revisions = dict(pair_config.get("approvedRevisions") or {})
+        approved_run = approved_revisions.get(f"{strategy_class_name}|{timeframe.upper()}")
+        if not isinstance(approved_run, dict):
+            legacy_run = pair_config.get("approvedHyperopt")
+            approved_run = legacy_run if isinstance(legacy_run, dict) and legacy_run.get("strategyClass", "ForexAIStrategyBaseline") == strategy_class_name else None
         backtest_warning: str | None = None
         if isinstance(approved_run, dict):
             pair_matches = str(approved_run.get("pair", normalized_pair)).upper() == normalized_pair.upper()
             timeframe_matches = str(approved_run.get("timeframe", "")).upper() == timeframe.upper()
+            strategy_matches = str(approved_run.get("strategyClass", "ForexAIStrategyBaseline")) == strategy_class_name
             history_matches = (
                 approved_run.get("historyMode", "candles") == history_mode
                 and int(approved_run.get("historyValue", steps)) == int(payload.get("historyValue", steps))
             )
-            if pair_matches and timeframe_matches:
+            if pair_matches and timeframe_matches and strategy_matches:
                 # Hyperopt parameters remain valid for the same pair/timeframe;
                 # a different history window only changes the validation sample.
                 if not history_matches:
@@ -2178,11 +2469,39 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     f"Approved Hyperopt revision exists for {approved_run.get('pair', normalized_pair)} "
                     f"at {approved_run.get('timeframe')} / {approved_run.get('historyMode', 'candles')} "
                     f"{approved_run.get('historyValue', approved_run.get('steps'))}, but this run is "
-                    f"{normalized_pair} at {timeframe}; default parameters are being used."
+                    f"{normalized_pair} at {timeframe} using {strategy_class_name}; default parameters are being used."
                 )
                 approved_run = None
                 pair_config = dict(AI_CONFIG)
-        granularity = {"M5": "M5", "M15": "M15", "H1": "H1"}.get(timeframe.upper(), "M5")
+        strategy_config_overrides: dict[str, object] = {}
+        if strategy_class_name == "ForexAIStrategyBaseline":
+            strategy_config_overrides = {
+                "forex_ai_model": str(pair_config.get("model", "hybrid")),
+                "forex_ai_features": pair_config.get("featureSet", []),
+                "forex_ai_entry_threshold": pair_config.get("entryThreshold", "0.5"),
+                "forex_ai_exit_threshold": pair_config.get("exitThreshold", "0.0"),
+                "forex_ai_volatility_window": pair_config.get("volatilityWindow", "5"),
+                "forex_ai_atr_window": pair_config.get("atrWindow", "14"),
+                "forex_ai_max_spread_pct": pair_config.get("maxSpreadPct", "1.0"),
+            }
+            if isinstance(approved_run, dict):
+                strategy_config_overrides["forex_ai_entry_threshold"] = approved_run.get("entryThreshold", strategy_config_overrides["forex_ai_entry_threshold"])
+                strategy_config_overrides["forex_ai_max_spread_pct"] = approved_run.get("maxSpreadPct", strategy_config_overrides["forex_ai_max_spread_pct"])
+        try:
+            strategy_instance = load_strategy(
+                strategy_class_name,
+                selected_timeframe,
+                normalized_pair,
+                parameter_values=approved_run.get("parameters") if isinstance(approved_run, dict) else None,
+                config_overrides=strategy_config_overrides,
+            )
+            informative_timeframes = strategy_informative_timeframes(strategy_instance, normalized_pair)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        try:
+            granularity = oanda_granularity(selected_timeframe)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         try:
             async with OandaClient(settings.token, settings.account_id, environment=settings.environment) as client:
                 metadata = await client.get_instruments((instrument_name,))
@@ -2196,18 +2515,24 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 frame = df_from_raw_candles(candles)
                 if frame.empty:
                     raise HTTPException(status_code=400, detail="No historical candles were returned for the requested OANDA pair")
-                data_hash = candle_frame_hash({instrument_name: frame})
+                informative_frames: dict[str, pd.DataFrame] = {}
+                base_minutes = timeframe_to_minutes(selected_timeframe)
+                for informative_timeframe in informative_timeframes:
+                    informative_minutes = timeframe_to_minutes(informative_timeframe)
+                    informative_count = min(5000, max(10, (steps * base_minutes + informative_minutes - 1) // informative_minutes + 5))
+                    informative_candles = await client.get_candles(
+                        instrument_name,
+                        oanda_granularity(informative_timeframe),
+                        count=informative_count,
+                    )
+                    informative_frame = df_from_raw_candles(informative_candles)
+                    if informative_frame.empty:
+                        raise HTTPException(status_code=400, detail=f"No informative candles returned for {informative_timeframe}")
+                    informative_frames[informative_timeframe] = informative_frame
+                data_hash = candle_frame_hash({instrument_name: frame, **{f"{instrument_name}:{key}": value for key, value in informative_frames.items()}})
                 price_row = (await client.get_prices((instrument_name,)))[0]
-                update_backtest_job(job_id, phase="backtest", historyProgress=100, backtestProgress=10, message=f"History ready: {len(frame)} complete candles. Running AI baseline.")
-                strategy = ForexAIStrategyBaseline({
-                    "forex_ai_model": str(pair_config.get("model", "hybrid")),
-                    "forex_ai_features": pair_config.get("featureSet", []),
-                    "forex_ai_entry_threshold": pair_config.get("entryThreshold", "0.5"),
-                    "forex_ai_exit_threshold": pair_config.get("exitThreshold", "0.0"),
-                    "forex_ai_volatility_window": pair_config.get("volatilityWindow", "5"),
-                    "forex_ai_atr_window": pair_config.get("atrWindow", "14"),
-                    "forex_ai_max_spread_pct": pair_config.get("maxSpreadPct", "1.0"),
-                })
+                update_backtest_job(job_id, phase="backtest", historyProgress=100, backtestProgress=10, message=f"History ready: {len(frame)} {timeframe} candles and {len(informative_frames)} informative timeframe(s). Running {strategy_class_name}.")
+                strategy = FreqtradeStrategyAdapter(strategy_instance, normalized_pair, informative_frames)
                 result = ForexBacktester(
                     strategy,
                     metadata[0],
@@ -2225,9 +2550,10 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     drawdown_rate = Decimal(str(getattr(result, "max_drawdown", 0))) / result.starting_balance
                 summary = {
                     "id": f"bt-{secrets.token_hex(4)}",
-                    "name": f"{normalize_pair(pair)} AI baseline",
+                    "name": f"{normalize_pair(pair)} {strategy_class_name}",
                     "pair": normalize_pair(pair),
                     "timeframe": timeframe,
+                    "strategy": strategy_class_name,
                     "status": "Completed",
                     "result": f"{((result.net_pl / result.starting_balance) * Decimal('100')):.2f}%",
                     "netProfit": f"${format_decimal(result.net_pl)}",
@@ -2248,7 +2574,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     "steps": len(frame),
                     "historyMode": history_mode,
                     "historyValue": int(payload.get("historyValue", steps)),
-                    "message": history_notice + (" " + backtest_warning if backtest_warning else "") + ". Real OANDA historical backtest completed using ForexAIStrategyBaseline.",
+                    "message": history_notice + (" " + backtest_warning if backtest_warning else "") + f". Real OANDA historical backtest completed using {strategy_class_name}.",
                     "warning": history_notice + (" " + backtest_warning if backtest_warning else ""),
                     "netPl": format_decimal(result.net_pl),
                     "trades": len(result.trades),
@@ -2256,7 +2582,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     "endingBalance": format_decimal(result.ending_balance),
                     "winRate": format_decimal(result.win_rate * Decimal('100')),
                     "maxDrawdown": format_decimal(drawdown_rate * Decimal('100')),
-                    "strategy": "ForexAIStrategyBaseline",
+                    "strategy": strategy_class_name,
                     "dataSource": "OANDA historical candles",
                     "dataRevision": data_revision,
                     "aiParameters": {
@@ -2277,6 +2603,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                         "modelVersion": "baseline-v1",
                         "featureSchemaHash": ai_feature_schema_hash(pair_config),
                         "trainingDataHash": data_hash,
+                        "strategyClass": strategy_class_name,
                     },
                     "tradeDetails": [
                         {**trade, "volume": trade.get("units", 0), "leverage": "1x"}

@@ -1,6 +1,6 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
-import { getAiConfig, getAiHyperoptLossFunctions, getAiHyperoptReport, getAiHyperoptScheduler, getAiHyperoptStatus, getAiModelComparison, getAiReview, getAiSignals, getAiStatus, runAiHyperoptSchedulerNow, saveAiConfig, saveAiHyperoptScheduler, saveAiReview, startAiHyperopt, stopAiHyperopt, type AiConfig } from '../api/mockApi'
+import { getAiConfig, getAiHyperoptLossFunctions, getAiHyperoptReport, getAiHyperoptScheduler, getAiHyperoptStatus, getAiModelComparison, getAiReview, getAiSignals, getAiStatus, getAvailableStrategies, runAiHyperoptSchedulerNow, saveAiConfig, saveAiHyperoptScheduler, saveAiReview, startAiHyperopt, stopAiHyperopt, type AiConfig } from '../api/mockApi'
 import { useUiStore } from '../store/useUiStore'
 
 const FEATURE_OPTIONS = ['trend', 'spread', 'session', 'volatility']
@@ -13,11 +13,13 @@ export function AiPage() {
     setSelectedPair((current) => (availablePairs.includes(current) ? current : availablePairs[0]))
   }, [availablePairs])
   const [selectedTimeframe, setSelectedTimeframe] = useState<AiConfig['timeframe']>('M5')
+  const [selectedStrategyClass, setSelectedStrategyClass] = useState('ForexAIStrategyBaseline')
   const [historyMode, setHistoryMode] = useState<'candles' | 'days'>('candles')
   const [historyValue, setHistoryValue] = useState(250)
   const [attempts, setAttempts] = useState(24)
   const [hyperoptLoss, setHyperoptLoss] = useState('ProfitDrawDownHyperOptLoss')
   const [schedulerPairs, setSchedulerPairs] = useState<string[]>(availablePairs.length ? availablePairs.slice(0, 2) : ['EUR/USD', 'GBP/USD'])
+  const [schedulerScopes, setSchedulerScopes] = useState<Record<string, { strategyClass: string; timeframe: string }>>({})
   const [schedulerIntervalDays, setSchedulerIntervalDays] = useState(2)
   const [schedulerGapMinutes, setSchedulerGapMinutes] = useState(120)
   const [featureSet, setFeatureSet] = useState<string[]>(FEATURE_OPTIONS)
@@ -31,18 +33,28 @@ export function AiPage() {
     diThreshold: '0',
   })
   const aiConfigQuery = useQuery({ queryKey: ['ai-config', selectedPair], queryFn: () => getAiConfig(selectedPair) })
-  const reviewQuery = useQuery({ queryKey: ['ai-review', selectedPair, selectedTimeframe], queryFn: () => getAiReview(selectedPair, selectedTimeframe) })
+  const strategiesQuery = useQuery({ queryKey: ['available-strategies'], queryFn: getAvailableStrategies })
+  const reviewQuery = useQuery({ queryKey: ['ai-review', selectedPair, selectedTimeframe, selectedStrategyClass], queryFn: () => getAiReview(selectedPair, selectedTimeframe, selectedStrategyClass) })
+  useEffect(() => {
+    const strategies = strategiesQuery.data
+    if (!strategies?.length) return
+    const configured = aiConfigQuery.data?.strategyClass
+    setSelectedStrategyClass((current) => {
+      if (configured && strategies.some((strategy) => strategy.name === configured)) return configured
+      return strategies.some((strategy) => strategy.name === current) ? current : strategies[0].name
+    })
+  }, [aiConfigQuery.data?.strategyClass, strategiesQuery.data])
   const statusQuery = useQuery({ queryKey: ['ai-status', selectedPair], queryFn: () => getAiStatus(selectedPair), refetchInterval: 5000 })
   const signalsQuery = useQuery({ queryKey: ['ai-signals', selectedPair, selectedTimeframe], queryFn: () => getAiSignals(selectedPair, selectedTimeframe), refetchInterval: 30000 })
   const comparisonQuery = useQuery({ queryKey: ['ai-comparison', selectedPair, selectedTimeframe], queryFn: () => getAiModelComparison(selectedPair, selectedTimeframe), refetchInterval: 60000 })
   const hyperoptLossFunctionsQuery = useQuery({ queryKey: ['ai-hyperopt-loss-functions'], queryFn: getAiHyperoptLossFunctions, staleTime: Infinity })
-  const schedulerQuery = useQuery({ queryKey: ['ai-hyperopt-scheduler'], queryFn: getAiHyperoptScheduler, refetchInterval: 10000 })
+  const schedulerQuery = useQuery({ queryKey: ['ai-hyperopt-scheduler'], queryFn: () => getAiHyperoptScheduler(), refetchInterval: 10000 })
   const hyperoptStatusQuery = useQuery({
-    queryKey: ['ai-hyperopt-status', selectedPair],
-    queryFn: () => getAiHyperoptStatus(selectedPair),
+    queryKey: ['ai-hyperopt-status', selectedPair, selectedStrategyClass, selectedTimeframe],
+    queryFn: () => getAiHyperoptStatus(selectedPair, selectedStrategyClass, selectedTimeframe),
     refetchInterval: (query) => (query.state.data?.status === 'running' ? 1000 : false),
   })
-  const hyperoptReportQuery = useQuery({ queryKey: ['ai-hyperopt-report', selectedPair], queryFn: () => getAiHyperoptReport(selectedPair) })
+  const hyperoptReportQuery = useQuery({ queryKey: ['ai-hyperopt-report', selectedPair, selectedStrategyClass, selectedTimeframe], queryFn: () => getAiHyperoptReport(selectedPair, selectedStrategyClass, selectedTimeframe) })
   const [hyperoptWarning, setHyperoptWarning] = useState<string | null>(null)
   const startHyperoptMutation = useMutation({
     mutationFn: startAiHyperopt,
@@ -52,7 +64,7 @@ export function AiPage() {
     },
   })
   const stopHyperoptMutation = useMutation({
-    mutationFn: () => stopAiHyperopt(selectedPair),
+    mutationFn: () => stopAiHyperopt(selectedPair, selectedStrategyClass, selectedTimeframe),
     onSuccess: () => { void hyperoptStatusQuery.refetch() },
   })
   const schedulerMutation = useMutation({ mutationFn: saveAiHyperoptScheduler, onSuccess: (data) => { setSchedulerPairs(data.pairs); setSchedulerIntervalDays(data.intervalDays); setSchedulerGapMinutes(data.gapMinutes); void schedulerQuery.refetch() } })
@@ -66,7 +78,23 @@ export function AiPage() {
   const isHyperoptRunning = hyperoptStatusQuery.data?.status === 'running'
   useEffect(() => {
     if (!schedulerQuery.data) return
-    setSchedulerPairs(schedulerQuery.data.pairs.length ? schedulerQuery.data.pairs : schedulerQuery.data.approvedPairs.slice(0, 2))
+    setSchedulerPairs((current) => {
+      const validCurrent = current.filter((pair) => schedulerQuery.data.approvedPairs.includes(pair))
+      if (validCurrent.length) return validCurrent
+      const saved = schedulerQuery.data.pairs.filter((pair) => schedulerQuery.data.approvedPairs.includes(pair))
+      return saved.length ? saved : schedulerQuery.data.approvedPairs.slice(0, 2)
+    })
+    setSchedulerScopes((current) => Object.fromEntries(
+      Object.entries(schedulerQuery.data.approvedScopes).map(([pair, scopes]) => {
+        const existing = current[pair]
+        const savedStrategy = schedulerQuery.data.pairStrategies[pair]
+        const savedTimeframe = schedulerQuery.data.pairTimeframes[pair]
+        const scope = (existing && scopes.find((item) => item.strategyClass === existing.strategyClass && item.timeframe === existing.timeframe))
+          ?? scopes.find((item) => item.strategyClass === savedStrategy && item.timeframe === savedTimeframe)
+          ?? scopes[0]
+        return [pair, scope]
+      }),
+    ))
     setSchedulerIntervalDays(schedulerQuery.data.intervalDays)
     setSchedulerGapMinutes(schedulerQuery.data.gapMinutes)
   }, [schedulerQuery.data])
@@ -94,6 +122,7 @@ export function AiPage() {
       status,
       pair: selectedPair,
       timeframe: selectedTimeframe,
+      strategyClass: selectedStrategyClass,
       requireOptimization: true,
       notes:
         status === 'approved'
@@ -130,12 +159,27 @@ export function AiPage() {
 
   const toggleFeature = (feature: string) => setFeatureSet((current) => (current.includes(feature) ? current.filter((item) => item !== feature) : [...current, feature]))
 
-  const handleHyperopt = () => startHyperoptMutation.mutate({ pair: selectedPair, timeframe: selectedTimeframe, steps: historyMode === 'candles' ? historyValue : 250, historyMode, historyValue, attempts, hyperoptLoss })
+  const handleHyperopt = () => startHyperoptMutation.mutate({ pair: selectedPair, timeframe: selectedTimeframe, strategyClass: selectedStrategyClass, steps: historyMode === 'candles' ? historyValue : 250, historyMode, historyValue, attempts, hyperoptLoss })
   const handleStopHyperopt = () => stopHyperoptMutation.mutate()
   const toggleSchedulerPair = (pair: string) => setSchedulerPairs((current) => current.includes(pair) ? current.filter((item) => item !== pair) : [...current, pair])
+  const saveScheduler = (enabled: boolean) => {
+    const pairStrategies = Object.fromEntries(schedulerPairs.map((pair) => [pair, schedulerScopes[pair]?.strategyClass]).filter((entry): entry is [string, string] => Boolean(entry[1])))
+    const pairTimeframes = Object.fromEntries(schedulerPairs.map((pair) => [pair, schedulerScopes[pair]?.timeframe]).filter((entry): entry is [string, string] => Boolean(entry[1])))
+    const firstScope = schedulerScopes[schedulerPairs[0]]
+    schedulerMutation.mutate({
+      enabled,
+      intervalDays: schedulerIntervalDays,
+      gapMinutes: schedulerGapMinutes,
+      pairs: schedulerPairs,
+      strategyClass: firstScope?.strategyClass ?? 'ForexAIStrategyBaseline',
+      timeframe: firstScope?.timeframe ?? 'M5',
+      pairStrategies,
+      pairTimeframes,
+    })
+  }
   const handleTimeframeApply = () => {
     if (!aiConfigQuery.data) return
-    timeframeMutation.mutate({ ...aiConfigQuery.data, timeframe: selectedTimeframe })
+    timeframeMutation.mutate({ ...aiConfigQuery.data, timeframe: selectedTimeframe, strategyClass: selectedStrategyClass })
   }
   const handleFreqaiSave = () => {
     if (!aiConfigQuery.data) return
@@ -145,6 +189,7 @@ export function AiPage() {
       .filter((value) => Number.isFinite(value) && value >= 2)
     freqaiMutation.mutate({
       ...aiConfigQuery.data,
+      strategyClass: selectedStrategyClass,
       featureSet,
       freqai: {
         trainPeriodDays: Number(freqaiForm.trainPeriodDays) || 30,
@@ -163,6 +208,7 @@ export function AiPage() {
   const effectiveReview = reviewQuery.data ?? {
     status: 'pending' as const,
     strategyName: 'FX Trend Pulse',
+    strategyClass: selectedStrategyClass,
     model: 'hybrid',
     riskPolicy: 'Practice-safe',
     guardrails: ['dry-run only', 'no live order execution', 'manual approval required'],
@@ -212,12 +258,27 @@ export function AiPage() {
 
           <div className="panel">
             <div className="panel-header compact"><div><p className="eyebrow">Automation</p><h3>Scheduled Hyperopt</h3></div><span className="pill neutral">sequential queue</span></div>
-            <p>Runs one approved pair at a time. Each next pair receives the configured safety gap, so Hyperopt jobs never start simultaneously.</p>
+            <p>Each queued pair runs its own approved strategy and timeframe.</p>
             <div className="strategy-stack">
-              {(availablePairs.length ? availablePairs : ['EUR/USD', 'GBP/USD', 'USD/JPY']).map((pair) => { const approved = schedulerQuery.data?.approvedPairs.includes(pair) ?? false; return <label key={pair} className="strategy-card" style={{ cursor: approved ? 'pointer' : 'not-allowed', opacity: approved ? 1 : 0.55 }} title={approved ? 'Ready for scheduled Hyperopt' : 'Approve a Hyperopt revision for this pair first'}><div className="strategy-row"><strong>{pair}</strong><span>{approved ? <input type="checkbox" checked={schedulerPairs.includes(pair)} onChange={() => toggleSchedulerPair(pair)} /> : <span className="pill neutral">Approval required</span>}</span></div></label> })}
+              {(availablePairs.length ? availablePairs : ['EUR/USD', 'GBP/USD', 'USD/JPY']).map((pair) => {
+                const scopes = schedulerQuery.data?.approvedScopes[pair] ?? []
+                const selectedScope = schedulerScopes[pair]
+                const scopeValue = selectedScope ? `${selectedScope.strategyClass}|${selectedScope.timeframe}` : ''
+                return <div key={pair} className="pair-timeframe-row">
+                  <span>{pair}</span>
+                  <input type="checkbox" aria-label={`Schedule ${pair}`} checked={schedulerPairs.includes(pair)} onChange={() => toggleSchedulerPair(pair)} disabled={!scopes.length} />
+                  <select aria-label={`${pair} approved strategy and timeframe`} value={scopeValue} disabled={!scopes.length} onChange={(event) => {
+                    const [strategyClass, timeframe] = event.target.value.split('|')
+                    setSchedulerScopes((current) => ({ ...current, [pair]: { strategyClass, timeframe } }))
+                  }}>
+                    {scopes.map((scope) => <option key={`${scope.strategyClass}|${scope.timeframe}`} value={`${scope.strategyClass}|${scope.timeframe}`}>{scope.strategyClass} · {scope.timeframe}</option>)}
+                    {!scopes.length && <option value="">Approval required</option>}
+                  </select>
+                </div>
+              })}
             </div>
             <div className="settings-grid" style={{ marginTop: '16px' }}><label className="field-block"><span>Repeat every (days)</span><input type="number" min="1" max="30" value={schedulerIntervalDays ?? 2} onChange={(event) => setSchedulerIntervalDays(Number(event.target.value) || 2)} /></label><label className="field-block"><span>Gap between pairs (minutes)</span><input type="number" min="1" max="1440" value={schedulerGapMinutes ?? 120} onChange={(event) => setSchedulerGapMinutes(Number(event.target.value) || 120)} /></label></div>
-            <div className="summary-grid" style={{ marginTop: '14px' }}><button className="primary-action" onClick={() => schedulerMutation.mutate({ enabled: true, intervalDays: schedulerIntervalDays, gapMinutes: schedulerGapMinutes, pairs: schedulerPairs })} disabled={schedulerMutation.isPending || schedulerPairs.length === 0}>{schedulerMutation.isPending ? 'Saving…' : 'Enable automatic mode'}</button><button className="secondary-action" onClick={() => schedulerMutation.mutate({ enabled: false, intervalDays: schedulerIntervalDays, gapMinutes: schedulerGapMinutes, pairs: schedulerPairs })} disabled={schedulerMutation.isPending}>Disable</button><button className="secondary-action" onClick={() => schedulerRunMutation.mutate()} disabled={schedulerRunMutation.isPending || schedulerPairs.length === 0}>Run now</button></div>
+            <div className="summary-grid" style={{ marginTop: '14px' }}><button className="primary-action" onClick={() => saveScheduler(true)} disabled={schedulerMutation.isPending || schedulerPairs.length === 0}>{schedulerMutation.isPending ? 'Saving…' : 'Enable automatic mode'}</button><button className="secondary-action" onClick={() => saveScheduler(false)} disabled={schedulerMutation.isPending}>Disable</button><button className="secondary-action" onClick={() => schedulerRunMutation.mutate()} disabled={schedulerRunMutation.isPending || schedulerPairs.length === 0}>Run now</button></div>
             {schedulerQuery.data && <div className="bullet-list"><div><span>Status</span><strong>{schedulerQuery.data.enabled ? 'enabled' : 'disabled'}{schedulerQuery.data.running ? ' • running' : ''}</strong></div><div><span>Approved pairs</span><strong>{schedulerQuery.data.approvedPairs.join(' • ') || 'none'}</strong></div>{Object.entries(schedulerQuery.data.nextRuns ?? {}).map(([pair, scheduledAt]) => <div key={pair}><span>Next {pair}</span><strong>{new Date(scheduledAt).toLocaleString()}</strong></div>)}</div>}
             {schedulerMutation.error && <p>Scheduler update failed: {schedulerMutation.error.message}</p>}
             {schedulerRunMutation.error && <p>Scheduler run failed: {schedulerRunMutation.error.message}</p>}
@@ -225,7 +286,15 @@ export function AiPage() {
 
           <div className="panel">
             <div className="panel-header compact"><div><p className="eyebrow">Optimization</p><h3>AI hyperopt</h3></div><div style={{ display: 'flex', gap: '8px' }}><button className="primary-action" onClick={handleHyperopt} disabled={startHyperoptMutation.isPending || isHyperoptRunning}>{isHyperoptRunning ? 'Running…' : 'Run hyperopt'}</button><button className="secondary-action" onClick={handleStopHyperopt} disabled={!isHyperoptRunning || stopHyperoptMutation.isPending}>{stopHyperoptMutation.isPending ? 'Stopping…' : 'Stop'}</button></div></div>
-            <div className="settings-grid"><label className="field-block"><span>Pair</span><select value={selectedPair} onChange={(event) => setSelectedPair(event.target.value)}>{(availablePairs.length ? availablePairs : ['EUR/USD', 'GBP/USD', 'USD/JPY']).map((item) => <option key={item} value={item}>{item}</option>)}</select></label><label className="field-block"><span>Strategy timeframe</span><select value={selectedTimeframe} onChange={(event) => setSelectedTimeframe(event.target.value as AiConfig['timeframe'])}><option>M5</option><option>M15</option><option>H1</option></select></label><label className="field-block"><span>History unit</span><select value={historyMode} onChange={(event) => setHistoryMode(event.target.value as 'candles' | 'days')}><option value="candles">Candles</option><option value="days">Days</option></select></label><label className="field-block"><span>History value</span><input type="number" min="1" max={historyMode === 'candles' ? 10000 : 30} value={historyValue} onChange={(event) => setHistoryValue(Number(event.target.value) || 1)} /></label><label className="field-block"><span>Attempts</span><input type="number" min="1" max="900" value={attempts} onChange={(event) => setAttempts(Number(event.target.value) || 24)} /></label><label className="field-block"><span>Hyperopt loss</span><select value={hyperoptLoss} onChange={(event) => setHyperoptLoss(event.target.value)} disabled={hyperoptLossFunctionsQuery.isLoading}><option value="">{hyperoptLossFunctionsQuery.isLoading ? 'Loading loss functions…' : 'Select loss function'}</option>{hyperoptLossFunctionsQuery.data?.options.map((loss) => <option key={loss} value={loss}>{loss}</option>)}</select></label></div>
+            <div className="settings-grid">
+              <label className="field-block"><span>Pair</span><select value={selectedPair} onChange={(event) => setSelectedPair(event.target.value)}>{(availablePairs.length ? availablePairs : ['EUR/USD', 'GBP/USD', 'USD/JPY']).map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
+              <label className="field-block"><span>Strategy timeframe</span><select value={selectedTimeframe} onChange={(event) => setSelectedTimeframe(event.target.value as AiConfig['timeframe'])}>{['M1', 'M5', 'M15', 'M30', 'H1', 'H2', 'H4', 'H6', 'H8', 'H12', 'D1', 'W1', 'MN1'].map((item) => <option key={item}>{item}</option>)}</select></label>
+              <label className="field-block"><span>History unit</span><select value={historyMode} onChange={(event) => setHistoryMode(event.target.value as 'candles' | 'days')}><option value="candles">Candles</option><option value="days">Days</option></select></label>
+              <label className="field-block"><span>History value</span><input type="number" min="1" max={historyMode === 'candles' ? 10000 : 30} value={historyValue} onChange={(event) => setHistoryValue(Number(event.target.value) || 1)} /></label>
+              <label className="field-block"><span>Attempts</span><input type="number" min="1" max="900" value={attempts} onChange={(event) => setAttempts(Number(event.target.value) || 24)} /></label>
+              <label className="field-block"><span>Hyperopt loss</span><select value={hyperoptLoss} onChange={(event) => setHyperoptLoss(event.target.value)} disabled={hyperoptLossFunctionsQuery.isLoading}><option value="">{hyperoptLossFunctionsQuery.isLoading ? 'Loading loss functions…' : 'Select loss function'}</option>{hyperoptLossFunctionsQuery.data?.options.map((loss) => <option key={loss} value={loss}>{loss}</option>)}</select></label>
+            </div>
+            <label className="field-block" style={{ marginTop: '12px' }}><span>Strategy class</span><select value={selectedStrategyClass} onChange={(event) => setSelectedStrategyClass(event.target.value)} disabled={strategiesQuery.isLoading || !strategiesQuery.data?.length}>{strategiesQuery.data?.map((strategy) => <option key={strategy.name} value={strategy.name}>{strategy.name}</option>)}</select></label>
             <div className="panel-header compact"><span>Configured strategy timeframe: <strong>{aiConfigQuery.data?.timeframe ?? 'M5'}</strong></span><button className="secondary-action" onClick={handleTimeframeApply} disabled={timeframeMutation.isPending || selectedTimeframe === aiConfigQuery.data?.timeframe}>{timeframeMutation.isPending ? 'Applying…' : 'Apply timeframe'}</button></div>
 
             {startHyperoptMutation.error && <p>Hyperopt request failed: {startHyperoptMutation.error.message}</p>}
@@ -265,13 +334,12 @@ export function AiPage() {
                 <pre className="hyperopt-report">{hyperoptReportQuery.data.report.reportText}</pre>
                 <div className="strategy-table-wrap" style={{ marginTop: '18px' }}>
                   <table className="positions-table">
-                    <thead><tr><th>Rank</th><th>Entry</th><th>Max spread</th><th>Objective</th><th>Train P/L</th><th>Validation P/L</th><th>Validation DD</th><th>Trades</th><th>Coverage</th></tr></thead>
+                    <thead><tr><th>Rank</th><th>Parameters</th><th>Objective</th><th>Train P/L</th><th>Validation P/L</th><th>Validation DD</th><th>Trades</th><th>Coverage</th></tr></thead>
                     <tbody>
                       {hyperoptReportQuery.data.report.candidates.slice(0, 5).map((candidate) => (
-                        <tr key={`${candidate.entryThreshold}-${candidate.maxSpreadPct}`} className={Number(candidate.validationNetPl) >= 0 ? 'row-profit' : 'row-loss'}>
+                        <tr key={`${candidate.rank}-${JSON.stringify(candidate.parameters ?? {})}`} className={Number(candidate.validationNetPl) >= 0 ? 'row-profit' : 'row-loss'}>
                           <td>{candidate.rank === 1 ? 'Best' : candidate.rank}</td>
-                          <td>{candidate.entryThreshold}</td>
-                          <td>{candidate.maxSpreadPct}%</td>
+                          <td>{Object.entries(candidate.parameters ?? { entryThreshold: candidate.entryThreshold ?? '-', maxSpreadPct: candidate.maxSpreadPct ?? '-' }).map(([name, value]) => `${name}=${value}`).join(', ')}</td>
                           <td>{candidate.objective}</td>
                           <td>{candidate.trainNetPl}</td>
                           <td>{candidate.validationNetPl}</td>

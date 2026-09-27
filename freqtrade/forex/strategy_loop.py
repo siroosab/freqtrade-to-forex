@@ -6,6 +6,7 @@ from enum import StrEnum
 from typing import Protocol
 
 import pandas as pd
+from freqtrade.timeframe import timeframe_to_minutes
 
 from freqtrade.forex.models import OandaInstrument
 from freqtrade.forex.paper import DryRunSession, PaperPosition
@@ -146,14 +147,40 @@ class DryRunStrategyLoop:
 
     async def step(self, pair: str, timeframe: str, *, candle_count: int = 200) -> StrategyStepResult:
         candles = await self.provider.fetch_ohlcv(pair, timeframe, count=candle_count)
+        strategy = self.strategy
+        refresh_informative = getattr(strategy, "update_informative_candles", None)
+        strategy_instance = getattr(strategy, "strategy", None)
+        if getattr(type(strategy), "supports_explicit_exit", False) is True and callable(refresh_informative) and strategy_instance is not None:
+            informative_candles: dict[str, pd.DataFrame] = {}
+            base_minutes = timeframe_to_minutes(strategy_instance.timeframe)
+            for informative, _ in strategy_instance._ft_informative:
+                informative_minutes = timeframe_to_minutes(informative.timeframe)
+                informative_count = max(10, (candle_count * base_minutes + informative_minutes - 1) // informative_minutes + 5)
+                informative_candles[informative.timeframe] = await self.provider.fetch_ohlcv(
+                    pair,
+                    informative.timeframe,
+                    count=informative_count,
+                )
+            refresh_informative(informative_candles)
         await self.session.refresh_prices()
-        signal = self.strategy.signal(candles)
+        signal = strategy.signal(candles)
         instrument = self.instrument.name
         current = self.session.positions.get(instrument)
         closed: PaperPosition | None = None
         reason: str | None = None
         order_event: str | None = None
         costs: dict[str, str | int | float] | None = None
+        explicit_exit = bool(
+            current
+            and getattr(type(strategy), "supports_explicit_exit", False) is True
+            and strategy.exit_signal(candles, Signal.LONG if current.units > 0 else Signal.SHORT)
+        )
+
+        if explicit_exit and current:
+            closed = await self.session.close_market(instrument, f"paper-exit-{candles.iloc[-1]['date']}")
+            current = None
+            reason = "strategy_exit_signal"
+            order_event = "filled"
 
         if current and self._is_opposite(current, signal):
             closed = await self.session.close_market(instrument, f"paper-exit-{candles.iloc[-1]['date']}")
@@ -161,7 +188,7 @@ class DryRunStrategyLoop:
             reason = "opposite_signal_exit"
             order_event = "filled"
 
-        if current is None and signal is not Signal.FLAT:
+        if not explicit_exit and current is None and signal is not Signal.FLAT:
             price = self.session.prices[instrument]
             entry = price.ask if signal is Signal.LONG else price.bid
             stop_distance = self.stop_pips * self.instrument.pip_size

@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import time
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
@@ -111,3 +112,44 @@ class DryRunWorker:
             return "running"
         state = payload.get("state", "running")
         return state if state in {"running", "paused", "stopped"} else "running"
+
+
+class DryRunPortfolioWorker:
+    """Schedule independent per-pair dry-run workers without sharing strategy state."""
+
+    def __init__(self, workers: tuple[DryRunWorker, ...]) -> None:
+        if not workers:
+            raise ValueError("at least one pair worker is required")
+        self.workers = workers
+        self._stop_event = asyncio.Event()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        for worker in self.workers:
+            worker.stop()
+
+    async def run(self, *, max_steps: int | None = None) -> int:
+        deadlines = {worker: 0.0 for worker in self.workers}
+        completed_steps = 0
+        completed_cycles = 0
+        while not self._stop_event.is_set() and (max_steps is None or completed_cycles < max_steps):
+            state = self.workers[0]._runtime_state()
+            if state == "stopped":
+                break
+            if state == "paused":
+                await self.workers[0]._sleep_until_next_step(1.0)
+                continue
+            now = time.monotonic()
+            due = [worker for worker in self.workers if deadlines[worker] <= now]
+            if not due:
+                await self.workers[0]._sleep_until_next_step(min(deadlines.values()) - now)
+                continue
+            for worker in due:
+                if self._stop_event.is_set():
+                    break
+                await worker.run_once()
+                completed_steps += 1
+                deadlines[worker] = time.monotonic() + worker.config.interval_seconds
+            if due:
+                completed_cycles += 1
+        return completed_steps

@@ -451,8 +451,22 @@ class ForexBacktester:
                 position = None
                 if not portfolio_mode:
                     open_symbols.discard(instrument.name)
+            explicit_exit = bool(
+                position
+                and getattr(type(strategy), "supports_explicit_exit", False) is True
+                and callable(getattr(strategy, "exit_signal", None))
+                and strategy.exit_signal(window, position[0])
+            )
+            if explicit_exit and position:
+                trade = self._close(position, candle, instrument=instrument)
+                trades.append(trade)
+                balance += trade.net_pl
+                position = None
+                if not portfolio_mode:
+                    open_symbols.discard(instrument.name)
             if (
                 not intrabar_closed
+                and not explicit_exit
                 and position is None
                 and signal is not Signal.FLAT
                 and index + 1 < len(candles)

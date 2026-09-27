@@ -66,6 +66,24 @@ Live requires both the explicit confirmation in the page and the server
 environment variable `OANDA_LIVE_CONFIRM=1`. In this project, the only setup
 modes are Practice and Live; there is no third execution selector.
 
+## Pair strategies and research runs
+
+In Setup, assign each configured pair its own candle timeframe and strategy
+class. Python strategy uploads accept multiple `.py` files; each is syntax
+checked and must define a unique class inheriting from `IStrategy`. Files are
+saved separately under `user_data/strategies`. Upload validation does not
+execute arbitrary strategy code; imports and constructors are checked when the
+strategy is first selected for a run.
+
+Backtests and AI Hyperopt can select a strategy class independently for each
+pair and timeframe. Freqtrade `@informative` callbacks for the same pair are
+loaded from OANDA at their declared higher timeframe and merged using
+Freqtrade's causal timeframe merge. Generic AI Hyperopt samples declared
+Freqtrade parameters; custom strategies without optimizable parameters are
+rejected. Approval, reports, and scheduled Hyperopt retain their pair, class,
+and timeframe scope. The standalone `dry-run` command uses the saved pair
+strategy/timeframe mappings and runs each pair on its own cadence.
+
 For a user-level systemd service, enable the Live setup gate only when needed:
 
 ```bash

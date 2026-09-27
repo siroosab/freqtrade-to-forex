@@ -1,11 +1,12 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { useEffect, useMemo, useState } from 'react'
-import { getAiConfig, getSettings, saveAiConfig, type AiConfig } from '../api/mockApi'
+import { getAiConfig, getAvailableStrategies, getSettings, saveAiConfig, type AiConfig } from '../api/mockApi'
 import { useUiStore } from '../store/useUiStore'
 
 export function SettingsPage() {
   const { data } = useQuery({ queryKey: ['settings'], queryFn: getSettings })
   const aiQuery = useQuery({ queryKey: ['ai-config', 'EUR/USD'], queryFn: () => getAiConfig('EUR/USD') })
+  const strategiesQuery = useQuery({ queryKey: ['available-strategies'], queryFn: getAvailableStrategies })
   const saveMutation = useMutation({ mutationFn: (config: AiConfig) => saveAiConfig(config, 'EUR/USD') })
   const [saveFeedback, setSaveFeedback] = useState<string | null>(null)
 
@@ -17,6 +18,7 @@ export function SettingsPage() {
 
   const [aiForm, setAiForm] = useState<AiConfig>({
     strategyName: 'FX Trend Pulse',
+    strategyClass: 'ForexAIStrategyBaseline',
     model: 'hybrid',
     timeframe: 'M5',
     riskBudget: '0.72%',
@@ -33,6 +35,7 @@ export function SettingsPage() {
     if (aiQuery.data) {
       setAiForm({
         strategyName: aiQuery.data.strategyName,
+        strategyClass: aiQuery.data.strategyClass,
         model: aiQuery.data.model,
         timeframe: aiQuery.data.timeframe,
         riskBudget: aiQuery.data.riskBudget,
@@ -151,6 +154,13 @@ export function SettingsPage() {
           </label>
 
           <label className="field-block">
+            <span>Strategy class</span>
+            <select value={aiForm.strategyClass ?? 'ForexAIStrategyBaseline'} onChange={(event) => setAiForm((current) => ({ ...current, strategyClass: event.target.value }))} disabled={strategiesQuery.isLoading || !strategiesQuery.data?.length}>
+              {strategiesQuery.data?.map((strategy) => <option key={strategy.name} value={strategy.name}>{strategy.name}</option>)}
+            </select>
+          </label>
+
+          <label className="field-block">
             <span>Model type</span>
             <select value={aiForm.model} onChange={(event) => setAiForm((current) => ({ ...current, model: event.target.value as typeof aiForm.model }))}>
               <option value="rule-based">Rule-based</option>
@@ -163,8 +173,18 @@ export function SettingsPage() {
             <span>Timeframe</span>
             <select value={aiForm.timeframe} onChange={(event) => setAiForm((current) => ({ ...current, timeframe: event.target.value as typeof aiForm.timeframe }))}>
               <option value="M5">M5</option>
+              <option value="M1">M1</option>
               <option value="M15">M15</option>
+              <option value="M30">M30</option>
               <option value="H1">H1</option>
+              <option value="H2">H2</option>
+              <option value="H4">H4</option>
+              <option value="H6">H6</option>
+              <option value="H8">H8</option>
+              <option value="H12">H12</option>
+              <option value="D1">D1</option>
+              <option value="W1">W1</option>
+              <option value="MN1">MN1</option>
             </select>
           </label>
 

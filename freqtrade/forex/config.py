@@ -3,7 +3,7 @@
 import json
 import os
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from os import environ
 from pathlib import Path
 
@@ -61,6 +61,8 @@ def validate_native_forex_config(config: dict, runmode: RunMode | str) -> "Oanda
         risk_fraction=settings.risk_fraction,
         execution_mode=execution_mode,
         transaction_cursor_path=settings.transaction_cursor_path,
+        pair_timeframes=settings.pair_timeframes,
+        pair_strategies=settings.pair_strategies,
     )
 
 
@@ -74,6 +76,8 @@ class OandaSettings:
     risk_fraction: str = "0.01"
     execution_mode: str = "dry_run"
     transaction_cursor_path: str = "user_data/oanda/transaction_cursor.json"
+    pair_timeframes: dict[str, str] = field(default_factory=dict)
+    pair_strategies: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.token:
@@ -92,14 +96,24 @@ class OandaSettings:
         environment = OandaEnvironment(
             environ.get("OANDA_ENVIRONMENT", exchange.get("oanda_environment", "practice"))
         )
+        instruments_source = environ.get("OANDA_INSTRUMENTS")
         instruments = tuple(
             item.strip()
-            for item in environ.get("OANDA_INSTRUMENTS", "EUR_USD,GBP_USD").split(",")
+            for item in (instruments_source.split(",") if instruments_source else exchange.get("pair_whitelist", ("EUR_USD", "GBP_USD")))
             if item.strip()
         )
+        pair_timeframes = {
+            str(pair).strip().upper().replace("/", "_"): str(timeframe).strip().lower()
+            for pair, timeframe in dict(persisted.get("pair_timeframes", {})).items()
+        }
+        pair_strategies = {
+            str(pair).strip().upper().replace("/", "_"): str(strategy).strip()
+            for pair, strategy in dict(persisted.get("pair_strategies", {})).items()
+        }
+        timeframe_source = environ.get("OANDA_TIMEFRAMES")
         timeframes = tuple(
             item.strip()
-            for item in environ.get("OANDA_TIMEFRAMES", "5m,1h").split(",")
+            for item in (timeframe_source.split(",") if timeframe_source else dict.fromkeys(pair_timeframes.values()) or (persisted.get("timeframe", "5m"),))
             if item.strip()
         )
         return cls(
@@ -110,6 +124,8 @@ class OandaSettings:
             timeframes=timeframes,
             risk_fraction=environ.get("OANDA_RISK_FRACTION", str(exchange.get("oanda_risk_fraction", "0.01"))),
             execution_mode=environ.get("OANDA_EXECUTION_MODE", exchange.get("oanda_execution_mode", "dry_run")),
+            pair_timeframes=pair_timeframes,
+            pair_strategies=pair_strategies,
             transaction_cursor_path=environ.get(
                 "OANDA_TRANSACTION_CURSOR_PATH", "user_data/oanda/transaction_cursor.json"
             ),
@@ -134,6 +150,14 @@ class OandaSettings:
             transaction_cursor_path=exchange.get(
                 "oanda_transaction_cursor_path", "user_data/oanda/transaction_cursor.json"
             ),
+            pair_timeframes={
+                str(pair).strip().upper().replace("/", "_"): str(timeframe).strip().lower()
+                for pair, timeframe in dict(config.get("pair_timeframes", {})).items()
+            },
+            pair_strategies={
+                str(pair).strip().upper().replace("/", "_"): str(strategy).strip()
+                for pair, strategy in dict(config.get("pair_strategies", {})).items()
+            },
         )
 
 

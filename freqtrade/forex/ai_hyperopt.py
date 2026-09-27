@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import random
+from copy import deepcopy
 from collections import defaultdict
 from dataclasses import dataclass
 from decimal import Decimal
@@ -13,6 +15,8 @@ import pandas as pd
 from freqtrade.forex.ai_strategy import ForexAIStrategyBaseline
 from freqtrade.forex.backtest import BacktestResult, ForexBacktester
 from freqtrade.forex.models import OandaInstrument
+from freqtrade.forex.strategy_execution import FreqtradeStrategyAdapter, load_strategy, strategy_informative_timeframes
+from freqtrade.strategy.parameters import BaseParameter
 
 # Mirrors freqtrade's --hyperopt-loss / --hyperoptloss NAME options; every
 # value below is computed from the actual validation BacktestResult, not a
@@ -105,11 +109,111 @@ def compute_hyperopt_objective(result: BacktestResult, loss_name: str) -> Decima
     return net_pl - drawdown - result.total_costs  # ProfitDrawDownHyperOptLoss
 
 
+def run_strategy_hyperopt(
+    candles: pd.DataFrame,
+    informative_candles: dict[str, pd.DataFrame],
+    instrument: OandaInstrument,
+    *,
+    pair: str,
+    strategy_class: str,
+    timeframe: str,
+    starting_balance: Decimal,
+    risk_fraction: Decimal,
+    spread: Decimal,
+    max_attempts: int,
+    hyperopt_loss: str,
+    on_attempt: Callable[[int, int], None] | None = None,
+    should_stop: Callable[[], bool] | None = None,
+) -> list[dict[str, object]]:
+    """Sample declared Freqtrade parameter spaces and score each on held-out candles."""
+    if len(candles) < 40:
+        raise ValueError("strategy hyperopt requires at least 40 candles")
+    strategy = load_strategy(strategy_class, timeframe, pair)
+    class_attributes: dict[str, object] = {}
+    for strategy_type in reversed(type(strategy).__mro__):
+        class_attributes.update(vars(strategy_type))
+    parameters = {
+        name: value
+        for name, value in class_attributes.items()
+        if isinstance(value, BaseParameter) and value.optimize
+    }
+    if not parameters:
+        raise ValueError(f"{strategy_class} has no optimizable Freqtrade parameters")
+    informative_timeframes = strategy_informative_timeframes(strategy, pair)
+    missing_timeframes = set(informative_timeframes) - set(informative_candles)
+    if missing_timeframes:
+        raise ValueError(f"Missing informative candles for: {', '.join(sorted(missing_timeframes))}")
+    split_index = max(20, min(len(candles) - 20, len(candles) // 2))
+    train = candles.iloc[:split_index]
+    validation = candles.iloc[split_index:]
+    rng = random.Random()
+    rows: list[dict[str, object]] = []
+
+    def sample(parameter: BaseParameter) -> object:
+        if hasattr(parameter, "low") and hasattr(parameter, "high"):
+            low, high = parameter.low, parameter.high
+            if isinstance(low, int) and isinstance(high, int):
+                return rng.randint(low, high)
+            decimals = int(getattr(parameter, "decimals", 6))
+            return round(rng.uniform(float(low), float(high)), decimals)
+        categories = getattr(parameter, "opt_range", None)
+        if categories:
+            return rng.choice(list(categories))
+        raise ValueError(f"Unsupported optimization range for parameter {parameter.name}")
+
+    total_attempts = max(1, min(max_attempts, 900))
+    for attempt in range(1, total_attempts + 1):
+        if should_stop is not None and should_stop():
+            break
+        values = {name: sample(parameter) for name, parameter in parameters.items()}
+
+        def evaluate(data: pd.DataFrame) -> BacktestResult:
+            candidate_strategy = load_strategy(strategy_class, timeframe, pair)
+            for name, value in values.items():
+                parameter = deepcopy(parameters[name])
+                parameter.value = value
+                setattr(candidate_strategy, name, parameter)
+            adapter = FreqtradeStrategyAdapter(candidate_strategy, pair, informative_candles)
+            return ForexBacktester(
+                adapter,
+                instrument,
+                starting_balance=starting_balance,
+                risk_fraction=risk_fraction,
+                stop_pips=Decimal("0.5"),
+                spread=spread,
+                slippage=Decimal("0"),
+                financing_rate_per_day=Decimal("0"),
+                quote_to_account_rate=Decimal("1"),
+            ).run(data)
+
+        train_result = evaluate(train)
+        validation_result = evaluate(validation)
+        objective = compute_hyperopt_objective(validation_result, hyperopt_loss)
+        rows.append({
+            "parameters": values,
+            "objective": format(objective, ".2f"),
+            "trainNetPl": format(train_result.net_pl, ".2f"),
+            "validationNetPl": format(validation_result.net_pl, ".2f"),
+            "validationDrawdown": format(validation_result.max_drawdown, ".2f"),
+            "validationTrades": len(validation_result.trades),
+            "coverage": 2,
+            "trainTrades": len(train_result.trades),
+        })
+        if on_attempt is not None:
+            on_attempt(attempt, total_attempts)
+    rows.sort(key=lambda row: Decimal(str(row["objective"])), reverse=True)
+    if not rows:
+        raise ValueError("strategy hyperopt was stopped before completing any attempt")
+    return rows
+
+
 @dataclass(frozen=True)
 class AiHyperoptCandidate:
     entry_threshold: Decimal
     max_spread_pct: Decimal
     train_result: BacktestResult
+
+
     validation_result: BacktestResult
     objective: Decimal
 

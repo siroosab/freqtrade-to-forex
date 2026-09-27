@@ -1,8 +1,8 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { useEffect, useState } from 'react'
+import { startTransition, useEffect, useState } from 'react'
 import type { ChangeEvent, FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { controlRuntime, discoverSetupAccounts, getRuntimeStatus, getSetupFileUrl, getSetupInstruments, saveSetup, uploadSetupFile, type SetupAccount, type SetupPayload } from '../api/mockApi'
+import { controlRuntime, discoverSetupAccounts, getAvailableStrategies, getRuntimeStatus, getSetupFileUrl, getSetupInstruments, getSetupStatus, saveSetup, uploadSetupFile, type SetupAccount, type SetupPayload } from '../api/mockApi'
 import { useUiStore } from '../store/useUiStore'
 
 export function SetupPage() {
@@ -18,15 +18,19 @@ export function SetupPage() {
     environment: 'practice',
     instruments: sharedInstruments.map((item) => item.replace('/', '_')),
     pairTimeframes: Object.fromEntries(sharedInstruments.map((item) => [item.replace('/', '_'), item.includes('GBP') ? '1h' : '5m'])),
+    pairStrategies: Object.fromEntries(sharedInstruments.map((item) => [item.replace('/', '_'), 'ForexAIStrategyBaseline'])),
     riskFraction: '0.01',
   })
   const [error, setError] = useState<string | null>(null)
   const [operationMessage, setOperationMessage] = useState<string | null>(null)
   const [accounts, setAccounts] = useState<SetupAccount[]>([])
   const [selectedAccountId, setSelectedAccountId] = useState('')
+  const [strategyUploadMessage, setStrategyUploadMessage] = useState<string | null>(null)
   const mutation = useMutation({ mutationFn: saveSetup })
   const discoveryMutation = useMutation({ mutationFn: discoverSetupAccounts })
   const runtimeQuery = useQuery({ queryKey: ['setup-runtime'], queryFn: getRuntimeStatus })
+  const strategiesQuery = useQuery({ queryKey: ['available-strategies'], queryFn: getAvailableStrategies })
+  const savedSetupQuery = useQuery({ queryKey: ['setup-status'], queryFn: getSetupStatus })
   const runtimeMutation = useMutation({ mutationFn: controlRuntime, onSuccess: (result) => { setOperationMessage(result.message); void runtimeQuery.refetch() } })
   const uploadMutation = useMutation({ mutationFn: ({ kind, file }: { kind: 'config' | 'strategy'; file: File }) => uploadSetupFile(kind, file), onSuccess: () => setOperationMessage('File uploaded. Reload the bot before the next cycle.') })
   const instrumentsQuery = useQuery({
@@ -39,6 +43,35 @@ export function SetupPage() {
   useEffect(() => {
     setSelectedInstruments(form.instruments.map((item) => item.replace(/_/g, '/')))
   }, [form.instruments, setSelectedInstruments])
+
+  useEffect(() => {
+    const saved = savedSetupQuery.data
+    if (!saved?.configured || !saved.instruments.length) return
+    setForm((current) => ({
+      ...current,
+      instruments: saved.instruments,
+      pairTimeframes: { ...current.pairTimeframes, ...saved.pairTimeframes },
+      pairStrategies: { ...current.pairStrategies, ...saved.pairStrategies },
+    }))
+  }, [savedSetupQuery.data])
+
+  useEffect(() => {
+    const defaultStrategy = strategiesQuery.data?.[0]?.name
+    if (!defaultStrategy) return
+    startTransition(() => {
+      setForm((current) => {
+        const missing = current.instruments.filter((pair) => !current.pairStrategies[pair])
+        if (!missing.length) return current
+        return {
+          ...current,
+          pairStrategies: Object.fromEntries([
+            ...Object.entries(current.pairStrategies),
+            ...missing.map((pair) => [pair, defaultStrategy]),
+          ]),
+        }
+      })
+    })
+  }, [form.instruments, form.pairStrategies, strategiesQuery.data])
 
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -62,6 +95,10 @@ export function SetupPage() {
           ...current.pairTimeframes,
           [instrument]: current.pairTimeframes[instrument] ?? '5m',
         },
+        pairStrategies: {
+          ...current.pairStrategies,
+          [instrument]: current.pairStrategies[instrument] ?? strategiesQuery.data?.[0]?.name ?? 'ForexAIStrategyBaseline',
+        },
       }
     })
   }
@@ -71,11 +108,14 @@ export function SetupPage() {
       if (!current.instruments.includes(instrument)) return current
       const nextInstruments = current.instruments.filter((item) => item !== instrument)
       const nextTimeframes = { ...current.pairTimeframes }
+      const nextStrategies = { ...current.pairStrategies }
       delete nextTimeframes[instrument]
+      delete nextStrategies[instrument]
       return {
         ...current,
         instruments: nextInstruments,
         pairTimeframes: nextTimeframes,
+        pairStrategies: nextStrategies,
       }
     })
   }
@@ -90,6 +130,21 @@ export function SetupPage() {
     const file = event.target.files?.[0]
     if (file) uploadMutation.mutate({ kind, file })
     event.target.value = ''
+  }
+  const handleStrategyFiles = async (event: ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files ?? [])
+    event.target.value = ''
+    setStrategyUploadMessage(null)
+    for (const file of files) {
+      try {
+        const result = await uploadMutation.mutateAsync({ kind: 'strategy', file })
+        setStrategyUploadMessage(`${file.name}: ${result.strategyNames?.join(', ') ?? 'validated and uploaded'}`)
+        await strategiesQuery.refetch()
+      } catch (reason) {
+        setStrategyUploadMessage(reason instanceof Error ? reason.message : `${file.name} was rejected`)
+        break
+      }
+    }
   }
   const selectedAccount = accounts.find((account) => account.accountId === selectedAccountId)
   const discoverAccounts = () => {
@@ -193,7 +248,7 @@ export function SetupPage() {
 
             <div className="setup-section-heading"><span>03</span><div><strong>Pair timeframes</strong><small>Each instrument can run on its own candle timeframe.</small></div></div>
             <div className="pair-timeframe-list field-wide">
-              {form.instruments.map((instrument) => <label className="pair-timeframe-row" key={instrument}><span>{instrument.replace('_', '/')}</span><select value={form.pairTimeframes[instrument] ?? '5m'} onChange={(event) => updatePairTimeframe(instrument, event.target.value)}><option value="1m">1m</option><option value="5m">5m</option><option value="15m">15m</option><option value="30m">30m</option><option value="1h">1h</option><option value="4h">4h</option><option value="1d">1d</option><option value="1w">1w</option></select></label>)}
+              {form.instruments.map((instrument) => <div className="pair-timeframe-row" key={instrument}><span>{instrument.replace('_', '/')}</span><select aria-label={`${instrument.replace('_', '/')} timeframe`} value={form.pairTimeframes[instrument] ?? '5m'} onChange={(event) => updatePairTimeframe(instrument, event.target.value)}><option value="1m">1m</option><option value="5m">5m</option><option value="15m">15m</option><option value="30m">30m</option><option value="1h">1h</option><option value="2h">2h</option><option value="4h">4h</option><option value="6h">6h</option><option value="8h">8h</option><option value="12h">12h</option><option value="1d">1d</option><option value="1w">1w</option><option value="1mo">1mo</option></select><select aria-label={`${instrument.replace('_', '/')} strategy`} value={form.pairStrategies[instrument] ?? strategiesQuery.data?.[0]?.name ?? ''} onChange={(event) => setForm((current) => ({ ...current, pairStrategies: { ...current.pairStrategies, [instrument]: event.target.value } }))} disabled={strategiesQuery.isLoading || !strategiesQuery.data?.length}><option value="" disabled>Select strategy</option>{strategiesQuery.data?.map((strategy) => <option key={strategy.name} value={strategy.name}>{strategy.name}</option>)}</select></div>)}
             </div>
 
             {error && <p className="setup-error" role="alert">{error}</p>}
@@ -208,7 +263,7 @@ export function SetupPage() {
           <section className="setup-operations" aria-labelledby="operations-title">
             <div className="setup-section-heading"><span>04</span><div><strong id="operations-title">Operations</strong><small>Apply file changes and control the bot without leaving setup.</small></div></div>
             <div className="setup-file-grid">
-              <div className="setup-file-card"><div><strong>Strategy file</strong><small>Upload Python strategy or download the active copy.</small></div><div className="setup-file-actions"><label className="secondary-action">Upload<input type="file" accept=".py,text/x-python" onChange={(event) => handleFile('strategy', event)} /></label><a className="secondary-action" href={getSetupFileUrl('strategy')} download>Download</a></div></div>
+              <div className="setup-file-card"><div><strong>Strategy files</strong><small>Upload one or more validated Freqtrade Python strategies. Class names must be unique.</small></div><div className="setup-file-actions"><label className="secondary-action">Upload<input type="file" accept=".py,text/x-python" multiple onChange={handleStrategyFiles} /></label><a className="secondary-action" href={getSetupFileUrl('strategy')} download>Download active</a></div>{strategyUploadMessage && <small role="status">{strategyUploadMessage}</small>}{strategiesQuery.data?.map((strategy) => <a key={strategy.name} href={getSetupFileUrl('strategy', strategy.name)} download>{strategy.name} · {strategy.fileName}</a>)}</div>
               <div className="setup-file-card"><div><strong>config.json</strong><small>Upload a validated JSON config or export the current one.</small></div><div className="setup-file-actions"><label className="secondary-action">Upload<input type="file" accept="application/json,.json" onChange={(event) => handleFile('config', event)} /></label><a className="secondary-action" href={getSetupFileUrl('config')} download>Download</a></div></div>
             </div>
             <div className="runtime-control-card">

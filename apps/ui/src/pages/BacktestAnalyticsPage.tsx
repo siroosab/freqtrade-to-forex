@@ -1,6 +1,6 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { useEffect, useState } from 'react'
-import { getBacktestJob, getBacktestSummary, runBacktest, type BacktestRunResult } from '../api/mockApi'
+import { startTransition, useEffect, useState } from 'react'
+import { getAvailableStrategies, getBacktestJob, getBacktestSummary, getSetupStatus, runBacktest, type BacktestRunResult } from '../api/mockApi'
 import { useUiStore } from '../store/useUiStore'
 
 function readNumber(value: string | undefined) {
@@ -11,6 +11,8 @@ function readNumber(value: string | undefined) {
 export function BacktestAnalyticsPage() {
   const { data, isLoading, isError, refetch } = useQuery({ queryKey: ['backtests'], queryFn: getBacktestSummary })
   const runMutation = useMutation({ mutationFn: runBacktest })
+  const strategiesQuery = useQuery({ queryKey: ['available-strategies'], queryFn: getAvailableStrategies })
+  const setupQuery = useQuery({ queryKey: ['setup-status'], queryFn: getSetupStatus })
   const availablePairs = useUiStore((state) => state.selectedInstruments)
   const [pair, setPair] = useState(availablePairs[0] ?? 'EUR/USD')
   useEffect(() => {
@@ -18,12 +20,23 @@ export function BacktestAnalyticsPage() {
     setPair((current) => (availablePairs.includes(current) ? current : availablePairs[0]))
   }, [availablePairs])
   const [timeframe, setTimeframe] = useState('M5')
+  const [strategyClass, setStrategyClass] = useState('ForexAIStrategyBaseline')
   const [historyMode, setHistoryMode] = useState<'candles' | 'days'>('candles')
   const [historyValue, setHistoryValue] = useState(250)
   const [lastRunMessage, setLastRunMessage] = useState<string | null>(null)
   const [lastRunResult, setLastRunResult] = useState<BacktestRunResult | null>(null)
   const [jobId, setJobId] = useState<string | null>(null)
   const [progress, setProgress] = useState({ history: 0, backtest: 0, phase: 'idle' })
+  useEffect(() => {
+    const strategies = strategiesQuery.data
+    if (!strategies?.length) return
+    startTransition(() => setStrategyClass((current) => strategies.some((strategy) => strategy.name === current) ? current : strategies[0].name))
+  }, [strategiesQuery.data])
+  useEffect(() => {
+    const configuredTimeframe = setupQuery.data?.pairTimeframes[pair.replace('/', '_')]
+    const labels: Record<string, string> = { '1m': 'M1', '5m': 'M5', '15m': 'M15', '30m': 'M30', '1h': 'H1', '2h': 'H2', '4h': 'H4', '6h': 'H6', '8h': 'H8', '12h': 'H12', '1d': 'D1', '1w': 'W1', '1mo': 'MN1' }
+    if (configuredTimeframe && labels[configuredTimeframe]) startTransition(() => setTimeframe(labels[configuredTimeframe]))
+  }, [pair, setupQuery.data?.pairTimeframes])
 
   const totalTrades = data?.reduce((sum, run) => sum + run.trades, 0) ?? 0
   const totalReturn = data?.reduce((sum, run) => sum + readNumber(run.result), 0) ?? 0
@@ -42,7 +55,7 @@ export function BacktestAnalyticsPage() {
     setJobId(null)
     setProgress({ history: 0, backtest: 0, phase: 'queued' })
     runMutation.mutate(
-      { pair, timeframe, steps: historyMode === 'candles' ? historyValue : 250, historyMode, historyValue },
+      { pair, timeframe, strategyClass, steps: historyMode === 'candles' ? historyValue : 250, historyMode, historyValue },
       {
         onSuccess: (result) => {
           setLastRunResult(result)
@@ -123,9 +136,25 @@ export function BacktestAnalyticsPage() {
           <label className="field-block">
             <span>Timeframe</span>
             <select value={timeframe} onChange={(event) => setTimeframe(event.target.value)}>
+              <option value="M1">M1</option>
               <option value="M5">M5</option>
               <option value="M15">M15</option>
+              <option value="M30">M30</option>
               <option value="H1">H1</option>
+              <option value="H2">H2</option>
+              <option value="H4">H4</option>
+              <option value="H6">H6</option>
+              <option value="H8">H8</option>
+              <option value="H12">H12</option>
+              <option value="D1">D1</option>
+              <option value="W1">W1</option>
+            </select>
+          </label>
+
+          <label className="field-block">
+            <span>Strategy</span>
+            <select value={strategyClass} onChange={(event) => setStrategyClass(event.target.value)} disabled={strategiesQuery.isLoading || !strategiesQuery.data?.length}>
+              {strategiesQuery.data?.map((strategy) => <option key={strategy.name} value={strategy.name}>{strategy.name}</option>)}
             </select>
           </label>
 
@@ -149,7 +178,7 @@ export function BacktestAnalyticsPage() {
           </article>
           <article className="summary-card">
             <span>Strategy</span>
-            <strong>AI baseline</strong>
+            <strong>{lastRunResult.strategy ?? strategyClass}</strong>
           </article>
           <article className="summary-card">
             <span>Config source</span>
@@ -215,6 +244,7 @@ export function BacktestAnalyticsPage() {
                   <tr>
                     <th>Name</th>
                     <th>Pair</th>
+                    <th>Strategy</th>
                     <th>Timeframe</th>
                     <th>Status</th>
                     <th>Result</th>
@@ -228,6 +258,7 @@ export function BacktestAnalyticsPage() {
                     <tr key={run.id}>
                       <td>{run.name}</td>
                       <td>{run.pair}</td>
+                      <td>{run.strategy ?? '-'}</td>
                       <td>{run.timeframe}</td>
                       <td>{run.status}</td>
                       <td>{run.result}</td>

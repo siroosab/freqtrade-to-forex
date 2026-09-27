@@ -602,6 +602,7 @@ def test_setup_runtime_and_file_endpoints_work_with_configured_paths(monkeypatch
             'executionMode': 'dry_run',
             'instruments': ['EUR_USD', 'GBP_USD'],
             'pairTimeframes': {'EUR_USD': '5m', 'GBP_USD': '1h'},
+            'pairStrategies': {'EUR_USD': 'ForexAIStrategyBaseline', 'GBP_USD': 'ForexEmaStrategy'},
             'riskFraction': '0.01',
             'configPath': str(config_path),
         },
@@ -611,6 +612,7 @@ def test_setup_runtime_and_file_endpoints_work_with_configured_paths(monkeypatch
     assert payload['configured'] is True
     assert payload['executionMode'] == 'practice'
     assert payload['accountTypeCode'] == '003'
+    assert payload['pairStrategies'] == {'EUR_USD': 'ForexAIStrategyBaseline', 'GBP_USD': 'ForexEmaStrategy'}
 
 
 def test_setup_discovery_returns_only_supported_accounts_and_never_token(monkeypatch):
@@ -764,9 +766,30 @@ def test_untagged_practice_v20_account_can_be_confirmed(monkeypatch, tmp_path):
     assert uploaded_config.status_code == 200, uploaded_config.text
     assert uploaded_config.json()['uploaded'] is True
 
+    monkeypatch.setenv('FOREX_STRATEGIES_DIR', str(tmp_path / 'uploaded_strategies'))
     uploaded_strategy = client.post(
         '/api/v1/setup/files/strategy',
-        json={'content': 'class CustomStrategy:\n    pass\n'},
+        json={
+            'fileName': 'ForexUploadTestStrategy.py',
+            'content': 'from freqtrade.strategy import IStrategy\nclass ForexUploadTestStrategy(IStrategy):\n    pass\n',
+        },
     )
     assert uploaded_strategy.status_code == 200, uploaded_strategy.text
     assert uploaded_strategy.json()['uploaded'] is True
+    assert uploaded_strategy.json()['strategyNames'] == ['ForexUploadTestStrategy']
+    assert client.get('/api/v1/strategies/available').json()
+
+    duplicate_strategy = client.post(
+        '/api/v1/setup/files/strategy',
+        json={
+            'fileName': 'AnotherStrategy.py',
+            'content': 'from freqtrade.strategy import IStrategy\nclass ForexUploadTestStrategy(IStrategy):\n    pass\n',
+        },
+    )
+    assert duplicate_strategy.status_code == 400
+
+    invalid_strategy = client.post(
+        '/api/v1/setup/files/strategy',
+        json={'fileName': 'NotAStrategy.py', 'content': 'class NotAStrategy: pass\n'},
+    )
+    assert invalid_strategy.status_code == 400
