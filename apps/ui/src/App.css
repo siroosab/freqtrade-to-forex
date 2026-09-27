@@ -1578,9 +1578,20 @@
     grid-template-columns: 1fr;
   }
 
+  .content-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
   .main-column,
   .side-column {
     gap: 14px;
+  }
+
+  .main-column > .panel:first-child,
+  .side-column > .panel:first-child {
+    order: 0;
   }
 
   .topbar {

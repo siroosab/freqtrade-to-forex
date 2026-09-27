@@ -382,31 +382,6 @@ export function DashboardPage() {
           <div className="panel">
             <div className="panel-header compact">
               <div>
-                <p className="eyebrow">Strategy engine</p>
-                <h3>Signals</h3>
-              </div>
-            </div>
-
-            <div className="strategy-stack">
-              {market?.strategySignals.map((strategy) => (
-                <div key={strategy.name} className="strategy-card">
-                  <div className="strategy-row">
-                    <strong>{strategy.name}</strong>
-                    <span className="pill neutral">{strategy.mode}</span>
-                  </div>
-                  <div className="strategy-meta">
-                    <span>{strategy.status}</span>
-                    <span>{strategy.quality}</span>
-                  </div>
-                  <p>{strategy.signal}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div className="panel">
-            <div className="panel-header compact">
-              <div>
                 <p className="eyebrow">Exposure</p>
                 <h3>Risk heatmap</h3>
               </div>
@@ -460,6 +435,31 @@ export function DashboardPage() {
                     <strong>{alert.title}</strong>
                     <p>{alert.detail}</p>
                   </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="panel">
+            <div className="panel-header compact">
+              <div>
+                <p className="eyebrow">Strategy engine</p>
+                <h3>Signals</h3>
+              </div>
+            </div>
+
+            <div className="strategy-stack">
+              {market?.strategySignals.map((strategy) => (
+                <div key={strategy.name} className="strategy-card">
+                  <div className="strategy-row">
+                    <strong>{strategy.name}</strong>
+                    <span className="pill neutral">{strategy.mode}</span>
+                  </div>
+                  <div className="strategy-meta">
+                    <span>{strategy.status}</span>
+                    <span>{strategy.quality}</span>
+                  </div>
+                  <p>{strategy.signal}</p>
                 </div>
               ))}
             </div>
