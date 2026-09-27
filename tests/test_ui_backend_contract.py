@@ -1,4 +1,5 @@
 import json
+from decimal import Decimal
 
 from fastapi.testclient import TestClient
 
@@ -59,6 +60,141 @@ def test_app_starts_without_built_ui_assets(tmp_path, monkeypatch):
     created = __import__('freqtrade.forex.api', fromlist=['create_app']).create_app()
     assert created is not None
     assert created.state.ui_assets_available is False
+
+
+def test_backtest_run_warns_and_clears_old_cache_before_refresh(monkeypatch):
+    calls = []
+
+    def fake_clear(pair: str, timeframe: str):
+        calls.append((pair, timeframe))
+
+    class FakeResult:
+        net_pl = Decimal('123.45')
+        starting_balance = Decimal('10000')
+        ending_balance = Decimal('10123.45')
+        win_rate = Decimal('0.6')
+        trades = []
+        trade_output = []
+        max_drawdown = Decimal('25')
+        max_drawdown_rate = Decimal('0.25')
+
+    class FakeClient:
+        def __init__(self, token, account_id, environment, **kwargs):
+            self.token = token
+            self.account_id = account_id
+            self.environment = environment
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get_instruments(self, instruments):
+            return [type('Instrument', (), {'name': 'EUR_USD', 'pair': 'EUR/USD'})()]
+
+        async def get_account_summary(self):
+            return type('Account', (), {'balance': '10000', 'currency': 'USD'})()
+
+        async def get_candles(self, instrument, granularity, count=None, **kwargs):
+            return [
+                type('Candle', (), {'time': '2024-01-01T00:00:00Z', 'complete': True, 'open': '1.0', 'high': '1.1', 'low': '0.9', 'close': '1.05', 'volume': 1000})(),
+                type('Candle', (), {'time': '2024-01-01T00:05:00Z', 'complete': True, 'open': '1.05', 'high': '1.12', 'low': '1.0', 'close': '1.08', 'volume': 1000})(),
+            ]
+
+        async def get_prices(self, instruments):
+            return [type('Price', (), {'instrument': 'EUR_USD', 'spread': 0.0003})()]
+
+    class FakeBacktester:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def run(self, frame):
+            return FakeResult()
+
+    monkeypatch.setattr('freqtrade.forex.api._clear_cached_historical_data', fake_clear)
+    monkeypatch.setattr('freqtrade.forex.api.OandaClient', FakeClient)
+    monkeypatch.setattr('freqtrade.forex.api.OandaSettings.from_environment', lambda: type('Settings', (), {'token': 't', 'account_id': 'a', 'environment': type('Env', (), {'value': 'practice'})(), 'execution_mode': 'practice', 'risk_fraction': '0.01'})())
+    monkeypatch.setattr('freqtrade.forex.api.ForexBacktester', FakeBacktester)
+
+    login = client.post('/api/v1/auth/login', json={'username': 'operator', 'password': 'operator'})
+    token = login.json()['sessionToken']
+
+    response = client.post(
+        '/api/v1/backtests/run',
+        json={'pair': 'EUR/USD', 'timeframe': 'M5', 'historyMode': 'candles', 'historyValue': 2},
+        headers={'X-Session-Token': token, 'X-User-Role': 'operator', 'X-CSRF-Token': 'demo-token'},
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert calls == [('EUR/USD', 'M5')]
+    assert 'clearing previous cached historical data' in payload['message'].lower()
+
+
+def test_hyperopt_start_warns_and_clears_old_cache_before_refresh(monkeypatch):
+    calls = []
+
+    def fake_clear(pair: str, timeframe: str):
+        calls.append((pair, timeframe))
+
+    class FakeClient:
+        def __init__(self, token, account_id, environment, **kwargs):
+            self.token = token
+            self.account_id = account_id
+            self.environment = environment
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def get_account_summary(self):
+            return type('Account', (), {'balance': '10000'})()
+
+        async def get_instruments(self, instruments):
+            return [type('Instrument', (), {'name': 'EUR_USD'})()]
+
+        async def get_candles(self, instrument, granularity, count=None, **kwargs):
+            return [
+                type('Candle', (), {'time': '2024-01-01T00:00:00Z', 'complete': True, 'open': '1.0', 'high': '1.1', 'low': '0.9', 'close': '1.05', 'volume': 1000})(),
+                type('Candle', (), {'time': '2024-01-01T00:05:00Z', 'complete': True, 'open': '1.05', 'high': '1.12', 'low': '1.0', 'close': '1.08', 'volume': 1000})(),
+            ]
+
+        async def get_prices(self, instruments):
+            return [type('Price', (), {'instrument': 'EUR_USD', 'spread': 0.0003})()]
+
+    class FakeCandidate:
+        def __init__(self):
+            self.entry_threshold = '0.7'
+            self.max_spread_pct = '0.8'
+            self.objective = Decimal('1.2')
+            self.train_result = type('TrainResult', (), {'net_pl': Decimal('120.0')})()
+            self.validation_result = type('ValidationResult', (), {'net_pl': Decimal('110.0'), 'max_drawdown': Decimal('20.0'), 'trades': []})()
+
+    def fake_hyperopt(*args, **kwargs):
+        return type('HyperoptResult', (), {'candidates': [FakeCandidate()]})()
+
+    monkeypatch.setattr('freqtrade.forex.api._clear_cached_historical_data', fake_clear)
+    monkeypatch.setattr('freqtrade.forex.api.OandaClient', FakeClient)
+    monkeypatch.setattr('freqtrade.forex.api.OandaSettings.from_environment', lambda: type('Settings', (), {'token': 't', 'account_id': 'a', 'environment': type('Env', (), {'value': 'practice'})(), 'execution_mode': 'practice', 'risk_fraction': '0.01'})())
+    monkeypatch.setattr('freqtrade.forex.ai_hyperopt.run_ai_hyperopt', fake_hyperopt)
+    monkeypatch.setattr('freqtrade.forex.ai_hyperopt.run_ai_hyperopt_robust', lambda *args, **kwargs: [])
+
+    login = client.post('/api/v1/auth/login', json={'username': 'operator', 'password': 'operator'})
+    token = login.json()['sessionToken']
+
+    response = client.post(
+        '/api/v1/ai/hyperopt/start',
+        json={'pair': 'EUR/USD', 'timeframe': 'M5', 'historyMode': 'candles', 'historyValue': 2, 'attempts': 2},
+        headers={'X-Session-Token': token, 'X-User-Role': 'operator', 'X-CSRF-Token': 'demo-token'},
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert calls == [('EUR/USD', 'M5')]
+    assert 'clearing previous cached historical data' in payload['warning'].lower()
 
 
 def test_order_submit_requires_operator_role_and_csrf_token():

@@ -8,6 +8,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import sqlite3
 import threading
 from contextlib import suppress
@@ -48,6 +49,24 @@ def _render_ui_index(ui_index: Path) -> str:
         html = re.sub(r'href="/assets/[^"]+\.css"', f'href="/assets/{css_assets[0].name}"', html)
 
     return html
+
+
+def _clear_cached_historical_data(pair: str | None = None, timeframe: str | None = None) -> list[str]:
+    data_dir = Path("user_data/data")
+    if not data_dir.exists():
+        return []
+
+    removed: list[str] = []
+    for child in sorted(data_dir.iterdir(), key=lambda item: item.name):
+        removed.append(str(child))
+        if child.is_dir():
+            shutil.rmtree(child, ignore_errors=True)
+        else:
+            child.unlink(missing_ok=True)
+
+    if pair and timeframe:
+        return [str(child) for child in removed if pair.replace("/", "_").upper() in str(child).upper() or timeframe.upper() in str(child).upper()]
+    return removed
 
 
 def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> FastAPI:
@@ -1640,6 +1659,11 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         settings = OandaSettings.from_environment()
         if settings.execution_mode not in {"dry_run", "backtest", "practice"}:
             raise HTTPException(status_code=400, detail="AI hyperopt requires a safe execution mode")
+        history_warning = (
+            f"Clearing previous cached historical data for {normalized_pair} at {timeframe} "
+            "before downloading fresh OANDA candles."
+        )
+        _clear_cached_historical_data(pair=normalized_pair, timeframe=timeframe)
         granularity = {"M5": "M5", "M15": "M15", "H1": "H1"}.get(timeframe.upper(), "M5")
         try:
             async with OandaClient(settings.token, settings.account_id, environment=settings.environment) as client:
@@ -1695,7 +1719,12 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             data_hash,
             schema_hash,
         )
-        return {"pair": normalized_pair, "status": "running", "attemptsTotal": job["attemptsTotal"]}
+        return {
+            "pair": normalized_pair,
+            "status": "running",
+            "attemptsTotal": job["attemptsTotal"],
+            "warning": history_warning,
+        }
 
     @app.get("/api/v1/ai/hyperopt/loss-functions")
     async def ai_hyperopt_loss_functions() -> dict:
@@ -2069,11 +2098,16 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             return dict(BACKTEST_JOBS[job_id])
 
         job_id = str(payload.get("_job_id", "")) or None
-        update_backtest_job(job_id, status="running", phase="validating", message="Validating OANDA backtest configuration.")
         pair = str(payload.get("pair", "EUR/USD"))
         timeframe = str(payload.get("timeframe", "M5"))
-        history_mode, steps = resolve_history_request(payload, timeframe)
         normalized_pair = normalize_pair(pair)
+        history_notice = (
+            f"Clearing previous cached historical data for {normalized_pair} at {timeframe} "
+            "before downloading fresh OANDA candles."
+        )
+        update_backtest_job(job_id, status="running", phase="validating", message=history_notice)
+        _clear_cached_historical_data(pair=normalized_pair, timeframe=timeframe)
+        history_mode, steps = resolve_history_request(payload, timeframe)
         BACKTEST_HISTORY[:] = [
             item for item in BACKTEST_HISTORY
             if not (item.get("pair") == normalized_pair and item.get("timeframe") == timeframe)
@@ -2181,8 +2215,8 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     "steps": len(frame),
                     "historyMode": history_mode,
                     "historyValue": int(payload.get("historyValue", steps)),
-                    "message": backtest_warning or "Real OANDA historical backtest completed using ForexAIStrategyBaseline.",
-                    "warning": backtest_warning,
+                    "message": history_notice + (" " + backtest_warning if backtest_warning else "") + ". Real OANDA historical backtest completed using ForexAIStrategyBaseline.",
+                    "warning": history_notice + (" " + backtest_warning if backtest_warning else ""),
                     "netPl": format_decimal(result.net_pl),
                     "trades": len(result.trades),
                     "startingBalance": format_decimal(result.starting_balance),
