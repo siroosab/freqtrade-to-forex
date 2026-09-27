@@ -1,10 +1,9 @@
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useMemo, useState } from 'react'
-import { getAccountSummary, getMarketSummary, submitMarketOrder } from '../api/mockApi'
+import { ForexChart } from '../components/ForexChart'
+import { getAccountSummary, getMarketSummary, getOrdersChart, getRiskSummary, submitMarketOrder } from '../api/mockApi'
 import { useForexSocket } from '../hooks/useForexSocket'
 import { useUiStore } from '../store/useUiStore'
-
-const pnlSeries = [18, 36, 28, 52, 45, 68, 62, 80, 72, 88, 84, 96]
 
 export function DashboardPage() {
   useForexSocket()
@@ -21,6 +20,13 @@ export function DashboardPage() {
 
   const accountQuery = useQuery({ queryKey: ['account'], queryFn: getAccountSummary })
   const marketQuery = useQuery({ queryKey: ['market'], queryFn: getMarketSummary })
+  const riskQuery = useQuery({ queryKey: ['risk'], queryFn: getRiskSummary })
+  const [chartTimeframe, setChartTimeframe] = useState('H1')
+  const chartQuery = useQuery({
+    queryKey: ['dashboard-chart', instrument, chartTimeframe],
+    queryFn: () => getOrdersChart(instrument, chartTimeframe),
+    refetchInterval: 60000,
+  })
   const liveAccount = useUiStore((state) => state.accountFeed)
   const liveMarket = useUiStore((state) => state.marketFeed)
   const userRole = useUiStore((state) => state.userRole)
@@ -28,6 +34,7 @@ export function DashboardPage() {
 
   const account = liveAccount ?? accountQuery.data
   const market = liveMarket ?? marketQuery.data
+  const riskSummary = riskQuery.data
 
   const instrumentOptions = selectedInstruments.length ? selectedInstruments : ['EUR/USD', 'GBP/USD', 'USD/JPY']
   const activeInstrument = instrumentOptions.includes(instrument) ? instrument : instrumentOptions[0] ?? 'EUR/USD'
@@ -106,46 +113,70 @@ export function DashboardPage() {
     { label: 'Margin Used', value: account?.marginUsed ?? '0%', delta: 'Healthy', tone: 'neutral' },
   ]
 
-  const statCards = [
-    { label: 'Win rate', value: '62.4%', delta: '+4.1%', tone: 'emerald' },
-    { label: 'Sharpe', value: '1.84', delta: '+0.26', tone: 'cyan' },
-    { label: 'Risk budget', value: '72%', delta: 'Moderate', tone: 'violet' },
-    { label: 'Max DD', value: '4.1%', delta: '-0.6%', tone: 'amber' },
-  ]
-
-  const marginBreakdown = [
-    { pair: 'EUR/USD', value: '$42.6k', share: 42, color: '#67e8f9' },
-    { pair: 'GBP/USD', value: '$31.2k', share: 31, color: '#a78bfa' },
-    { pair: 'USD/JPY', value: '$18.4k', share: 19, color: '#34d399' },
-    { pair: 'AUD/USD', value: '$7.8k', share: 8, color: '#fbbf24' },
-  ]
-
-  const equityTrendValues = [38, 42, 48, 47, 55, 58, 64, 60, 66, 71, 74, 82]
-  const riskHeatmap = [
-    { pair: 'EUR/USD', value: 82, level: 'high' },
-    { pair: 'GBP/USD', value: 71, level: 'mid' },
-    { pair: 'USD/JPY', value: 58, level: 'safe' },
-    { pair: 'AUD/USD', value: 63, level: 'mid' },
-    { pair: 'NZD/USD', value: 46, level: 'safe' },
-    { pair: 'USD/CAD', value: 74, level: 'high' },
-  ]
-  const pairLeaderboard = [
-    { pair: 'EUR/USD', pnl: '+$1,420', value: '2.4x' },
-    { pair: 'GBP/USD', pnl: '+$980', value: '1.8x' },
-    { pair: 'USD/JPY', pnl: '-$312', value: '0.8x' },
-    { pair: 'AUD/USD', pnl: '+$540', value: '1.1x' },
-  ]
-
-  const totalMargin = '$100.0k'
-  const usedMargin = '$68.0k'
-  const usedPercent = 68
-  const donutStyle = {
-    background: `conic-gradient(#67e8f9 0 42%, #a78bfa 42% 73%, #34d399 73% 92%, #fbbf24 92% 100%)`,
+  const parseAmountValue = (value: string | undefined) => {
+    if (!value) return 0
+    const cleaned = value.replace(/[$,%\s]/g, '').replace(/k/gi, '000').replace(/m/gi, '000000')
+    const parsed = Number.parseFloat(cleaned)
+    return Number.isFinite(parsed) ? parsed : 0
   }
 
-  const trendPoints = equityTrendValues
-    .map((value, index) => `${index * 18 + 10},${80 - value}`)
-    .join(' ')
+  const statCards = [
+    { label: 'Net P/L', value: account?.netPnl ?? '$0.00', delta: '+3.12%', tone: 'emerald' },
+    { label: 'Margin level', value: riskSummary?.marginLevel ?? account?.marginUsed ?? '0%', delta: account?.marginUsed ?? '0%', tone: 'cyan' },
+    { label: 'Daily risk', value: riskSummary?.dailyLoss ?? account?.dailyRisk ?? '0%', delta: 'Policy', tone: 'violet' },
+    { label: 'Drawdown', value: account?.drawdown ?? '0%', delta: 'Max DD', tone: 'amber' },
+  ]
+
+  const marginBreakdown = (riskSummary?.exposureByPair ?? []).map((item, index) => {
+    const colors = ['#67e8f9', '#a78bfa', '#34d399', '#fbbf24']
+    const total = riskSummary?.exposureByPair.reduce((sum, entry) => sum + parseAmountValue(entry.value), 0) ?? 0
+    const share = total > 0 ? Math.round((parseAmountValue(item.value) / total) * 100) : 0
+    return { pair: item.pair, value: item.value, share, color: colors[index % colors.length] }
+  })
+
+  const totalMargin = riskSummary ? `${(riskSummary.exposureByPair.reduce((sum, item) => sum + parseAmountValue(item.value), 0) / 1000).toFixed(1)}k` : '$0.0k'
+  const usedPercent = account?.marginUsed ? Number.parseFloat(account.marginUsed.replace('%', '')) || 0 : 0
+  const usedMargin = account?.marginUsed ?? '0%'
+  const donutStyle = {
+    background: marginBreakdown.length
+      ? `conic-gradient(${marginBreakdown.map((item, index) => {
+          const start = marginBreakdown.slice(0, index).reduce((sum, current) => sum + current.share, 0)
+          return `${item.color} ${start}% ${start + item.share}%`
+        }).join(', ')})`
+      : 'conic-gradient(#67e8f9 0 100%)',
+  }
+
+  const riskHeatmap = (riskSummary?.exposureByPair ?? []).map((item) => {
+    const value = Math.min(100, Math.max(20, parseAmountValue(item.value) / 1000))
+    const level = value >= 80 ? 'high' : value >= 55 ? 'mid' : 'safe'
+    return { pair: item.pair, value: Math.round(value), level }
+  })
+
+  const pairLeaderboard = (riskSummary?.exposureByPair ?? []).map((item, index) => ({
+    pair: item.pair,
+    pnl: `${item.value}`,
+    value: `${index + 1}. ${item.value}`,
+  }))
+
+  const chartCandles = chartQuery.data?.candles ?? []
+  const equityTrendValues = chartCandles.slice(-12).map((candle) => Number(candle.close))
+  const sparklineValues = equityTrendValues.length
+    ? equityTrendValues.map((value, _, values) => {
+        const min = Math.min(...values)
+        const max = Math.max(...values)
+        const spread = max - min || 1
+        return ((value - min) / spread) * 100
+      })
+    : [20, 26, 32, 28, 35, 38, 44, 56, 52, 61, 58, 66]
+  const portfolioRows = (riskSummary?.exposureByPair ?? []).map((item) => ({
+    symbol: item.pair,
+    side: 'Long',
+    units: `${Math.round(parseAmountValue(item.value) / 120)}`,
+    entry: market?.instruments.find((instrumentItem) => instrumentItem.pair === item.pair)?.bid?.toFixed(4) ?? '—',
+    stop: '—',
+    tp: '—',
+    pnl: item.value,
+  }))
 
   return (
     <>
@@ -245,11 +276,7 @@ export function DashboardPage() {
                 </tr>
               </thead>
               <tbody>
-                {[
-                  { symbol: 'EUR/USD', side: 'Long', units: '2,400', entry: '1.0881', stop: '1.0835', tp: '1.0995', pnl: '+$1,420.20' },
-                  { symbol: 'GBP/USD', side: 'Short', units: '1,800', entry: '1.2828', stop: '1.2890', tp: '1.2685', pnl: '+$980.40' },
-                  { symbol: 'USD/JPY', side: 'Long', units: '1,200', entry: '147.95', stop: '146.80', tp: '151.20', pnl: '-$312.60' },
-                ].map((pos) => (
+                {portfolioRows.map((pos) => (
                   <tr key={pos.symbol}>
                     <td>{pos.symbol}</td>
                     <td className={pos.side === 'Long' ? 'long' : 'short'}>{pos.side}</td>
@@ -257,7 +284,7 @@ export function DashboardPage() {
                     <td>{pos.entry}</td>
                     <td>{pos.stop}</td>
                     <td>{pos.tp}</td>
-                    <td className={pos.pnl.startsWith('+') ? 'positive' : 'negative'}>{pos.pnl}</td>
+                    <td className={pos.pnl.startsWith('-') ? 'negative' : 'positive'}>{pos.pnl}</td>
                   </tr>
                 ))}
               </tbody>
@@ -311,8 +338,8 @@ export function DashboardPage() {
             </div>
 
             <div className="sparkline" aria-label="Equity sparkline">
-              {pnlSeries.map((height, index) => (
-                <span key={index} style={{ height: `${height}%` }} />
+              {sparklineValues.map((height, index) => (
+                <span key={`${height}-${index}`} style={{ height: `${Math.max(16, Math.min(100, height))}%` }} />
               ))}
             </div>
 
@@ -334,26 +361,22 @@ export function DashboardPage() {
                 <p className="eyebrow">Trend</p>
                 <h3>Equity trend</h3>
               </div>
-              <span className="pill positive">+12.4%</span>
+              <div className="segmented">
+                {['M5', 'M15', 'H1'].map((timeframe) => (
+                  <button key={timeframe} type="button" className={chartTimeframe === timeframe ? 'segment active' : 'segment'} onClick={() => setChartTimeframe(timeframe)}>
+                    {timeframe}
+                  </button>
+                ))}
+              </div>
             </div>
 
-            <svg className="equity-trend-chart" viewBox="0 0 220 90" preserveAspectRatio="none" aria-label="Equity trend line chart">
-              <defs>
-                <linearGradient id="equityTrendFill" x1="0" x2="0" y1="0" y2="1">
-                  <stop offset="0%" stopColor="rgba(56, 189, 248, 0.45)" />
-                  <stop offset="100%" stopColor="rgba(56, 189, 248, 0.02)" />
-                </linearGradient>
-              </defs>
-              <path d={`M 0 80 L ${trendPoints} L 200 80 Z`} fill="url(#equityTrendFill)" opacity="0.6" />
-              <polyline fill="none" stroke="#67e8f9" strokeWidth="3" strokeLinejoin="round" strokeLinecap="round" points={trendPoints} />
-            </svg>
-
-            <div className="trend-axis">
-              <span>Jan</span>
-              <span>Mar</span>
-              <span>Jun</span>
-              <span>Sep</span>
-            </div>
+            {chartQuery.isLoading && <p className="chart-empty-state">Loading real chart data…</p>}
+            {chartQuery.isError && <p className="chart-empty-state">Real chart data unavailable; retrying from backend.</p>}
+            {chartQuery.data && (
+              <div className="real-chart-panel">
+                <ForexChart data={chartQuery.data} />
+              </div>
+            )}
           </div>
 
           <div className="panel">
@@ -403,7 +426,7 @@ export function DashboardPage() {
             <div className="panel-header compact">
               <div>
                 <p className="eyebrow">Leaderboard</p>
-                <h3>Pairs by P/L</h3>
+                <h3>Pairs by exposure</h3>
               </div>
             </div>
 
