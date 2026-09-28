@@ -2,7 +2,7 @@ import { useMemo, useRef, useState } from 'react'
 
 type ChartCandle = { time: string; open: number; high: number; low: number; close: number }
 type ChartSignal = { time: string; side: 'BUY' | 'SELL'; price: number; sourceTimeframe: string; aiReason?: string; signalStrength?: number; entryThreshold?: number }
-type ChartTrade = { time?: string; createdAt?: string; side: 'BUY' | 'SELL'; price?: number; pnl?: string }
+type ChartTrade = { time?: string; createdAt?: string; side: 'BUY' | 'SELL'; price?: number; pnl?: string; source?: string; markerType?: 'entry' | 'exit' }
 
 export type ForexChartData = {
   pair: string
@@ -165,7 +165,12 @@ export function ForexChart({ data, onPriceSelect }: { data: ForexChartData; onPr
           {visible.ema50 && <polyline points={chart.line(chart.ema50.slice(visibleStartIndex, visibleEndIndex + 1), visibleStartIndex)} fill="none" stroke="#c084fc" strokeWidth="1.5" strokeDasharray="5 4" />}
           {visible.ema100 && <polyline points={chart.line(chart.ema100.slice(visibleStartIndex, visibleEndIndex + 1), visibleStartIndex)} fill="none" stroke="#f97316" strokeWidth="1.5" strokeDasharray="5 4" />}
           {visible.ai && chart.signalMarkers.map((signal) => visible[signal.side === 'BUY' ? 'buy' : 'sell'] && <g key={`${signal.time}-${signal.side}`}><circle cx={signal.x} cy={signal.y} r="7" fill="none" stroke={signal.side === 'BUY' ? '#a7f3d0' : '#fecdd3'} strokeWidth="1" opacity="0.75" /><circle cx={signal.x} cy={signal.y} r="4" fill={signal.side === 'BUY' ? '#34d399' : '#fb7185'} /><text x={signal.x + 9} y={signal.y - 8} fill={signal.side === 'BUY' ? '#86efac' : '#fda4af'} fontSize="11">AI {signal.side}</text></g>)}
-          {visible.trades && chart.tradeMarkers.map((trade, index) => <g key={`${trade.time ?? trade.createdAt}-${trade.side}-${index}`}><polygon points={`${trade.x},${trade.y - 7} ${trade.x + 6},${trade.y} ${trade.x},${trade.y + 7} ${trade.x - 6},${trade.y}`} fill={trade.side === 'BUY' ? '#34d399' : '#fb7185'} stroke="#f8fafc" strokeWidth="1" /><text x={trade.x + 9} y={trade.y + 14} fill={trade.side === 'BUY' ? '#86efac' : '#fda4af'} fontSize="11">Trade {trade.side}</text></g>)}
+          {visible.trades && chart.tradeMarkers.map((trade, index) => {
+            const manual = trade.source === 'manual'
+            const color = manual ? '#facc15' : trade.side === 'BUY' ? '#34d399' : '#fb7185'
+            const label = manual ? `MANUAL ${trade.side} ${trade.markerType === 'exit' ? 'EXIT' : 'ENTRY'}` : `Strategy ${trade.side}`
+            return <g key={`${trade.time ?? trade.createdAt}-${trade.side}-${index}`}><polygon points={`${trade.x},${trade.y - 7} ${trade.x + 6},${trade.y} ${trade.x},${trade.y + 7} ${trade.x - 6},${trade.y}`} fill={manual ? '#0f172a' : color} stroke={color} strokeWidth={manual ? '2' : '1'} strokeDasharray={manual ? '2 1' : undefined} /><text x={trade.x + 9} y={trade.y + 14} fill={color} fontSize="11">{label}{manual && trade.markerType === 'exit' && trade.pnl ? ` ${trade.pnl}` : ''}</text></g>
+          })}
           <line x1={padding} x2={plotRight} y1={chart.scaleY(visibleReferencePrice)} y2={chart.scaleY(visibleReferencePrice)} className="chart-zero-line" />
           <g className="chart-zero-handle" role="slider" aria-label="Movable zero price reference" aria-valuemin={chart.min} aria-valuemax={chart.max} aria-valuenow={visibleReferencePrice} tabIndex={0} onPointerDown={(event) => {
             event.preventDefault()

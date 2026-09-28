@@ -631,6 +631,53 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
     def normalize_pair(pair: str) -> str:
         return pair.replace("_", "/").upper()
 
+    def serialize_broker_trade(trade: dict, quotes: dict[str, object], *, closed: bool) -> dict:
+        instrument = str(trade.get("instrument", ""))
+        unit_value = trade.get("initialUnits") if closed else trade.get("currentUnits")
+        units = Decimal(str(unit_value or "0"))
+        side = "BUY" if units >= 0 else "SELL"
+        extension = trade.get("tradeClientExtensions") or trade.get("clientExtensions") or {}
+        client_order_id = str(extension.get("id", "")) if isinstance(extension, dict) else ""
+        source = "manual" if client_order_id.startswith("manual-ui-") else "strategy"
+        quote = quotes.get(instrument)
+        current_price = None
+        if quote is not None and not closed:
+            current_price = str(quote.bid if side == "BUY" else quote.ask)
+        stop_loss = trade.get("stopLossOrder") or {}
+        take_profit = trade.get("takeProfitOrder") or {}
+        return {
+            "id": str(trade.get("id", "")),
+            "symbol": normalize_pair(instrument),
+            "side": side,
+            "units": str(abs(units)),
+            "entryPrice": str(trade.get("price", "")),
+            "currentPrice": current_price,
+            "exitPrice": str(trade.get("averageClosePrice", "")) or None,
+            "stopLoss": str(stop_loss.get("price", "")) or None,
+            "takeProfit": str(take_profit.get("price", "")) or None,
+            "pnl": str(trade.get("realizedPL" if closed else "unrealizedPL", "0")),
+            "openedAt": trade.get("openTime"),
+            "closedAt": trade.get("closeTime") if closed else None,
+            "status": "closed" if closed else "open",
+            "manual": source == "manual",
+            "source": source,
+            "clientOrderId": client_order_id or None,
+        }
+
+    async def broker_trade_rows(client: OandaClient) -> tuple[list[dict], list[dict]]:
+        open_trades = await client.get_open_trades()
+        closed_trades = await client.get_closed_trades(count=100)
+        instruments = sorted({
+            str(trade.get("instrument", ""))
+            for trade in [*open_trades, *closed_trades]
+            if trade.get("instrument")
+        })
+        quotes = {quote.instrument: quote for quote in await client.get_prices(instruments)} if instruments else {}
+        return (
+            [serialize_broker_trade(trade, quotes, closed=False) for trade in open_trades],
+            [serialize_broker_trade(trade, quotes, closed=True) for trade in closed_trades],
+        )
+
     def report_age_days(completed_at: str) -> int:
         completed = datetime.fromisoformat(completed_at)
         return max(0, (datetime.now(timezone.utc) - completed).days)
@@ -782,6 +829,30 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             ],
         }
 
+    @app.get("/api/v1/markets/quote")
+    async def market_quote(pair: str = "EUR/USD") -> dict:
+        try:
+            settings = OandaSettings.from_environment()
+            instrument = normalize_pair(pair).replace("/", "_")
+            async with OandaClient(settings.token, settings.account_id, environment=settings.environment) as client:
+                prices = await client.get_prices((instrument,))
+            if not prices:
+                raise HTTPException(status_code=502, detail="Broker returned no quote for this instrument")
+            price = prices[0]
+            return {
+                "pair": normalize_pair(price.instrument),
+                "bid": str(price.bid),
+                "ask": str(price.ask),
+                "spread": str(price.spread),
+                "time": price.time,
+                "tradeable": price.tradeable,
+                "environment": settings.environment.value,
+            }
+        except HTTPException:
+            raise
+        except (OandaAPIError, ValueError) as exc:
+            raise HTTPException(status_code=503, detail=f"Broker quote unavailable: {exc}") from exc
+
     @app.get("/api/v1/account/risk")
     async def account_risk() -> dict:
         return fallback_risk_summary()
@@ -848,6 +919,16 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             ]
         return fallback_orders()
 
+    @app.get("/api/v1/positions")
+    async def broker_positions() -> dict:
+        try:
+            settings = OandaSettings.from_environment()
+            async with OandaClient(settings.token, settings.account_id, environment=settings.environment) as client:
+                open_rows, closed_rows = await broker_trade_rows(client)
+            return {"open": open_rows, "closed": closed_rows}
+        except (OandaAPIError, ValueError) as exc:
+            raise HTTPException(status_code=503, detail=f"Broker positions unavailable: {exc}") from exc
+
     @app.get("/api/v1/orders/chart")
     async def orders_chart(pair: str = "EUR/USD", timeframe: str = "M15", count: int = 120) -> dict:
         """Return selected-view candles with signals from the pair's approved strategy timeframe."""
@@ -913,13 +994,38 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                             "entryThreshold": float(trace.get("entryThreshold", 0.0)),
                         })
                     previous = signal
+                open_trades = await client.get_open_trades()
+                closed_trades = await client.get_closed_trades(count=100)
+                chart_trades: list[dict] = []
+                for trade, closed in [*((item, False) for item in open_trades), *((item, True) for item in closed_trades)]:
+                    row = serialize_broker_trade(trade, {}, closed=closed)
+                    if row["openedAt"] and row["entryPrice"]:
+                        chart_trades.append({
+                            "pair": row["symbol"],
+                            "time": row["openedAt"],
+                            "side": row["side"],
+                            "price": float(row["entryPrice"]),
+                            "source": row["source"],
+                            "markerType": "entry",
+                            "pnl": row["pnl"],
+                        })
+                    if row["closedAt"] and row["exitPrice"]:
+                        chart_trades.append({
+                            "pair": row["symbol"],
+                            "time": row["closedAt"],
+                            "side": row["side"],
+                            "price": float(row["exitPrice"]),
+                            "source": row["source"],
+                            "markerType": "exit",
+                            "pnl": row["pnl"],
+                        })
                 chart_data = {
                     "pair": normalized_pair,
                     "timeframe": view_timeframe,
                     "approvedTimeframe": approved_timeframe,
                     "candles": [{"time": candle.time, "open": float(candle.open), "high": float(candle.high), "low": float(candle.low), "close": float(candle.close)} for candle in view_candles],
                     "signals": signals,
-                    "trades": [order for order in fallback_orders() if order["symbol"] == normalized_pair],
+                    "trades": [trade for trade in chart_trades if trade["pair"] == normalized_pair],
                     "indicators": {"ema": []},
                 }
                 if len(chart_cache) >= chart_cache_capacity:
@@ -1069,14 +1175,27 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         normalized_units = units if side == "BUY" else -units
 
         if settings_obj and settings_obj.token and settings_obj.account_id:
+            environment_name = str(getattr(settings_obj.environment, "value", settings_obj.environment)).lower()
+            if client_order_id.startswith("manual-ui-") and environment_name != "practice":
+                raise HTTPException(status_code=403, detail="Manual dashboard orders are restricted to the OANDA Practice environment")
             try:
                 async with OandaClient(settings_obj.token, settings_obj.account_id, settings_obj.environment) as client:
+                    trade_extensions = (
+                        {
+                            "id": client_order_id,
+                            "tag": "manual",
+                            "comment": "Manual dashboard ticket",
+                        }
+                        if client_order_id.startswith("manual-ui-")
+                        else {}
+                    )
                     result = await client.create_market_order(
                         instrument,
                         normalized_units,
                         stop_loss_price=str(stop_loss) if stop_loss else None,
                         take_profit_price=str(take_profit) if take_profit else None,
                         client_order_id=client_order_id,
+                        **({"trade_client_extensions": trade_extensions} if trade_extensions else {}),
                     )
             except OandaAPIError as exc:
                 status_code = 409 if "not tradeable" in str(exc).lower() or "market halted" in str(exc).lower() else 502
@@ -1120,6 +1239,11 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "risk": f"{float(payload.get('riskPercent', payload.get('risk', 0.75)) or 0.75):.2f}%",
             }
 
+        order.setdefault("createdAt", datetime.now(timezone.utc).isoformat())
+        order.setdefault("risk", f"{float(payload.get('riskPercent', payload.get('risk', 0.75)) or 0.75):.2f}%")
+        order["source"] = "manual"
+        order["stopLoss"] = str(stop_loss) if stop_loss else None
+        order["takeProfit"] = str(take_profit) if take_profit else None
         ORDER_HISTORY.append(order)
         ORDER_HISTORY[:] = ORDER_HISTORY[-20:]
         record_audit_event(
@@ -1137,6 +1261,49 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             allowed=True,
         )
         return order
+
+    @app.post("/api/v1/positions/{trade_id}/close")
+    async def close_manual_position(
+        trade_id: str,
+        user_role: str | None = Header(default=None, alias="X-User-Role"),
+        csrf_token: str | None = Header(default=None, alias="X-CSRF-Token"),
+        session_token: str | None = Header(default=None, alias="X-Session-Token"),
+    ) -> dict:
+        validate_write_access(user_role, csrf_token, session_token)
+        try:
+            settings = OandaSettings.from_environment()
+            environment_name = str(getattr(settings.environment, "value", settings.environment)).lower()
+            if environment_name != "practice":
+                raise HTTPException(status_code=403, detail="Manual dashboard positions can only be closed in the OANDA Practice environment")
+            async with OandaClient(settings.token, settings.account_id, environment=settings.environment) as client:
+                open_trades = await client.get_open_trades()
+                trade = next((item for item in open_trades if str(item.get("id")) == trade_id), None)
+                if trade is None:
+                    raise HTTPException(status_code=404, detail="Open broker trade not found")
+                extension = trade.get("tradeClientExtensions") or trade.get("clientExtensions") or {}
+                client_order_id = str(extension.get("id", "")) if isinstance(extension, dict) else ""
+                if not client_order_id.startswith("manual-ui-"):
+                    raise HTTPException(status_code=403, detail="Only trades opened from the manual ticket can be closed here")
+                result = await client.close_trade(trade_id)
+            record_audit_event(
+                "positions.manual.close",
+                details={"tradeId": trade_id, "clientOrderId": client_order_id},
+                username=(resolve_session_user(session_token) or {}).get("username", "anonymous"),
+                role=user_role,
+                allowed=True,
+            )
+            fill = result.get("orderFillTransaction") or {}
+            return {
+                "status": "closed",
+                "tradeId": trade_id,
+                "transactionId": fill.get("id"),
+                "fillPrice": fill.get("price"),
+                "environment": settings.environment.value,
+            }
+        except HTTPException:
+            raise
+        except (OandaAPIError, ValueError) as exc:
+            raise HTTPException(status_code=502, detail=f"Broker close rejected: {exc}") from exc
 
     @app.get("/api/v1/settings")
     async def settings() -> dict:

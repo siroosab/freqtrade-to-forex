@@ -3996,6 +3996,18 @@ async def test_oanda_client_retries_disconnect_and_timeout_during_practice_order
 
     async def handler(request: httpx.Request) -> httpx.Response:
         nonlocal attempts
+        if request.url.path.endswith("/pricing"):
+            return httpx.Response(
+                200,
+                json={
+                    "prices": [{
+                        "instrument": "EUR_USD",
+                        "time": "2026-09-15T10:00:00Z",
+                        "bids": [{"price": "1.10000"}],
+                        "asks": [{"price": "1.10012"}],
+                    }],
+                },
+            )
         attempts += 1
         if attempts == 1:
             raise httpx.ConnectError("network disconnected", request=request)
@@ -4082,11 +4094,51 @@ async def test_oanda_client_reads_account_and_open_positions() -> None:
 
 
 @pytest.mark.asyncio
+async def test_oanda_client_reads_open_closed_trades_and_closes_trade() -> None:
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.method == "PUT":
+            return httpx.Response(200, json={"orderFillTransaction": {"id": "close-tx"}})
+        return httpx.Response(200, json={"trades": [{"id": "trade-1", "instrument": "EUR_USD"}]})
+
+    async with httpx.AsyncClient(
+        base_url=OandaEnvironment.PRACTICE.rest_url,
+        transport=httpx.MockTransport(handler),
+    ) as http_client:
+        async with OandaClient("ignored", "account", http_client=http_client) as client:
+            open_trades = await client.get_open_trades()
+            closed_trades = await client.get_closed_trades(count=900)
+            closed = await client.close_trade("trade-1")
+
+    assert open_trades[0]["id"] == "trade-1"
+    assert closed_trades[0]["id"] == "trade-1"
+    assert closed["orderFillTransaction"]["id"] == "close-tx"
+    assert dict(requests[1].url.params) == {"state": "CLOSED", "pageSize": "500"}
+    assert requests[2].method == "PUT"
+    assert requests[2].url.path.endswith("/trades/trade-1/close")
+    assert requests[2].read() == b'{"units":"ALL"}'
+
+
+@pytest.mark.asyncio
 async def test_oanda_client_creates_signed_market_order_with_attached_risk_orders() -> None:
     captured: httpx.Request | None = None
 
     async def handler(request: httpx.Request) -> httpx.Response:
         nonlocal captured
+        if request.url.path.endswith("/pricing"):
+            return httpx.Response(
+                200,
+                json={
+                    "prices": [{
+                        "instrument": "EUR_USD",
+                        "time": "2026-09-15T10:00:00Z",
+                        "bids": [{"price": "1.10000"}],
+                        "asks": [{"price": "1.10012"}],
+                    }],
+                },
+            )
         captured = request
         return httpx.Response(
             201,

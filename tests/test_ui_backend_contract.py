@@ -25,6 +25,102 @@ def test_market_summary_endpoint_exists():
     assert 'strategySignals' in payload
 
 
+def test_market_quote_endpoint_reads_current_broker_price(monkeypatch):
+    class FakePrice:
+        instrument = 'EUR_USD'
+        bid = Decimal('1.09501')
+        ask = Decimal('1.09513')
+        spread = Decimal('0.00012')
+        time = '2026-09-28T10:00:00Z'
+        tradeable = True
+
+    class FakeClient:
+        def __init__(self, token, account_id, environment):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+        async def get_prices(self, instruments):
+            assert instruments == ('EUR_USD',)
+            return [FakePrice()]
+
+    environment = type('Env', (), {'value': 'practice'})()
+    settings = type(
+        'Settings', (), {'token': 'token', 'account_id': 'account', 'environment': environment}
+    )()
+    monkeypatch.setattr('freqtrade.forex.api.OandaClient', FakeClient)
+    monkeypatch.setattr('freqtrade.forex.api.OandaSettings.from_environment', lambda: settings)
+
+    response = client.get('/api/v1/markets/quote?pair=EUR%2FUSD')
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        'pair': 'EUR/USD', 'bid': '1.09501', 'ask': '1.09513', 'spread': '0.00012',
+        'time': '2026-09-28T10:00:00Z', 'tradeable': True, 'environment': 'practice',
+    }
+
+
+def test_broker_positions_returns_open_and_closed_trade_details(monkeypatch):
+    class FakePrice:
+        instrument = 'EUR_USD'
+        bid = Decimal('1.1000')
+        ask = Decimal('1.1002')
+
+    class FakeClient:
+        def __init__(self, token, account_id, environment):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+        async def get_open_trades(self):
+            return [{
+                'id': 'open-1', 'instrument': 'EUR_USD', 'currentUnits': '1200',
+                'initialUnits': '1200',
+                'price': '1.0950', 'openTime': '2026-09-28T09:00:00Z', 'unrealizedPL': '6.00',
+                'clientExtensions': {'id': 'manual-ui-1'}, 'stopLossOrder': {'price': '1.0895'},
+                'takeProfitOrder': {'price': '1.1060'},
+            }]
+
+        async def get_closed_trades(self, *, count=100):
+            return [{
+                'id': 'closed-1', 'instrument': 'EUR_USD', 'currentUnits': '0',
+                'initialUnits': '-500',
+                'price': '1.1000', 'averageClosePrice': '1.0970',
+                'openTime': '2026-09-27T09:00:00Z',
+                'closeTime': '2026-09-27T11:00:00Z', 'realizedPL': '-1.50',
+            }]
+
+        async def get_prices(self, instruments):
+            return [FakePrice()]
+
+    environment = type('Env', (), {'value': 'practice'})()
+    settings = type(
+        'Settings', (), {'token': 'token', 'account_id': 'account', 'environment': environment}
+    )()
+    monkeypatch.setattr('freqtrade.forex.api.OandaClient', FakeClient)
+    monkeypatch.setattr('freqtrade.forex.api.OandaSettings.from_environment', lambda: settings)
+
+    response = client.get('/api/v1/positions')
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload['open'][0]['currentPrice'] == '1.1000'
+    assert payload['open'][0]['pnl'] == '6.00'
+    assert payload['open'][0]['manual'] is True
+    assert payload['open'][0]['stopLoss'] == '1.0895'
+    assert payload['closed'][0]['side'] == 'SELL'
+    assert payload['closed'][0]['exitPrice'] == '1.0970'
+    assert payload['closed'][0]['pnl'] == '-1.50'
+
+
 def test_orders_chart_accepts_supported_timeframe_and_requested_count(monkeypatch):
     calls = []
 
@@ -46,6 +142,22 @@ def test_orders_chart_accepts_supported_timeframe_and_requested_count(monkeypatc
             calls.append((granularity, count))
             return [FakeCandle()]
 
+        async def get_open_trades(self):
+            return [{
+                'id': 'manual-chart-trade', 'instrument': 'EUR_USD', 'currentUnits': '1000',
+                'initialUnits': '1000',
+                'price': '1.0800', 'openTime': FakeCandle.time, 'unrealizedPL': '2.00',
+                'tradeClientExtensions': {'id': 'manual-ui-chart'},
+            }]
+
+        async def get_closed_trades(self, *, count=100):
+            return [{
+                'id': 'closed-chart-trade', 'instrument': 'EUR_USD', 'currentUnits': '0',
+                'initialUnits': '-500',
+                'price': '1.0800', 'averageClosePrice': '1.0810', 'openTime': FakeCandle.time,
+                'closeTime': FakeCandle.time, 'realizedPL': '0.50',
+            }]
+
     class FakeStrategy:
         def __init__(self, config):
             pass
@@ -54,7 +166,10 @@ def test_orders_chart_accepts_supported_timeframe_and_requested_count(monkeypatc
             return {'signal': 'flat'}
 
     monkeypatch.setattr('freqtrade.forex.api.OandaClient', FakeClient)
-    monkeypatch.setattr('freqtrade.forex.api.OandaSettings.from_environment', lambda: type('Settings', (), {'token': 'token', 'account_id': 'account', 'environment': 'practice'})())
+    settings = type(
+        'Settings', (), {'token': 'token', 'account_id': 'account', 'environment': 'practice'}
+    )()
+    monkeypatch.setattr('freqtrade.forex.api.OandaSettings.from_environment', lambda: settings)
     monkeypatch.setattr('freqtrade.forex.api.ForexAIStrategyBaseline', FakeStrategy)
 
     response = client.get('/api/v1/orders/chart?pair=EUR%2FUSD&timeframe=H4&count=1000')
@@ -62,6 +177,11 @@ def test_orders_chart_accepts_supported_timeframe_and_requested_count(monkeypatc
 
     assert response.status_code == 200, response.text
     assert response.json()['timeframe'] == 'H4'
+    chart_trades = response.json()['trades']
+    assert len(chart_trades) == 3
+    manual_entry = next(trade for trade in chart_trades if trade['markerType'] == 'entry')
+    assert manual_entry['source'] == 'manual'
+    assert {trade['markerType'] for trade in chart_trades} == {'entry', 'exit'}
     assert repeated_response.status_code == 200
     assert calls[0] == ('H4', 1000)
     assert calls[1][1] == 4000
@@ -259,6 +379,42 @@ def test_order_submit_requires_operator_role_and_csrf_token():
     assert payload['symbol'] == 'EUR/USD'
 
 
+def test_close_endpoint_closes_manual_trade_only(monkeypatch):
+    closed_ids = []
+
+    class FakeClient:
+        def __init__(self, token, account_id, environment):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+        async def get_open_trades(self):
+            return [
+                {'id': 'manual-1', 'clientExtensions': {'id': 'manual-ui-1'}},
+                {'id': 'strategy-1', 'clientExtensions': {'id': 'strategy-entry-1'}},
+            ]
+
+        async def close_trade(self, trade_id):
+            closed_ids.append(trade_id)
+            return {'orderFillTransaction': {'id': 'close-tx', 'price': '1.1010'}}
+
+    monkeypatch.setattr('freqtrade.forex.api.OandaClient', FakeClient)
+    monkeypatch.setattr('freqtrade.forex.api.OandaSettings.from_environment', lambda: type('Settings', (), {'token': 'token', 'account_id': 'account', 'environment': type('Env', (), {'value': 'practice'})()})())
+    headers = {'X-User-Role': 'operator', 'X-CSRF-Token': 'test-token'}
+
+    manual = client.post('/api/v1/positions/manual-1/close', headers=headers)
+    strategy = client.post('/api/v1/positions/strategy-1/close', headers=headers)
+
+    assert manual.status_code == 200, manual.text
+    assert manual.json()['transactionId'] == 'close-tx'
+    assert strategy.status_code == 403
+    assert closed_ids == ['manual-1']
+
+
 def test_login_returns_session_and_session_validation_works():
     login = client.post(
         '/api/v1/auth/login',
@@ -337,12 +493,15 @@ def test_practice_order_submit_uses_real_oanda_gateway(monkeypatch):
         async def __aexit__(self, exc_type, exc, tb):
             return None
 
-        async def create_market_order(self, instrument, units, *, stop_loss_price=None, take_profit_price=None, client_order_id=None):
+        async def create_market_order(self, instrument, units, *, stop_loss_price=None, take_profit_price=None, client_order_id=None, trade_client_extensions=None):
             assert instrument == 'EUR_USD'
             assert units == 1200
             assert stop_loss_price == '1.0850'
             assert take_profit_price == '1.1100'
-            assert client_order_id.startswith('ui-')
+            assert client_order_id == 'manual-ui-test-1'
+            assert trade_client_extensions == {
+                'id': 'manual-ui-test-1', 'tag': 'manual', 'comment': 'Manual dashboard ticket',
+            }
             return FakeResult()
 
     monkeypatch.setattr('freqtrade.forex.api.OandaClient', FakeClient)
@@ -372,6 +531,7 @@ def test_practice_order_submit_uses_real_oanda_gateway(monkeypatch):
             'units': 1200,
             'stopLoss': '1.0850',
             'takeProfit': '1.1100',
+            'clientOrderId': 'manual-ui-test-1',
         },
         headers={
             'X-Session-Token': token,

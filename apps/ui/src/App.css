@@ -697,6 +697,63 @@
   letter-spacing: 0.05em;
 }
 
+.position-table-scroll {
+  overflow-x: auto;
+}
+
+.broker-positions-table {
+  min-width: 850px;
+}
+
+.manual-position-row {
+  background: rgba(250, 204, 21, 0.035);
+}
+
+.manual-trade-tag,
+.strategy-trade-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.manual-trade-tag {
+  color: #fde047;
+}
+
+.manual-trade-tag::before {
+  width: 7px;
+  height: 7px;
+  border: 1px solid #facc15;
+  content: '';
+}
+
+.strategy-trade-tag,
+.muted-cell {
+  color: #94a3b8;
+}
+
+.empty-cell {
+  height: 72px;
+  text-align: center !important;
+  color: #94a3b8 !important;
+}
+
+.close-position-button {
+  border: 1px solid rgba(251, 113, 133, 0.35);
+  border-radius: 4px;
+  padding: 5px 9px;
+  background: rgba(251, 113, 133, 0.1);
+  color: #fda4af;
+  font-size: 0.72rem;
+}
+
+.close-position-button:hover {
+  background: rgba(251, 113, 133, 0.2);
+}
+
 .sparkline {
   height: 120px;
   margin-top: 10px;
@@ -1031,6 +1088,74 @@
   gap: 14px;
 }
 
+.quote-strip {
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-left: 3px solid #22d3ee;
+  padding: 11px 13px;
+  background: rgba(2, 6, 23, 0.38);
+}
+
+.quote-strip-heading,
+.quote-values {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.quote-strip-heading > strong {
+  color: #f8fafc;
+  font-size: 0.9rem;
+}
+
+.quote-live,
+.quote-delayed {
+  font-size: 0.65rem;
+  font-weight: 700;
+}
+
+.quote-live {
+  color: #6ee7b7;
+}
+
+.quote-delayed {
+  color: #fbbf24;
+}
+
+.quote-values {
+  justify-content: flex-start;
+  gap: clamp(18px, 5vw, 46px);
+  margin: 10px 0 6px;
+}
+
+.quote-values > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.quote-values span,
+.quote-strip > small,
+.calculated-price {
+  color: #94a3b8;
+  font-size: 0.68rem;
+}
+
+.quote-values strong {
+  color: #e2e8f0;
+  font-variant-numeric: tabular-nums;
+}
+
+.calculated-price {
+  min-height: 1em;
+}
+
+.inline-error {
+  margin: 0;
+  color: #fda4af;
+  font-size: 0.78rem;
+}
+
 .field-row {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1059,6 +1184,20 @@
   display: flex;
   gap: 12px;
   margin-top: 2px;
+}
+
+.danger-action {
+  border: 1px solid rgba(251, 113, 133, 0.45);
+  border-radius: 8px;
+  padding: 12px 16px;
+  background: #be123c;
+  color: #fff1f2;
+}
+
+.danger-action:disabled,
+.close-position-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .timeline-item {

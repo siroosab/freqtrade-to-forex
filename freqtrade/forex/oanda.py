@@ -292,6 +292,27 @@ class OandaClient:
         )
         return [OandaPosition.from_payload(item) for item in payload["positions"]]
 
+    async def get_open_trades(self) -> list[dict[str, Any]]:
+        payload = await self._request(
+            "GET", f"/v3/accounts/{self.account_id}/openTrades"
+        )
+        return payload.get("trades", [])
+
+    async def get_closed_trades(self, *, count: int = 100) -> list[dict[str, Any]]:
+        payload = await self._request(
+            "GET",
+            f"/v3/accounts/{self.account_id}/trades",
+            params={"state": "CLOSED", "pageSize": max(1, min(count, 500))},
+        )
+        return payload.get("trades", [])
+
+    async def close_trade(self, trade_id: str) -> dict[str, Any]:
+        return await self._request(
+            "PUT",
+            f"/v3/accounts/{self.account_id}/trades/{trade_id}/close",
+            json={"units": "ALL"},
+        )
+
     async def iter_transactions(
         self, *, since_transaction_id: str | None = None
     ) -> AsyncIterator[OandaTransaction]:
@@ -320,6 +341,7 @@ class OandaClient:
         stop_loss_price: str | None = None,
         take_profit_price: str | None = None,
         client_order_id: str | None = None,
+        trade_client_extensions: dict[str, str] | None = None,
     ) -> OandaOrderResult:
         if units == 0:
             raise ValueError("OANDA order units cannot be zero")
@@ -337,6 +359,8 @@ class OandaClient:
             order["takeProfitOnFill"] = {"timeInForce": "GTC", "price": take_profit_price}
         if client_order_id is not None:
             order["clientExtensions"] = {"id": client_order_id}
+        if trade_client_extensions is not None:
+            order["tradeClientExtensions"] = trade_client_extensions
         payload = await self._request(
             "POST", f"/v3/accounts/{self.account_id}/orders", json={"order": order}
         )

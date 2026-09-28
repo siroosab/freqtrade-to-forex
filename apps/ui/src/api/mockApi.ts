@@ -11,6 +11,9 @@ import type {
 import type { ForexChartData } from '../components/ForexChart'
 
 export type RiskConfig = { pair: string; units: string; riskBudget: string; riskBudgetMode: 'percent' | 'absolute'; leverage: string; maxExposure: string; maxExposureMode: 'percent' | 'absolute'; side: string; stopLoss: string | null; stopLossMode: 'percent' | 'price'; takeProfit: string | null; takeProfitMode: 'percent' | 'price'; averageEntry: string | null; averageEntryMode: 'percent' | 'price'; maxAdds: string; source: string }
+export type LiveQuote = { pair: string; bid: string; ask: string; spread: string; time: string; tradeable: boolean; environment: string }
+export type BrokerTrade = { id: string; symbol: string; side: 'BUY' | 'SELL'; units: string; entryPrice: string; currentPrice: string | null; exitPrice: string | null; stopLoss: string | null; takeProfit: string | null; pnl: string; openedAt: string | null; closedAt: string | null; status: 'open' | 'closed'; manual: boolean; source: string; clientOrderId: string | null }
+export type BrokerPositions = { open: BrokerTrade[]; closed: BrokerTrade[] }
 
 const browserOrigin = typeof window !== 'undefined' ? window.location.origin : 'http://127.0.0.1:8090'
 const browserWebSocketOrigin = typeof window !== 'undefined'
@@ -460,6 +463,31 @@ export async function getMarketSummary(): Promise<MarketSummary> {
   return safeFetchWithFallback<MarketSummary>('/api/v1/markets/summary', 'market')
 }
 
+export async function getMarketQuote(pair: string): Promise<LiveQuote> {
+  const response = await fetch(buildApiUrl(`/api/v1/markets/quote?pair=${encodeURIComponent(pair)}`))
+  if (!response.ok) throw new Error('Live broker quote unavailable')
+  return response.json() as Promise<LiveQuote>
+}
+
+export async function getBrokerPositions(): Promise<BrokerPositions> {
+  const response = await fetch(buildApiUrl('/api/v1/positions'))
+  if (!response.ok) throw new Error('Broker positions unavailable')
+  return response.json() as Promise<BrokerPositions>
+}
+
+export async function closeManualPosition(tradeId: string, userRole: 'viewer' | 'operator' | 'admin') {
+  const response = await fetch(buildApiUrl(`/api/v1/positions/${encodeURIComponent(tradeId)}/close`), {
+    method: 'POST',
+    headers: { 'X-User-Role': userRole, 'X-CSRF-Token': 'manual-close' },
+  })
+  if (!response.ok) {
+    let detail = 'Position close rejected by broker'
+    try { detail = ((await response.json()) as { detail?: string }).detail ?? detail } catch { /* keep default detail */ }
+    throw new Error(detail)
+  }
+  return response.json() as Promise<{ status: string; tradeId: string; transactionId?: string; fillPrice?: string; environment?: string }>
+}
+
 export async function getOrders(): Promise<Order[]> {
   return safeFetchWithFallback<Order[]>('/api/v1/orders', 'orders')
 }
@@ -837,6 +865,7 @@ export async function submitMarketOrder(
     takeProfit?: string
     units?: number | string
     clientOrderId?: string
+    riskPercent?: number
   },
   userRole: 'viewer' | 'operator' | 'admin' = 'operator',
 ) {

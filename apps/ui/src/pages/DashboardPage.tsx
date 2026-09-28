@@ -1,27 +1,34 @@
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useState } from 'react'
 import { ForexChart } from '../components/ForexChart'
 import { ChartDataControls } from '../components/ChartDataControls'
 import { chartCandleCount } from '../components/chartOptions'
-import { getAccountSummary, getMarketSummary, getOrdersChart, getRiskSummary, submitMarketOrder } from '../api/mockApi'
+import { closeManualPosition, getAccountSummary, getBrokerPositions, getMarketQuote, getMarketSummary, getOrdersChart, getRiskSummary, submitMarketOrder, type BrokerTrade } from '../api/mockApi'
 import { useForexSocket } from '../hooks/useForexSocket'
 import { useUiStore } from '../store/useUiStore'
 
 export function DashboardPage() {
   useForexSocket()
+  const queryClient = useQueryClient()
   const [confirmOpen, setConfirmOpen] = useState(false)
+  const [closeTarget, setCloseTarget] = useState<BrokerTrade | null>(null)
+  const [isClosing, setIsClosing] = useState(false)
+  const [closeError, setCloseError] = useState<string | null>(null)
+  const [positionView, setPositionView] = useState<'open' | 'closed'>('open')
   const selectedInstruments = useUiStore((state) => state.selectedInstruments)
   const [instrument, setInstrument] = useState(selectedInstruments[0] ?? 'EUR/USD')
   const [side, setSide] = useState<'BUY' | 'SELL'>('BUY')
   const [units, setUnits] = useState(1200)
   const [riskPercent, setRiskPercent] = useState(0.75)
-  const [stopLoss, setStopLoss] = useState('1.0835')
-  const [takeProfit, setTakeProfit] = useState('1.0995')
+  const [stopLossPercent, setStopLossPercent] = useState(0.55)
+  const [takeProfitPercent, setTakeProfitPercent] = useState(1)
   const [orderStatus, setOrderStatus] = useState<{ status: string; orderId?: string; transactionId?: string; fillPrice?: string | null; environment?: string; reason?: string | null; cancelReason?: string | null } | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
 
   const accountQuery = useQuery({ queryKey: ['account'], queryFn: getAccountSummary })
   const marketQuery = useQuery({ queryKey: ['market'], queryFn: getMarketSummary })
+  const quoteQuery = useQuery({ queryKey: ['market-quote', instrument], queryFn: () => getMarketQuote(instrument), refetchInterval: 1500, retry: false })
+  const positionsQuery = useQuery({ queryKey: ['broker-positions'], queryFn: getBrokerPositions, refetchInterval: 3000 })
   const riskQuery = useQuery({ queryKey: ['risk'], queryFn: getRiskSummary })
   const [chartTimeframe, setChartTimeframe] = useState('H1')
   const [chartCountMultiplier, setChartCountMultiplier] = useState(1)
@@ -38,6 +45,8 @@ export function DashboardPage() {
   const account = liveAccount ?? accountQuery.data
   const market = liveMarket ?? marketQuery.data
   const riskSummary = riskQuery.data
+  const brokerQuote = quoteQuery.data
+  const displayQuote = brokerQuote ?? market?.instruments.find((item) => item.pair === instrument)
 
   const instrumentOptions = selectedInstruments.length ? selectedInstruments : ['EUR/USD', 'GBP/USD', 'USD/JPY']
   const activeInstrument = instrumentOptions.includes(instrument) ? instrument : instrumentOptions[0] ?? 'EUR/USD'
@@ -53,8 +62,20 @@ export function DashboardPage() {
     return Math.max(100, Math.round(units))
   }, [units])
 
+  const entryPrice = brokerQuote ? Number(side === 'BUY' ? brokerQuote.ask : brokerQuote.bid) : Number.NaN
+  const pricePrecision = instrument.endsWith('/JPY') ? 3 : 5
+  const protectionPrice = (percent: number, kind: 'stop' | 'target') => {
+    if (!Number.isFinite(entryPrice) || entryPrice <= 0 || !Number.isFinite(percent) || percent <= 0) return ''
+    const movesWithPosition = (kind === 'target') === (side === 'BUY')
+    const multiplier = 1 + (movesWithPosition ? 1 : -1) * percent / 100
+    return (entryPrice * multiplier).toFixed(pricePrecision)
+  }
+  const stopLossPrice = protectionPrice(stopLossPercent, 'stop')
+  const takeProfitPrice = protectionPrice(takeProfitPercent, 'target')
+  const canSubmitOrder = userRole !== 'viewer' && !isSubmitting && brokerQuote?.tradeable === true && Number.isFinite(entryPrice) && units > 0 && Boolean(stopLossPrice && takeProfitPrice)
+
   const handleOrderSubmit = async () => {
-    if (userRole === 'viewer') {
+    if (!canSubmitOrder) {
       return
     }
 
@@ -66,8 +87,10 @@ export function DashboardPage() {
           side,
           volume: units,
           units,
-          stopLoss,
-          takeProfit,
+          stopLoss: stopLossPrice,
+          takeProfit: takeProfitPrice,
+          riskPercent,
+          clientOrderId: `manual-ui-${crypto.randomUUID()}`,
         },
         userRole,
       )
@@ -76,7 +99,7 @@ export function DashboardPage() {
         symbol: result.symbol,
         side: result.side === 'SELL' ? 'SELL' : 'BUY',
         volume: result.volume ?? String(units),
-        status: result.status === 'filled' ? 'Filled' : result.status === 'cancelled' ? 'Cancelled' : result.status === 'queued' ? 'Pending' : 'Rejected',
+        status: result.status === 'filled' ? 'Filled' : result.status === 'cancelled' ? 'Cancelled' : ['queued', 'accepted'].includes(result.status) ? 'Pending' : 'Rejected',
         createdAt: new Date().toISOString(),
         risk: `${riskPercent}%`,
       } as const
@@ -91,6 +114,8 @@ export function DashboardPage() {
       })
       const feed = useUiStore.getState().ordersFeed ?? []
       setOrdersFeed([nextOrder, ...feed].slice(0, 10))
+      await queryClient.invalidateQueries({ queryKey: ['broker-positions'] })
+      await queryClient.invalidateQueries({ queryKey: ['orders'] })
       setConfirmOpen(false)
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Order submission rejected by backend'
@@ -106,6 +131,21 @@ export function DashboardPage() {
       console.error(error)
     } finally {
       setIsSubmitting(false)
+    }
+  }
+
+  const handlePositionClose = async () => {
+    if (!closeTarget || userRole === 'viewer') return
+    setIsClosing(true)
+    setCloseError(null)
+    try {
+      await closeManualPosition(closeTarget.id, userRole)
+      await queryClient.invalidateQueries({ queryKey: ['broker-positions'] })
+      setCloseTarget(null)
+    } catch (error) {
+      setCloseError(error instanceof Error ? error.message : 'Position close rejected by broker')
+    } finally {
+      setIsClosing(false)
     }
   }
 
@@ -171,15 +211,7 @@ export function DashboardPage() {
         return ((value - min) / spread) * 100
       })
     : [20, 26, 32, 28, 35, 38, 44, 56, 52, 61, 58, 66]
-  const portfolioRows = (riskSummary?.exposureByPair ?? []).map((item) => ({
-    symbol: item.pair,
-    side: 'Long',
-    units: `${Math.round(parseAmountValue(item.value) / 120)}`,
-    entry: market?.instruments.find((instrumentItem) => instrumentItem.pair === item.pair)?.bid?.toFixed(4) ?? '—',
-    stop: '—',
-    tp: '—',
-    pnl: item.value,
-  }))
+  const visiblePositions = positionsQuery.data?.[positionView] ?? []
 
   return (
     <>
@@ -278,38 +310,43 @@ export function DashboardPage() {
           <div className="panel">
             <div className="panel-header">
               <div>
-                <p className="eyebrow">Open positions</p>
-                <h3>Portfolio</h3>
+                <p className="eyebrow">Broker positions</p>
+                <h3>Trade monitor</h3>
               </div>
-              <button className="quiet-button">View all</button>
+              <div className="segmented" role="tablist" aria-label="Trade status">
+                <button type="button" role="tab" aria-selected={positionView === 'open'} className={positionView === 'open' ? 'segment active' : 'segment'} onClick={() => setPositionView('open')}>Open</button>
+                <button type="button" role="tab" aria-selected={positionView === 'closed'} className={positionView === 'closed' ? 'segment active' : 'segment'} onClick={() => setPositionView('closed')}>Closed</button>
+              </div>
             </div>
 
-            <table className="positions-table">
-              <thead>
-                <tr>
-                  <th>Symbol</th>
-                  <th>Side</th>
-                  <th>Units</th>
-                  <th>Entry</th>
-                  <th>Stop</th>
-                  <th>TP</th>
-                  <th>P/L</th>
-                </tr>
-              </thead>
-              <tbody>
-                {portfolioRows.map((pos) => (
-                  <tr key={pos.symbol}>
-                    <td>{pos.symbol}</td>
-                    <td className={pos.side === 'Long' ? 'long' : 'short'}>{pos.side}</td>
-                    <td>{pos.units}</td>
-                    <td>{pos.entry}</td>
-                    <td>{pos.stop}</td>
-                    <td>{pos.tp}</td>
-                    <td className={pos.pnl.startsWith('-') ? 'negative' : 'positive'}>{pos.pnl}</td>
+            {positionsQuery.isError && <p className="inline-error">Broker trade data unavailable. Check the Practice account connection.</p>}
+            <div className="position-table-scroll">
+              <table className="positions-table broker-positions-table">
+                <thead>
+                  <tr>
+                    <th>Source</th><th>Symbol</th><th>Side</th><th>Units</th><th>Entry</th>
+                    <th>{positionView === 'open' ? 'Current' : 'Exit'}</th><th>Stop</th><th>TP</th><th>P/L</th><th>Action</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
+                </thead>
+                <tbody>
+                  {visiblePositions.map((position) => (
+                    <tr key={position.id} className={position.manual ? 'manual-position-row' : undefined}>
+                      <td><span className={position.manual ? 'manual-trade-tag' : 'strategy-trade-tag'}>{position.manual ? 'Manual' : 'Strategy'}</span></td>
+                      <td>{position.symbol}</td>
+                      <td className={position.side === 'BUY' ? 'long' : 'short'}>{position.side}</td>
+                      <td>{Number(position.units).toLocaleString()}</td>
+                      <td>{position.entryPrice || '—'}</td>
+                      <td>{positionView === 'open' ? position.currentPrice ?? '—' : position.exitPrice ?? '—'}</td>
+                      <td>{position.stopLoss ?? '—'}</td>
+                      <td>{position.takeProfit ?? '—'}</td>
+                      <td className={Number(position.pnl) < 0 ? 'negative' : 'positive'}>{Number(position.pnl) > 0 ? '+' : ''}{position.pnl}</td>
+                      <td>{positionView === 'open' && position.manual && userRole !== 'viewer' ? <button className="close-position-button" type="button" onClick={() => { setCloseError(null); setCloseTarget(position) }}>Close</button> : positionView === 'closed' ? <span className="muted-cell">Closed</span> : '—'}</td>
+                    </tr>
+                  ))}
+                  {!positionsQuery.isLoading && visiblePositions.length === 0 && <tr><td className="empty-cell" colSpan={10}>{positionsQuery.isError ? 'Broker positions could not be loaded.' : `No ${positionView} broker trades.`}</td></tr>}
+                </tbody>
+              </table>
+            </div>
           </div>
 
           <div className="panel">
@@ -474,6 +511,16 @@ export function DashboardPage() {
           </div>
 
           <div className="order-form">
+            <div className="quote-strip">
+              <div className="quote-strip-heading"><strong>{activeInstrument}</strong><span className={brokerQuote?.tradeable ? 'quote-live' : 'quote-delayed'}>{brokerQuote?.tradeable ? 'PRACTICE LIVE' : quoteQuery.isError ? 'QUOTE UNAVAILABLE' : 'WAITING FOR BROKER'}</span></div>
+              <div className="quote-values">
+                <div><span>Bid</span><strong>{displayQuote ? Number(displayQuote.bid).toFixed(pricePrecision) : '—'}</strong></div>
+                <div><span>Ask</span><strong>{displayQuote ? Number(displayQuote.ask).toFixed(pricePrecision) : '—'}</strong></div>
+                <div><span>Spread</span><strong>{displayQuote ? Number(displayQuote.spread).toFixed(pricePrecision) : '—'}</strong></div>
+              </div>
+              <small>{brokerQuote ? `Updated ${new Date(brokerQuote.time).toLocaleTimeString()} · ${brokerQuote.environment}` : quoteQuery.isError ? 'No broker quote. Orders are disabled.' : 'Connecting to broker quote…'}</small>
+            </div>
+
             <div className="field-row">
               <label>
                 <span>Instrument</span>
@@ -505,12 +552,14 @@ export function DashboardPage() {
 
             <div className="field-row">
               <label>
-                <span>Stop loss</span>
-                <input value={stopLoss} onChange={(event) => setStopLoss(event.target.value)} />
+                <span>Stop loss distance (%)</span>
+                <input type="number" min="0.01" step="0.01" value={stopLossPercent} onChange={(event) => setStopLossPercent(Number(event.target.value) || 0)} />
+                <small className="calculated-price">Broker stop: {stopLossPrice || '—'}</small>
               </label>
               <label>
-                <span>Take profit</span>
-                <input value={takeProfit} onChange={(event) => setTakeProfit(event.target.value)} />
+                <span>Take profit distance (%)</span>
+                <input type="number" min="0.01" step="0.01" value={takeProfitPercent} onChange={(event) => setTakeProfitPercent(Number(event.target.value) || 0)} />
+                <small className="calculated-price">Broker target: {takeProfitPrice || '—'}</small>
               </label>
             </div>
 
@@ -528,9 +577,9 @@ export function DashboardPage() {
             <div className="actions-row">
               <button
                 className="primary-action"
-                disabled={userRole === 'viewer' || isSubmitting}
+                disabled={!canSubmitOrder}
                 onClick={() => setConfirmOpen(true)}
-                style={{ opacity: userRole === 'viewer' || isSubmitting ? 0.5 : 1 }}
+                style={{ opacity: canSubmitOrder ? 1 : 0.5 }}
               >
                 {isSubmitting ? 'Submitting...' : 'Submit order'}
               </button>
@@ -546,6 +595,7 @@ export function DashboardPage() {
                 <div><span>Reason</span><strong>{orderStatus.reason ?? orderStatus.cancelReason ?? '—'}</strong></div>
               </div>
             )}
+            {quoteQuery.isError && <p className="inline-error">Live broker pricing is required before an order can be submitted.</p>}
           </div>
         </div>
 
@@ -592,17 +642,32 @@ export function DashboardPage() {
         <div className="modal-backdrop" onClick={() => setConfirmOpen(false)}>
           <div className="confirm-modal" onClick={(event) => event.stopPropagation()}>
             <p className="eyebrow">Write action requires confirmation</p>
-            <h3>Confirm order submission</h3>
+            <h3>Confirm Practice order</h3>
             <p>
-              This action would submit a live order for <strong>{activeInstrument}</strong> with risk policy checks and a client order id.
+              Submit a {side} order for <strong>{activeInstrument}</strong> at market. Entry reference {entryPrice.toFixed(pricePrecision)}, stop {stopLossPrice} ({stopLossPercent}%), target {takeProfitPrice} ({takeProfitPercent}%).
             </p>
             <div className="modal-actions">
               <button className="secondary-action" onClick={() => setConfirmOpen(false)}>
                 Cancel
               </button>
-              <button className="primary-action" onClick={handleOrderSubmit}>
-                Confirm & submit
+              <button className="primary-action" disabled={!canSubmitOrder} onClick={handleOrderSubmit}>
+                Confirm Practice order
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {closeTarget && (
+        <div className="modal-backdrop" onClick={() => { if (!isClosing) setCloseTarget(null) }}>
+          <div className="confirm-modal" onClick={(event) => event.stopPropagation()}>
+            <p className="eyebrow">Manual position</p>
+            <h3>Close {closeTarget.symbol} {closeTarget.side}?</h3>
+            <p>Close all {Number(closeTarget.units).toLocaleString()} units at the broker’s current market price. This cannot be undone.</p>
+            {closeError && <p className="inline-error">{closeError}</p>}
+            <div className="modal-actions">
+              <button className="secondary-action" disabled={isClosing} onClick={() => setCloseTarget(null)}>Cancel</button>
+              <button className="danger-action" disabled={isClosing} onClick={handlePositionClose}>{isClosing ? 'Closing…' : 'Confirm close'}</button>
             </div>
           </div>
         </div>
