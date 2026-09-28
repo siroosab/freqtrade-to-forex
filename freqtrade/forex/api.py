@@ -13,7 +13,7 @@ import sqlite3
 import threading
 from contextlib import suppress
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 import pandas as pd
@@ -27,8 +27,9 @@ from freqtrade.forex.ai_hyperopt import run_ai_hyperopt_robust
 from freqtrade.forex.config import OandaSettings, load_forex_config, save_forex_config
 from freqtrade.forex.health import OandaHealthCheck
 from freqtrade.forex.ledger import PaperLedger
-from freqtrade.forex.models import OandaEnvironment
+from freqtrade.forex.models import OandaEnvironment, OandaInstrument
 from freqtrade.forex.oanda import OandaAPIError, OandaClient, discover_oanda_accounts
+from freqtrade.forex.order_validation import BrokerOrderValidator
 from freqtrade.forex.strategy_catalog import discover_strategy_files, validate_strategy_upload
 from freqtrade.forex.strategy_execution import (
     FreqtradeStrategyAdapter,
@@ -147,6 +148,8 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
     chart_cache: dict[tuple[str, str, int, str], tuple[float, dict]] = {}
     chart_cache_ttl = 45.0
     chart_cache_capacity = 128
+    instrument_metadata_cache: dict[tuple[str, str], tuple[datetime, OandaInstrument]] = {}
+    instrument_metadata_cache_ttl = timedelta(minutes=5)
 
     def redact_value(value: object) -> object:
         if isinstance(value, str):
@@ -842,12 +845,29 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 settings.token, settings.account_id, environment=settings.environment
             ) as client:
                 prices = await client.get_prices((instrument,))
-            if not prices:
-                raise HTTPException(
-                    status_code=502,
-                    detail="Broker returned no quote for this instrument",
-                )
-            price = prices[0]
+                if not prices:
+                    raise HTTPException(
+                        status_code=502,
+                        detail="Broker returned no quote for this instrument",
+                    )
+                price = prices[0]
+                metadata_key = (settings.account_id, instrument)
+                now = datetime.now(timezone.utc)
+                cached_metadata = instrument_metadata_cache.get(metadata_key)
+                if cached_metadata is None or cached_metadata[0] <= now:
+                    instruments = await client.get_instruments((instrument,))
+                    if not instruments:
+                        raise HTTPException(
+                            status_code=502,
+                            detail=f"Broker returned no instrument metadata for {instrument}",
+                        )
+                    broker_instrument = instruments[0]
+                    instrument_metadata_cache[metadata_key] = (
+                        now + instrument_metadata_cache_ttl,
+                        broker_instrument,
+                    )
+                else:
+                    broker_instrument = cached_metadata[1]
             return {
                 "pair": normalize_pair(price.instrument),
                 "bid": str(price.bid),
@@ -856,6 +876,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "time": price.time,
                 "tradeable": price.tradeable,
                 "environment": settings.environment.value,
+                "displayPrecision": broker_instrument.display_precision,
+                "tradeUnitsPrecision": broker_instrument.trade_units_precision,
+                "minimumTradeSize": str(broker_instrument.minimum_trade_size),
             }
         except HTTPException:
             raise
@@ -1215,11 +1238,14 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         side = str(payload.get("side", "BUY")).upper().strip()
         raw_units = payload.get("units", payload.get("volume", 0))
         try:
-            units = int(float(raw_units))
-        except (TypeError, ValueError) as exc:
+            parsed_units = Decimal(str(raw_units))
+        except (InvalidOperation, TypeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail="units must be a number") from exc
-        if units == 0:
-            raise HTTPException(status_code=400, detail="units must not be zero")
+        if not parsed_units.is_finite() or parsed_units != parsed_units.to_integral_value():
+            raise HTTPException(status_code=400, detail="units must be a whole number")
+        units = int(parsed_units)
+        if units <= 0:
+            raise HTTPException(status_code=400, detail="units must be positive")
         if side not in {"BUY", "SELL"}:
             raise HTTPException(status_code=400, detail="side must be BUY or SELL")
 
@@ -1255,6 +1281,51 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     settings_obj.account_id,
                     settings_obj.environment,
                 ) as client:
+                    instruments = await client.get_instruments((instrument,))
+                    if not instruments:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Instrument {instrument} is not available on this OANDA account",
+                        )
+                    broker_instrument = instruments[0]
+                    validator = BrokerOrderValidator(
+                        broker_instrument,
+                        minimum_stop_distance=Decimal("0"),
+                    )
+                    try:
+                        validator.validate_units(units)
+                        if stop_loss or take_profit:
+                            quotes = await client.get_prices((instrument,))
+                            if not quotes:
+                                raise HTTPException(
+                                    status_code=503,
+                                    detail=f"No current OANDA price is available for {instrument}",
+                                )
+                            quote = quotes[0]
+                            if not quote.tradeable:
+                                raise HTTPException(
+                                    status_code=409,
+                                    detail=(
+                                        f"Instrument {instrument} is not tradeable; "
+                                        "the OANDA market may be halted or closed"
+                                    ),
+                                )
+                            order_side = "long" if side == "BUY" else "short"
+                            entry_price = quote.price_for_side(order_side)
+                        if stop_loss:
+                            validator.validate_stop(
+                                side=order_side,
+                                entry_price=entry_price,
+                                stop_price=Decimal(str(stop_loss)),
+                            )
+                        if take_profit:
+                            validator.validate_take_profit(
+                                side=order_side,
+                                entry_price=entry_price,
+                                take_profit_price=Decimal(str(take_profit)),
+                            )
+                    except (ValueError, InvalidOperation) as exc:
+                        raise HTTPException(status_code=400, detail=str(exc)) from exc
                     trade_extensions = (
                         {
                             "id": client_order_id,

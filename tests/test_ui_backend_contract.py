@@ -4,6 +4,7 @@ from decimal import Decimal
 from fastapi.testclient import TestClient
 
 from freqtrade.forex.api import app, create_app, format_hyperopt_report
+from freqtrade.forex.models import OandaInstrument
 
 
 client = TestClient(app)
@@ -26,6 +27,13 @@ def test_market_summary_endpoint_exists():
 
 
 def test_market_quote_endpoint_reads_current_broker_price(monkeypatch):
+    instrument_lookups = []
+
+    class FakeInstrument:
+        display_precision = 5
+        trade_units_precision = 0
+        minimum_trade_size = Decimal('1')
+
     class FakePrice:
         instrument = 'EUR_USD'
         bid = Decimal('1.09501')
@@ -48,6 +56,11 @@ def test_market_quote_endpoint_reads_current_broker_price(monkeypatch):
             assert instruments == ('EUR_USD',)
             return [FakePrice()]
 
+        async def get_instruments(self, instruments):
+            assert instruments == ('EUR_USD',)
+            instrument_lookups.append(instruments)
+            return [FakeInstrument()]
+
     environment = type('Env', (), {'value': 'practice'})()
     settings = type(
         'Settings', (), {'token': 'token', 'account_id': 'account', 'environment': environment}
@@ -56,11 +69,15 @@ def test_market_quote_endpoint_reads_current_broker_price(monkeypatch):
     monkeypatch.setattr('freqtrade.forex.api.OandaSettings.from_environment', lambda: settings)
 
     response = client.get('/api/v1/markets/quote?pair=EUR%2FUSD')
+    repeated_response = client.get('/api/v1/markets/quote?pair=EUR%2FUSD')
 
     assert response.status_code == 200, response.text
+    assert repeated_response.status_code == 200, repeated_response.text
+    assert len(instrument_lookups) == 1
     assert response.json() == {
         'pair': 'EUR/USD', 'bid': '1.09501', 'ask': '1.09513', 'spread': '0.00012',
         'time': '2026-09-28T10:00:00Z', 'tradeable': True, 'environment': 'practice',
+        'displayPrecision': 5, 'tradeUnitsPrecision': 0, 'minimumTradeSize': '1',
     }
 
 
@@ -463,6 +480,61 @@ def test_order_submit_requires_operator_role_and_csrf_token():
     assert payload['symbol'] == 'EUR/USD'
 
 
+def test_live_order_rejects_excess_price_precision_before_broker_submission(monkeypatch):
+    class FakePrice:
+        tradeable = True
+
+        def price_for_side(self, side):
+            return Decimal('3450.00') if side == 'short' else Decimal('3450.20')
+
+    class FakeClient:
+        create_calls = 0
+
+        def __init__(self, token, account_id, environment):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+        async def get_instruments(self, instruments):
+            return [OandaInstrument(
+                name='XAU_CHF', display_name='XAU/CHF', pip_location=-2,
+                display_precision=2, trade_units_precision=0,
+                minimum_trade_size=Decimal('1'),
+            )]
+
+        async def get_prices(self, instruments):
+            return [FakePrice()]
+
+        async def create_market_order(self, *args, **kwargs):
+            self.create_calls += 1
+            raise AssertionError('invalid order reached OANDA submission')
+
+    environment = type('Env', (), {'value': 'practice'})()
+    settings = type('Settings', (), {
+        'token': 'token', 'account_id': 'account', 'environment': environment,
+    })()
+    monkeypatch.setattr('freqtrade.forex.api.OandaClient', FakeClient)
+    monkeypatch.setattr('freqtrade.forex.api.OandaSettings.from_environment', lambda: settings)
+
+    response = client.post(
+        '/api/v1/orders/market',
+        json={
+            'symbol': 'XAU/CHF', 'side': 'SELL', 'units': 1000,
+            'stopLoss': '3470.32', 'takeProfit': '3416.82264',
+            'clientOrderId': 'manual-ui-test',
+        },
+        headers={'X-User-Role': 'operator', 'X-CSRF-Token': 'demo-token'},
+    )
+
+    assert response.status_code == 400
+    assert 'take-profit price exceeds 2 decimal places' in response.json()['detail']
+    assert FakeClient.create_calls == 0
+
+
 def test_close_endpoint_closes_manual_trade_only(monkeypatch):
     closed_ids = []
 
@@ -581,6 +653,20 @@ def test_practice_order_submit_uses_real_oanda_gateway(monkeypatch):
         async def __aexit__(self, exc_type, exc, tb):
             return None
 
+        async def get_instruments(self, instruments):
+            return [OandaInstrument(
+                name='EUR_USD', display_name='EUR/USD', pip_location=-4,
+                display_precision=5, trade_units_precision=0,
+                minimum_trade_size=Decimal('1'),
+            )]
+
+        async def get_prices(self, instruments):
+            return [type('Price', (), {
+                'tradeable': True, 'instrument': 'EUR_USD',
+                'bid': Decimal('1.09500'), 'ask': Decimal('1.09510'),
+                'price_for_side': lambda self, side: Decimal('1.09510') if side == 'long' else Decimal('1.09500'),
+            })()]
+
         async def create_market_order(
             self,
             instrument,
@@ -664,6 +750,13 @@ def test_market_order_exposes_oanda_cancel_reason(monkeypatch):
         async def __aexit__(self, exc_type, exc, tb):
             return None
 
+        async def get_instruments(self, instruments):
+            return [OandaInstrument(
+                name='EUR_USD', display_name='EUR/USD', pip_location=-4,
+                display_precision=5, trade_units_precision=0,
+                minimum_trade_size=Decimal('1'),
+            )]
+
         async def create_market_order(self, instrument, units, *, stop_loss_price=None, take_profit_price=None, client_order_id=None):
             return FakeResult()
 
@@ -713,6 +806,13 @@ def test_market_order_rejects_non_tradeable_instrument(monkeypatch):
 
         async def __aexit__(self, exc_type, exc, tb):
             return None
+
+        async def get_instruments(self, instruments):
+            return [OandaInstrument(
+                name='EUR_USD', display_name='EUR/USD', pip_location=-4,
+                display_precision=5, trade_units_precision=0,
+                minimum_trade_size=Decimal('1'),
+            )]
 
         async def get_prices(self, instruments):
             return [type('Price', (), {'tradeable': False, 'instrument': 'EUR_USD'})()]

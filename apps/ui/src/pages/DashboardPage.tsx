@@ -63,7 +63,7 @@ export function DashboardPage() {
   }, [units])
 
   const entryPrice = brokerQuote ? Number(side === 'BUY' ? brokerQuote.ask : brokerQuote.bid) : Number.NaN
-  const pricePrecision = instrument.endsWith('/JPY') ? 3 : 5
+  const pricePrecision = brokerQuote?.displayPrecision ?? (instrument.endsWith('/JPY') ? 3 : 5)
   const protectionPrice = (percent: number, kind: 'stop' | 'target') => {
     if (!Number.isFinite(entryPrice) || entryPrice <= 0 || !Number.isFinite(percent) || percent <= 0) return ''
     const movesWithPosition = (kind === 'target') === (side === 'BUY')
@@ -72,7 +72,18 @@ export function DashboardPage() {
   }
   const stopLossPrice = protectionPrice(stopLossPercent, 'stop')
   const takeProfitPrice = protectionPrice(takeProfitPercent, 'target')
-  const canSubmitOrder = userRole !== 'viewer' && !isSubmitting && brokerQuote?.tradeable === true && Number.isFinite(entryPrice) && units > 0 && Boolean(stopLossPrice && takeProfitPrice)
+  const minimumTradeSize = Number(brokerQuote?.minimumTradeSize ?? '1')
+  const validUnits = Number.isInteger(units) && units >= minimumTradeSize
+  const validProtectionPrices = Boolean(stopLossPrice && takeProfitPrice)
+    && (side === 'BUY'
+      ? Number(stopLossPrice) < entryPrice && Number(takeProfitPrice) > entryPrice
+      : Number(stopLossPrice) > entryPrice && Number(takeProfitPrice) < entryPrice)
+  const orderValidationMessage = brokerQuote && !validUnits
+    ? `Units must be a whole number of at least ${minimumTradeSize}.`
+    : brokerQuote && !validProtectionPrices
+      ? 'Stop loss and take profit must be valid prices on opposite sides of the entry.'
+      : null
+  const canSubmitOrder = userRole !== 'viewer' && !isSubmitting && brokerQuote?.tradeable === true && Number.isFinite(entryPrice) && validUnits && validProtectionPrices
 
   const handleOrderSubmit = async () => {
     if (!canSubmitOrder) {
@@ -542,7 +553,7 @@ export function DashboardPage() {
             <div className="field-row">
               <label>
                 <span>Units</span>
-                <input type="number" value={units} onChange={(event) => setUnits(Number(event.target.value) || 0)} />
+                <input type="number" min={minimumTradeSize} step="1" value={units} onChange={(event) => setUnits(Number(event.target.value) || 0)} />
               </label>
               <label>
                 <span>Risk %</span>
@@ -573,6 +584,8 @@ export function DashboardPage() {
                 <strong>{orderStatus ? orderStatus.status : 'Idle'}</strong>
               </div>
             </div>
+
+            {orderValidationMessage && <small className="calculated-price" role="alert">{orderValidationMessage}</small>}
 
             <div className="actions-row">
               <button
