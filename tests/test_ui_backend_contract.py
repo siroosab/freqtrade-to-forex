@@ -403,7 +403,11 @@ def test_close_endpoint_closes_manual_trade_only(monkeypatch):
             return {'orderFillTransaction': {'id': 'close-tx', 'price': '1.1010'}}
 
     monkeypatch.setattr('freqtrade.forex.api.OandaClient', FakeClient)
-    monkeypatch.setattr('freqtrade.forex.api.OandaSettings.from_environment', lambda: type('Settings', (), {'token': 'token', 'account_id': 'account', 'environment': type('Env', (), {'value': 'practice'})()})())
+    environment = type('Env', (), {'value': 'practice'})()
+    settings = type(
+        'Settings', (), {'token': 'token', 'account_id': 'account', 'environment': environment}
+    )()
+    monkeypatch.setattr('freqtrade.forex.api.OandaSettings.from_environment', lambda: settings)
     headers = {'X-User-Role': 'operator', 'X-CSRF-Token': 'test-token'}
 
     manual = client.post('/api/v1/positions/manual-1/close', headers=headers)
@@ -493,7 +497,16 @@ def test_practice_order_submit_uses_real_oanda_gateway(monkeypatch):
         async def __aexit__(self, exc_type, exc, tb):
             return None
 
-        async def create_market_order(self, instrument, units, *, stop_loss_price=None, take_profit_price=None, client_order_id=None, trade_client_extensions=None):
+        async def create_market_order(
+            self,
+            instrument,
+            units,
+            *,
+            stop_loss_price=None,
+            take_profit_price=None,
+            client_order_id=None,
+            trade_client_extensions=None,
+        ):
             assert instrument == 'EUR_USD'
             assert units == 1200
             assert stop_loss_price == '1.0850'
