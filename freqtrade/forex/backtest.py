@@ -4,7 +4,7 @@ import inspect
 import re
 from dataclasses import dataclass
 from datetime import UTC
-from decimal import Decimal
+from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal
 
 import pandas as pd
 
@@ -476,7 +476,11 @@ class ForexBacktester:
                 entry_spread = self._spread_for(entry_time)
                 entry = Decimal(str(candles.iloc[index + 1]["open"]))
                 entry = entry + entry_spread / 2 if signal is Signal.LONG else entry - entry_spread / 2
-                stop_distance = self.stop_pips * instrument.pip_size
+                entry = self._round_price(entry, instrument)
+                stop_price = self._protection_price(
+                    entry, signal, instrument, self.stop_pips, stop=True
+                )
+                stop_distance = abs(entry - stop_price)
                 raw_units = balance * self.risk_fraction / (stop_distance * self.quote_to_account_rate)
                 units = int(raw_units)
                 if units > 0:
@@ -613,6 +617,8 @@ class ForexBacktester:
         exit_price = raw_exit - spread / 2 if direction is Signal.LONG else raw_exit + spread / 2
         exit_price += -self.slippage if direction is Signal.LONG else self.slippage
         entry_price = entry + self.slippage if direction is Signal.LONG else entry - self.slippage
+        exit_price = self._round_price(exit_price, instrument)
+        entry_price = self._round_price(entry_price, instrument)
         price_pl = (exit_price - entry_price) * units
         spread_cost = entry_spread * abs(units)
         slippage_cost = self.slippage * Decimal(2) * abs(units)
@@ -642,6 +648,35 @@ class ForexBacktester:
         if filled_abs == 0:
             return 0
         return filled_abs if units > 0 else -filled_abs
+
+    @staticmethod
+    def _round_price(
+        price: Decimal,
+        instrument: OandaInstrument,
+        *,
+        rounding: str = ROUND_HALF_UP,
+    ) -> Decimal:
+        precision = Decimal(1).scaleb(-instrument.display_precision)
+        return price.quantize(precision, rounding=rounding)
+
+    def _protection_price(
+        self,
+        entry: Decimal,
+        direction: Signal,
+        instrument: OandaInstrument,
+        distance_pips: Decimal,
+        *,
+        stop: bool,
+    ) -> Decimal:
+        distance = distance_pips * instrument.pip_size
+        is_long = direction is Signal.LONG
+        if stop:
+            raw_price = entry - distance if is_long else entry + distance
+            rounding = ROUND_FLOOR if is_long else ROUND_CEILING
+        else:
+            raw_price = entry + distance if is_long else entry - distance
+            rounding = ROUND_CEILING if is_long else ROUND_FLOOR
+        return self._round_price(raw_price, instrument, rounding=rounding)
 
     def _spread_for(self, timestamp: object) -> Decimal:
         if not isinstance(self.spread, dict):
@@ -682,12 +717,18 @@ class ForexBacktester:
         instrument: OandaInstrument,
     ) -> tuple[object, Decimal] | None:
         direction, _, entry, _, _ = position
-        stop_distance = self.stop_pips * instrument.pip_size
-        stop = entry - stop_distance if direction is Signal.LONG else entry + stop_distance
+        stop = self._protection_price(
+            entry, direction, instrument, self.stop_pips, stop=True
+        )
         target = None
         if self.take_profit_pips is not None:
-            target_distance = self.take_profit_pips * instrument.pip_size
-            target = entry + target_distance if direction is Signal.LONG else entry - target_distance
+            target = self._protection_price(
+                entry,
+                direction,
+                instrument,
+                self.take_profit_pips,
+                stop=False,
+            )
         start_time = self._utc_timestamp(start)
         end_time = self._utc_timestamp(end)
         for _, detail in detail_candles.sort_values("date").iterrows():

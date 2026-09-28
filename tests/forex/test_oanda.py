@@ -3287,6 +3287,64 @@ def test_backtester_uses_detail_candles_for_intrabar_short_take_profit() -> None
     assert result.trades[0].exit_price == Decimal("1.09945")
 
 
+def test_backtester_rounds_metal_protection_levels_and_risk_to_display_precision() -> None:
+    instrument = OandaInstrument(
+        name="XAU_CHF",
+        display_name="XAU/CHF",
+        pip_location=-2,
+        display_precision=2,
+        trade_units_precision=0,
+        minimum_trade_size=Decimal(1),
+    )
+    strategy = MagicMock()
+    strategy.signal.side_effect = [Signal.LONG, Signal.LONG]
+    candles = pd.DataFrame(
+        {
+            "date": ["2026-01-01T00:00:00Z", "2026-01-01T01:00:00Z"],
+            "open": [3450.00, 3450.20],
+            "high": [3450.20, 3450.30],
+            "low": [3449.90, 3450.19],
+            "close": [3450.00, 3450.20],
+        }
+    )
+    detail = pd.DataFrame(
+        {
+            "date": ["2026-01-01T01:05:00Z"],
+            "high": [3450.30],
+            "low": [3450.19],
+        }
+    )
+    backtester = ForexBacktester(
+        strategy,
+        instrument,
+        starting_balance=Decimal(10000),
+        risk_fraction=Decimal("0.01"),
+        stop_pips=Decimal("0.5"),
+        spread=Decimal("0"),
+        take_profit_pips=Decimal("0.5"),
+    )
+
+    assert backtester._protection_price(
+        Decimal("3450.20"), Signal.LONG, instrument, Decimal("0.5"), stop=True
+    ) == Decimal("3450.19")
+    assert backtester._protection_price(
+        Decimal("3450.20"), Signal.LONG, instrument, Decimal("0.5"), stop=False
+    ) == Decimal("3450.21")
+    assert backtester._protection_price(
+        Decimal("3450.20"), Signal.SHORT, instrument, Decimal("0.5"), stop=True
+    ) == Decimal("3450.21")
+    assert backtester._protection_price(
+        Decimal("3450.20"), Signal.SHORT, instrument, Decimal("0.5"), stop=False
+    ) == Decimal("3450.19")
+
+    result = backtester.run(candles, detail_candles=detail)
+
+    assert len(result.trades) == 1
+    assert result.trades[0].units == 10000
+    assert result.trades[0].entry_price == Decimal("3450.20")
+    assert result.trades[0].exit_price == Decimal("3450.19")
+
+
 def test_hyperopt_runs_independent_validation_split() -> None:
     instrument = OandaInstrument(
         name="EUR_USD",
