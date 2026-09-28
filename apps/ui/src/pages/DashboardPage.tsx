@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { ForexChart } from '../components/ForexChart'
 import { ChartDataControls } from '../components/ChartDataControls'
 import { chartCandleCount } from '../components/chartOptions'
-import { closeManualPosition, getAccountSummary, getBrokerPositions, getMarketQuote, getMarketSummary, getOrdersChart, getRiskSummary, submitMarketOrder, type BrokerTrade } from '../api/mockApi'
+import { closeManualPosition, createManualClientOrderId, getAccountSummary, getBrokerPositions, getMarketQuote, getMarketSummary, getOrdersChart, getRiskSummary, submitMarketOrder, type BrokerTrade } from '../api/mockApi'
 import { useForexSocket } from '../hooks/useForexSocket'
 import { useUiStore } from '../store/useUiStore'
 
@@ -90,7 +90,7 @@ export function DashboardPage() {
           stopLoss: stopLossPrice,
           takeProfit: takeProfitPrice,
           riskPercent,
-          clientOrderId: `manual-ui-${crypto.randomUUID()}`,
+          clientOrderId: createManualClientOrderId(),
         },
         userRole,
       )

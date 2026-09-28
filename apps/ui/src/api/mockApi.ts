@@ -438,6 +438,21 @@ export function buildApiUrl(path: string) {
   return `${API_BASE_URL}${path}`
 }
 
+export function createManualClientOrderId() {
+  const cryptoApi = globalThis.crypto
+  if (typeof cryptoApi?.randomUUID === 'function') {
+    return `manual-ui-${cryptoApi.randomUUID()}`
+  }
+
+  if (typeof cryptoApi?.getRandomValues === 'function') {
+    const values = cryptoApi.getRandomValues(new Uint32Array(4))
+    const suffix = Array.from(values, (value) => value.toString(16).padStart(8, '0')).join('')
+    return `manual-ui-${Date.now()}-${suffix}`
+  }
+
+  return `manual-ui-${Date.now()}-${Math.random().toString(36).slice(2)}`
+}
+
 export function buildSocketUrl(path: string) {
   const base = WS_BASE_URL.replace(/^ws:/, 'ws:').replace(/^wss:/, 'wss:')
   return `${base}${path}`
