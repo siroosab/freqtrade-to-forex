@@ -971,27 +971,69 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 chart_cache.pop(cache_key, None)
 
             settings = OandaSettings.from_environment()
-            approved_timeframe = str(pair_config.get("timeframe", "M5")).upper()
-            approved_granularity = {"M5": "M5", "M15": "M15", "H1": "H1"}.get(approved_timeframe, "M5")
+            approved_revision = pair_config.get("approvedRevision")
+            if not isinstance(approved_revision, dict) or approved_revision.get("pair", normalized_pair) != normalized_pair:
+                approved_revision = None
+            approved_config = dict(pair_config)
+            if approved_revision:
+                approved_config.update(approved_revision.get("strategyConfig") or {})
+            approved_timeframe = str(
+                approved_revision.get("timeframe") if approved_revision and approved_revision.get("timeframe") else approved_config.get("timeframe", "M5")
+            ).upper()
+            approved_strategy = str(
+                approved_revision.get("strategyClass") if approved_revision and approved_revision.get("strategyClass") else approved_config.get("strategyClass", "ForexAIStrategyBaseline")
+            )
+            approved_granularity = oanda_granularity(freqtrade_timeframe(approved_timeframe))
+            view_seconds = 30 * 86400 if view_timeframe == "M" else timeframe_to_seconds(freqtrade_timeframe(view_timeframe))
+            approved_seconds = 30 * 86400 if approved_timeframe in {"M", "MN1"} else timeframe_to_seconds(freqtrade_timeframe(approved_timeframe))
+            signal_count = min(
+                max(count * max(1, view_seconds // approved_seconds), count),
+                5000,
+            )
             async with OandaClient(settings.token, settings.account_id, environment=settings.environment) as client:
                 view_candles = await client.get_candles(instrument_name, granularity, count=count)
-                signal_candles = await client.get_candles(instrument_name, approved_granularity, count=min(count * 4, 5000))
+                signal_candles = await client.get_candles(instrument_name, approved_granularity, count=signal_count)
                 frame = df_from_raw_candles(signal_candles)
                 view_times = [candle.time for candle in view_candles]
-                strategy = ForexAIStrategyBaseline({
-                    "forex_ai_model": str(pair_config.get("model", "hybrid")),
-                    "forex_ai_features": pair_config.get("featureSet", []),
-                    "forex_ai_entry_threshold": pair_config.get("entryThreshold", "0.5"),
-                    "forex_ai_exit_threshold": pair_config.get("exitThreshold", "0.0"),
-                    "forex_ai_volatility_window": pair_config.get("volatilityWindow", "5"),
-                    "forex_ai_atr_window": pair_config.get("atrWindow", "14"),
-                    "forex_ai_max_spread_pct": pair_config.get("maxSpreadPct", "1.0"),
-                })
+                strategy_config = {
+                    "forex_ai_model": str(approved_config.get("model", "hybrid")),
+                    "forex_ai_features": approved_config.get("featureSet", []),
+                    "forex_ai_entry_threshold": approved_config.get("entryThreshold", "0.5"),
+                    "forex_ai_exit_threshold": approved_config.get("exitThreshold", "0.0"),
+                    "forex_ai_volatility_window": approved_config.get("volatilityWindow", "5"),
+                    "forex_ai_atr_window": approved_config.get("atrWindow", "14"),
+                    "forex_ai_max_spread_pct": approved_config.get("maxSpreadPct", "1.0"),
+                }
+                if approved_strategy == "ForexAIStrategyBaseline":
+                    strategy = ForexAIStrategyBaseline(strategy_config)
+                    signal_for_window = lambda window: strategy.signal_trace(window)
+                else:
+                    hyperopt = approved_revision.get("hyperopt", {}) if isinstance(approved_revision, dict) else {}
+                    parameters = hyperopt.get("parameters", hyperopt.get("bestParameters", {})) if isinstance(hyperopt, dict) else {}
+                    strategy = load_strategy(
+                        approved_strategy,
+                        freqtrade_timeframe(approved_timeframe),
+                        normalized_pair,
+                        parameter_values=parameters if isinstance(parameters, dict) else None,
+                    )
+                    informative_candles = {}
+                    base_seconds = timeframe_to_seconds(strategy.timeframe)
+                    for informative_timeframe in strategy_informative_timeframes(strategy, normalized_pair):
+                        informative_seconds = timeframe_to_seconds(informative_timeframe)
+                        informative_count = max(10, (signal_count * base_seconds + informative_seconds - 1) // informative_seconds + 5)
+                        informative_raw = await client.get_candles(
+                            instrument_name,
+                            oanda_granularity(informative_timeframe),
+                            count=min(informative_count, 5000),
+                        )
+                        informative_candles[informative_timeframe] = df_from_raw_candles(informative_raw)
+                    strategy_adapter = FreqtradeStrategyAdapter(strategy, normalized_pair, informative_candles)
+                    signal_for_window = lambda window: {"signal": strategy_adapter.signal(window).value, "reason": "approved_strategy_signal"}
                 signals: list[dict] = []
                 previous = "flat"
                 for index in range(len(frame)):
                     window = frame.iloc[: index + 1]
-                    trace = strategy.signal_trace(window)
+                    trace = signal_for_window(window)
                     signal = str(trace["signal"])
                     if signal in {"long", "short"} and signal != previous:
                         row = frame.iloc[index]
@@ -1041,6 +1083,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     "pair": normalized_pair,
                     "timeframe": view_timeframe,
                     "approvedTimeframe": approved_timeframe,
+                    "approvedStrategy": approved_strategy,
                     "candles": [{"time": candle.time, "open": float(candle.open), "high": float(candle.high), "low": float(candle.low), "close": float(candle.close)} for candle in view_candles],
                     "signals": signals,
                     "trades": [trade for trade in chart_trades if trade["pair"] == normalized_pair],
@@ -2491,7 +2534,8 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     "modelVersion": "baseline-v1",
                     "restored": True,
                 }
-        if status == "approved" and bool(payload.get("requireOptimization", False)):
+        require_optimization = bool(payload.get("requireOptimization", False))
+        if status == "approved" and require_optimization:
             if pending is None:
                 raise HTTPException(status_code=409, detail=f"No Hyperopt result is pending approval for {pair}")
             if pending["timeframe"] != requested_timeframe:
@@ -2503,22 +2547,71 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 target_config["entryThreshold"] = pending["entryThreshold"]
                 target_config["maxSpreadPct"] = pending["maxSpreadPct"]
             target_config["approvedHyperopt"] = dict(pending)
+        elif status == "approved":
+            target_config = ai_config_for_pair(pair)
+            configured_timeframe = str(target_config.get("timeframe", "M5")).upper()
+            if requested_timeframe != configured_timeframe:
+                raise HTTPException(status_code=409, detail=f"Approval timeframe {requested_timeframe} does not match configured timeframe {configured_timeframe} for {pair}")
+            target_config["strategyClass"] = strategy_class
+
+        if status == "approved":
+            target_config = ai_config_for_pair(pair)
+            strategy_config = {
+                key: value for key, value in target_config.items()
+                if key not in {"approvedRevision", "approvedRevisions", "approvedHyperopt"}
+            }
             approved_revision = {
                 "pair": pair,
                 "timeframe": requested_timeframe,
                 "strategyClass": strategy_class,
                 "configRevision": target_config.get("configRevision", "r0"),
                 "approvedAt": datetime.now(timezone.utc).isoformat(),
-                "hyperopt": dict(pending),
+                "hyperopt": dict(pending) if require_optimization and pending else {},
                 "freqai": dict(target_config.get("freqai") or {}),
+                "strategyConfig": strategy_config,
             }
             target_config["approvedRevisions"] = dict(target_config.get("approvedRevisions") or {})
             target_config["approvedRevisions"][f"{strategy_class}|{requested_timeframe}"] = approved_revision
             target_config["approvedRevision"] = approved_revision
-        elif status == "approved":
-            configured_timeframe = str(ai_config_for_pair(pair).get("timeframe", "M5")).upper()
-            if requested_timeframe != configured_timeframe:
-                raise HTTPException(status_code=409, detail=f"Approval timeframe {requested_timeframe} does not match configured timeframe {configured_timeframe} for {pair}")
+            setup_path = Path(os.environ.get("OANDA_CONFIG_PATH", "user_data/config.json"))
+            setup_config = load_forex_config(setup_path)
+            pair_key = pair.replace("/", "_")
+            setup_timeframes = dict(setup_config.get("pair_timeframes") or {})
+            setup_strategies = dict(setup_config.get("pair_strategies") or {})
+            setup_timeframes[pair_key] = "1mo" if requested_timeframe in {"M", "MN1"} else freqtrade_timeframe(requested_timeframe)
+            setup_strategies[pair_key] = strategy_class
+            setup_config["pair_timeframes"] = setup_timeframes
+            setup_config["pair_strategies"] = setup_strategies
+            save_forex_config(setup_config, setup_path)
+        else:
+            target_config = ai_config_for_pair(pair)
+            approved_revisions = dict(target_config.get("approvedRevisions") or {})
+            approved_revisions.pop(f"{strategy_class}|{requested_timeframe}", None)
+            target_config["approvedRevisions"] = approved_revisions
+            current_revision = target_config.get("approvedRevision")
+            if isinstance(current_revision, dict) and current_revision.get("strategyClass") == strategy_class and current_revision.get("timeframe") == requested_timeframe:
+                target_config.pop("approvedRevision", None)
+                if approved_revisions:
+                    latest_scope = next(reversed(approved_revisions))
+                    target_config["approvedRevision"] = approved_revisions[latest_scope]
+            setup_path = Path(os.environ.get("OANDA_CONFIG_PATH", "user_data/config.json"))
+            setup_config = load_forex_config(setup_path)
+            pair_key = pair.replace("/", "_")
+            setup_timeframes = dict(setup_config.get("pair_timeframes") or {})
+            setup_strategies = dict(setup_config.get("pair_strategies") or {})
+            runtime_timeframe = "1mo" if requested_timeframe in {"M", "MN1"} else freqtrade_timeframe(requested_timeframe)
+            if setup_strategies.get(pair_key) == strategy_class and setup_timeframes.get(pair_key) == runtime_timeframe:
+                next_revision = target_config.get("approvedRevision")
+                if isinstance(next_revision, dict):
+                    setup_strategies[pair_key] = str(next_revision.get("strategyClass", "ForexAIStrategyBaseline"))
+                    next_timeframe = str(next_revision.get("timeframe", "M5")).upper()
+                    setup_timeframes[pair_key] = "1mo" if next_timeframe in {"M", "MN1"} else freqtrade_timeframe(next_timeframe)
+                else:
+                    setup_strategies.pop(pair_key, None)
+                    setup_timeframes.pop(pair_key, None)
+                setup_config["pair_timeframes"] = setup_timeframes
+                setup_config["pair_strategies"] = setup_strategies
+                save_forex_config(setup_config, setup_path)
 
         AI_REVIEW_STATE["status"] = status
         AI_REVIEW_STATE["strategyName"] = AI_CONFIG.get("strategyName", "FX Trend Pulse")

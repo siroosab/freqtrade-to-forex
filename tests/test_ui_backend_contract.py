@@ -3,7 +3,7 @@ from decimal import Decimal
 
 from fastapi.testclient import TestClient
 
-from freqtrade.forex.api import app, format_hyperopt_report
+from freqtrade.forex.api import app, create_app, format_hyperopt_report
 
 
 client = TestClient(app)
@@ -186,6 +186,90 @@ def test_orders_chart_accepts_supported_timeframe_and_requested_count(monkeypatc
     assert calls[0] == ('H4', 1000)
     assert calls[1][1] == 4000
     assert len(calls) == 2
+
+
+def test_orders_chart_uses_approved_strategy_and_timeframe_after_config_change(tmp_path, monkeypatch):
+    calls = []
+    strategy_loads = []
+    config_path = tmp_path / 'runtime-config.json'
+    monkeypatch.setenv('OANDA_CONFIG_PATH', str(config_path))
+
+    class FakeCandle:
+        time = '2026-09-18T09:00:00Z'
+        open = high = low = close = '1.08'
+
+    class FakeClient:
+        def __init__(self, token, account_id, environment):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+        async def get_candles(self, instrument, granularity, *, count):
+            calls.append((granularity, count))
+            return [FakeCandle()]
+
+        async def get_open_trades(self):
+            return []
+
+        async def get_closed_trades(self, *, count=100):
+            return []
+
+    class FakeStrategy:
+        timeframe = '1h'
+        _ft_informative = ()
+
+    class FakeAdapter:
+        def __init__(self, strategy, pair, informative_candles=None):
+            pass
+
+        def signal(self, candles):
+            return type('Signal', (), {'value': 'flat'})()
+
+    monkeypatch.setattr('freqtrade.forex.api.OandaClient', FakeClient)
+    monkeypatch.setattr('freqtrade.forex.api.OandaSettings.from_environment', lambda: type(
+        'Settings', (), {'token': 'token', 'account_id': 'account', 'environment': 'practice'}
+    )())
+    monkeypatch.setattr('freqtrade.forex.api.discover_strategy_files', lambda: [
+        type('StrategyFile', (), {'name': name})()
+        for name in ('ForexAIStrategyBaseline', 'FakeApprovedStrategy')
+    ])
+    monkeypatch.setattr('freqtrade.forex.api.load_strategy', lambda name, timeframe, pair, **kwargs: (
+        strategy_loads.append((name, timeframe, pair)) or FakeStrategy()
+    ))
+    monkeypatch.setattr('freqtrade.forex.api.FreqtradeStrategyAdapter', FakeAdapter)
+
+    with TestClient(create_app(tmp_path / 'approved-chart.sqlite')) as scoped_client:
+        configured = scoped_client.post(
+            '/api/v1/ai/config?pair=EUR%2FUSD',
+            json={'timeframe': 'H1', 'strategyClass': 'FakeApprovedStrategy'},
+        )
+        approved = scoped_client.post(
+            '/api/v1/ai/review',
+            json={'status': 'approved', 'pair': 'EUR/USD', 'timeframe': 'H1', 'strategyClass': 'FakeApprovedStrategy'},
+            headers={'X-User-Role': 'operator', 'X-CSRF-Token': 'review-approval'},
+        )
+        changed = scoped_client.post(
+            '/api/v1/ai/config?pair=EUR%2FUSD',
+            json={'timeframe': 'M5', 'strategyClass': 'ForexAIStrategyBaseline'},
+        )
+        chart = scoped_client.get('/api/v1/orders/chart?pair=EUR%2FUSD&timeframe=H4&count=120')
+
+    assert configured.status_code == 200
+    assert approved.status_code == 200
+    assert changed.status_code == 200
+    assert chart.status_code == 200, chart.text
+    payload = chart.json()
+    assert payload['approvedStrategy'] == 'FakeApprovedStrategy'
+    assert payload['approvedTimeframe'] == 'H1'
+    assert ('FakeApprovedStrategy', '1h', 'EUR/USD') in strategy_loads
+    assert ('H1', 480) in calls
+    runtime_config = json.loads(config_path.read_text(encoding='utf-8'))
+    assert runtime_config['pair_strategies']['EUR_USD'] == 'FakeApprovedStrategy'
+    assert runtime_config['pair_timeframes']['EUR_USD'] == '1h'
 
 
 def test_websocket_market_channel_connects():

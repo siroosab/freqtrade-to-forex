@@ -36,7 +36,7 @@ export function OrdersPage() {
           <div className="chart-controls"><select aria-label="Chart pair" value={pair} onChange={(event) => setPair(event.target.value)}>{(availablePairs.length ? availablePairs : ['EUR/USD','GBP/USD','USD/JPY']).map((item) => <option key={item} value={item}>{item}</option>)}</select><ChartDataControls timeframe={timeframe} countMultiplier={countMultiplier} onTimeframeChange={setTimeframe} onCountMultiplierChange={setCountMultiplier} /></div>
         </div>
         {chartQuery.isLoading && <p>Loading broker candles and approved strategy signals…</p>}
-        {chartQuery.isError && <p>Chart data unavailable from the broker API.</p>}
+        {chartQuery.isError && <p role="alert">{chartQuery.error instanceof Error ? chartQuery.error.message : 'Chart data unavailable from the broker API.'}</p>}
         {chartQuery.data && <ForexChart data={chartQuery.data} />}
       </section>
 

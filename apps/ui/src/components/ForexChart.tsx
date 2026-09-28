@@ -8,6 +8,7 @@ export type ForexChartData = {
   pair: string
   timeframe: string
   approvedTimeframe: string
+  approvedStrategy: string
   candles: ChartCandle[]
   signals: ChartSignal[]
   trades: ChartTrade[]
@@ -132,7 +133,7 @@ export function ForexChart({ data, onPriceSelect }: { data: ForexChartData; onPr
       <div className="chart-meta">
         <strong>{data.pair}</strong>
         <span>{data.timeframe} view</span>
-        <span>Signals: {data.approvedTimeframe} strategy</span>
+        <span className="chart-approved-scope" title="Approved strategy and signal timeframe">{data.approvedStrategy} · {data.approvedTimeframe}</span>
         <span>{data.candles.length} candles</span>
         <div className="chart-zoom-controls" aria-label="Chart zoom controls">
           <button type="button" aria-label="Zoom out" title="Zoom out" onClick={() => zoom(-1)} disabled={zoomLevel === 0}>-</button>

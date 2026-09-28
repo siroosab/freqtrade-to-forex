@@ -43,6 +43,7 @@ from freqtrade.forex.risk_limits import (
     aggregate_currency_exposure,
 )
 from freqtrade.forex.config import OandaSettings, execution_mode_for_native_runmode, validate_native_forex_config
+from freqtrade.forex.cli import run_dry_run
 from freqtrade.forex.costs import ForexFillModel, financing_cost
 from freqtrade.forex.execution import (
     ExecutionMode,
@@ -803,6 +804,76 @@ def test_oanda_settings_and_pair_mapping_from_freqtrade_config() -> None:
     assert settings.pair_strategies == {"EUR_USD": "ForexAIStrategyBaseline", "GBP_USD": "ForexEmaStrategy"}
     assert OandaMarketDataProvider.to_oanda_instrument("eur/usd") == "EUR_USD"
     assert OandaMarketDataProvider.to_freqtrade_pair("GBP_USD") == "GBP/USD"
+
+
+@pytest.mark.asyncio
+async def test_dry_run_uses_pair_strategy_and_timeframe_over_global_args(monkeypatch, tmp_path) -> None:
+    loaded_strategies = []
+    workers = []
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+        async def get_instruments(self, names):
+            return [SimpleNamespace(name="EUR_USD")]
+
+        async def get_account_summary(self):
+            return SimpleNamespace(currency="USD", balance=Decimal("10000"))
+
+        async def get_prices(self, instruments):
+            return []
+
+    class FakeWorker:
+        def __init__(self, loop, config, on_result):
+            self.config = config
+            workers.append(self)
+
+    class FakePortfolioWorker:
+        def __init__(self, items):
+            self.items = items
+
+        async def run(self, *, max_steps):
+            return None
+
+    monkeypatch.setattr("freqtrade.forex.cli.OandaClient", FakeClient)
+    monkeypatch.setattr("freqtrade.forex.cli.OandaExecutionGateway", lambda *args, **kwargs: object())
+    monkeypatch.setattr("freqtrade.forex.cli.DryRunSession", lambda *args, **kwargs: object())
+    monkeypatch.setattr("freqtrade.forex.cli.OandaMarketDataProvider", lambda *args, **kwargs: object())
+    monkeypatch.setattr("freqtrade.forex.cli.PaperLedger", lambda *args, **kwargs: object())
+    monkeypatch.setattr("freqtrade.forex.cli.load_strategy", lambda name, timeframe, pair: (
+        loaded_strategies.append((name, timeframe, pair)) or object()
+    ))
+    monkeypatch.setattr("freqtrade.forex.cli.FreqtradeStrategyAdapter", lambda *args, **kwargs: object())
+    monkeypatch.setattr("freqtrade.forex.cli.DryRunStrategyLoop", lambda *args, **kwargs: object())
+    monkeypatch.setattr("freqtrade.forex.cli.DryRunWorker", FakeWorker)
+    monkeypatch.setattr("freqtrade.forex.cli.DryRunPortfolioWorker", FakePortfolioWorker)
+    settings = OandaSettings(
+        "token",
+        "account",
+        instruments=("EUR_USD",),
+        pair_timeframes={"EUR_USD": "1h"},
+        pair_strategies={"EUR_USD": "ApprovedForexStrategy"},
+    )
+    args = SimpleNamespace(
+        steps=1,
+        pair=None,
+        timeframe="5m",
+        strategy="UnapprovedGlobalStrategy",
+        ledger=str(tmp_path / "paper.sqlite"),
+        stop_pips=Decimal("1"),
+    )
+
+    await run_dry_run(settings, args)
+
+    assert loaded_strategies == [("ApprovedForexStrategy", "1h", "EUR/USD")]
+    assert workers[0].config.timeframe == "1h"
 
 
 def test_oanda_settings_reject_unknown_execution_mode() -> None:
@@ -1782,7 +1853,9 @@ def test_read_only_api_returns_paper_report(tmp_path) -> None:
     assert len(trades.json()) == 1
 
 
-def test_ai_review_workflow_is_exposed_and_approvable(tmp_path) -> None:
+def test_ai_review_workflow_is_exposed_and_approvable(tmp_path, monkeypatch) -> None:
+    config_path = tmp_path / "config.json"
+    monkeypatch.setenv("OANDA_CONFIG_PATH", str(config_path))
     with TestClient(create_app(tmp_path / "review.sqlite")) as client:
         initial = client.get("/api/v1/ai/review")
         updated = client.post(
@@ -1796,9 +1869,13 @@ def test_ai_review_workflow_is_exposed_and_approvable(tmp_path) -> None:
     assert updated.status_code == 200
     assert updated.json()["status"] == "approved"
     assert "Practice-safe" in updated.json()["notes"]
+    runtime_config = json.loads(config_path.read_text(encoding="utf-8"))
+    assert runtime_config["pair_strategies"]["EUR_USD"] == "ForexAIStrategyBaseline"
+    assert runtime_config["pair_timeframes"]["EUR_USD"] == "5m"
 
 
-def test_ai_review_is_scoped_by_pair_and_timeframe(tmp_path) -> None:
+def test_ai_review_is_scoped_by_pair_and_timeframe(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("OANDA_CONFIG_PATH", str(tmp_path / "config.json"))
     with TestClient(create_app(tmp_path / "scoped-review.sqlite")) as client:
         eur = client.post(
             "/api/v1/ai/review",
@@ -1821,7 +1898,30 @@ def test_ai_review_is_scoped_by_pair_and_timeframe(tmp_path) -> None:
     assert gbp_read.json()["timeframe"] == "H1"
 
 
-def test_ai_scope_review_survives_api_restart(tmp_path) -> None:
+def test_rejecting_approval_revokes_runtime_pair_scope(tmp_path, monkeypatch) -> None:
+    config_path = tmp_path / "config.json"
+    monkeypatch.setenv("OANDA_CONFIG_PATH", str(config_path))
+    with TestClient(create_app(tmp_path / "revoke-review.sqlite")) as client:
+        approved = client.post(
+            "/api/v1/ai/review",
+            json={"status": "approved", "pair": "EUR/USD", "timeframe": "M5"},
+            headers={"X-User-Role": "operator", "X-CSRF-Token": "review-approval"},
+        )
+        rejected = client.post(
+            "/api/v1/ai/review",
+            json={"status": "rejected", "pair": "EUR/USD", "timeframe": "M5"},
+            headers={"X-User-Role": "operator", "X-CSRF-Token": "review-approval"},
+        )
+
+    assert approved.status_code == 200
+    assert rejected.status_code == 200
+    runtime_config = json.loads(config_path.read_text(encoding="utf-8"))
+    assert "EUR_USD" not in runtime_config["pair_strategies"]
+    assert "EUR_USD" not in runtime_config["pair_timeframes"]
+
+
+def test_ai_scope_review_survives_api_restart(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("OANDA_CONFIG_PATH", str(tmp_path / "config.json"))
     database = tmp_path / "persistent-review.sqlite"
     with TestClient(create_app(database)) as client:
         response = client.post(
@@ -1839,7 +1939,8 @@ def test_ai_scope_review_survives_api_restart(tmp_path) -> None:
     assert restored.json()["notes"] == "persisted"
 
 
-def test_approval_restores_exact_hyperopt_report_after_restart(tmp_path) -> None:
+def test_approval_restores_exact_hyperopt_report_after_restart(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("OANDA_CONFIG_PATH", str(tmp_path / "config.json"))
     database = tmp_path / "hyperopt-report.sqlite"
     report = {
         "pair": "GBP/USD",
@@ -1875,7 +1976,8 @@ def test_approval_restores_exact_hyperopt_report_after_restart(tmp_path) -> None
     assert approved["hyperopt"]["maxSpreadPct"] == "0.4"
 
 
-def test_hyperopt_scheduler_requires_approved_pairs_and_staggers_all_pairs(tmp_path) -> None:
+def test_hyperopt_scheduler_requires_approved_pairs_and_staggers_all_pairs(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("OANDA_CONFIG_PATH", str(tmp_path / "config.json"))
     with TestClient(create_app(tmp_path / "scheduler.sqlite")) as client:
         blocked = client.post(
             "/api/v1/ai/hyperopt/scheduler",

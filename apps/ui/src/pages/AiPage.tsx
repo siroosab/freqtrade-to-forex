@@ -114,6 +114,8 @@ export function AiPage() {
     mutationFn: saveAiReview,
     onSuccess: () => {
       void reviewQuery.refetch()
+      void aiConfigQuery.refetch()
+      void statusQuery.refetch()
     },
   })
 

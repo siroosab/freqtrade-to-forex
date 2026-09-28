@@ -45,7 +45,7 @@ export function RiskPage() {
         <p className="risk-helper">Select a protection level, then click the chart. Unconfigured fields use the default risk policy.</p>
         <div className="chart-controls risk-click-controls"><button type="button" className={selection === 'stopLoss' ? 'selected' : ''} onClick={() => setSelection('stopLoss')}>Set stop loss</button><button type="button" className={selection === 'takeProfit' ? 'selected' : ''} onClick={() => setSelection('takeProfit')}>Set take profit</button><button type="button" className={selection === 'averageEntry' ? 'selected' : ''} onClick={() => setSelection('averageEntry')}>Set average entry</button></div>
         {chartQuery.isLoading && <p>Loading broker chart…</p>}
-        {chartQuery.isError && <p>Risk chart data unavailable from broker API.</p>}
+        {chartQuery.isError && <p role="alert">{chartQuery.error instanceof Error ? chartQuery.error.message : 'Risk chart data unavailable from broker API.'}</p>}
         {chartQuery.data && <ForexChart data={chartQuery.data} onPriceSelect={(price) => update(selection, price.toFixed(5))} />}
       </section>
 

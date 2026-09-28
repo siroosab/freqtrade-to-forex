@@ -1393,6 +1393,12 @@
   color: #f8fafc;
 }
 
+.chart-approved-scope {
+  color: #fbbf24;
+  border-left: 2px solid #fbbf24;
+  padding-left: 8px;
+}
+
 .chart-zoom-controls {
   display: inline-flex;
   align-items: center;

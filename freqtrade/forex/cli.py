@@ -194,8 +194,8 @@ async def run_dry_run(settings: OandaSettings, args: argparse.Namespace) -> int:
         workers: list[DryRunWorker] = []
         for instrument_name in instrument_names:
             pair = instrument_name.replace("_", "/")
-            timeframe = args.timeframe or settings.pair_timeframes.get(instrument_name) or (settings.timeframes[0] if settings.timeframes else "5m")
-            strategy_class = args.strategy or settings.pair_strategies.get(instrument_name, "ForexEmaStrategy")
+            timeframe = settings.pair_timeframes.get(instrument_name) or args.timeframe or (settings.timeframes[0] if settings.timeframes else "5m")
+            strategy_class = settings.pair_strategies.get(instrument_name) or args.strategy or "ForexEmaStrategy"
             strategy = load_strategy(strategy_class, freqtrade_timeframe(timeframe), pair)
             adapter = FreqtradeStrategyAdapter(strategy, pair)
             loop = DryRunStrategyLoop(
