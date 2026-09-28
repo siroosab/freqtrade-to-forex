@@ -29,7 +29,6 @@ from freqtrade.forex.health import OandaHealthCheck
 from freqtrade.forex.ledger import PaperLedger
 from freqtrade.forex.models import OandaEnvironment, OandaInstrument
 from freqtrade.forex.oanda import OandaAPIError, OandaClient, discover_oanda_accounts
-from freqtrade.forex.order_validation import BrokerOrderValidator
 from freqtrade.forex.strategy_catalog import discover_strategy_files, validate_strategy_upload
 from freqtrade.forex.strategy_execution import (
     FreqtradeStrategyAdapter,
@@ -1281,51 +1280,6 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     settings_obj.account_id,
                     settings_obj.environment,
                 ) as client:
-                    instruments = await client.get_instruments((instrument,))
-                    if not instruments:
-                        raise HTTPException(
-                            status_code=400,
-                            detail=f"Instrument {instrument} is not available on this OANDA account",
-                        )
-                    broker_instrument = instruments[0]
-                    validator = BrokerOrderValidator(
-                        broker_instrument,
-                        minimum_stop_distance=Decimal("0"),
-                    )
-                    try:
-                        validator.validate_units(units)
-                        if stop_loss or take_profit:
-                            quotes = await client.get_prices((instrument,))
-                            if not quotes:
-                                raise HTTPException(
-                                    status_code=503,
-                                    detail=f"No current OANDA price is available for {instrument}",
-                                )
-                            quote = quotes[0]
-                            if not quote.tradeable:
-                                raise HTTPException(
-                                    status_code=409,
-                                    detail=(
-                                        f"Instrument {instrument} is not tradeable; "
-                                        "the OANDA market may be halted or closed"
-                                    ),
-                                )
-                            order_side = "long" if side == "BUY" else "short"
-                            entry_price = quote.price_for_side(order_side)
-                        if stop_loss:
-                            validator.validate_stop(
-                                side=order_side,
-                                entry_price=entry_price,
-                                stop_price=Decimal(str(stop_loss)),
-                            )
-                        if take_profit:
-                            validator.validate_take_profit(
-                                side=order_side,
-                                entry_price=entry_price,
-                                take_profit_price=Decimal(str(take_profit)),
-                            )
-                    except (ValueError, InvalidOperation) as exc:
-                        raise HTTPException(status_code=400, detail=str(exc)) from exc
                     trade_extensions = (
                         {
                             "id": client_order_id,

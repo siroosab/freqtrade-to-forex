@@ -3,6 +3,7 @@
 import asyncio
 from collections.abc import Sequence
 from collections.abc import AsyncIterator
+from decimal import Decimal, InvalidOperation
 import json
 from typing import Any
 
@@ -16,6 +17,7 @@ from freqtrade.forex.models import (
     OandaOrderActionResult,
     OandaPrice,
 )
+from freqtrade.forex.order_validation import BrokerOrderValidator
 from freqtrade.forex.state import OandaAccountState, OandaPosition
 from freqtrade.forex.transactions import OandaTransaction
 
@@ -345,7 +347,33 @@ class OandaClient:
     ) -> OandaOrderResult:
         if units == 0:
             raise ValueError("OANDA order units cannot be zero")
-        await self.ensure_tradeable(instrument)
+        instruments = await self.get_instruments((instrument,))
+        if not instruments:
+            raise ValueError(f"Instrument {instrument} is not available on this OANDA account")
+        broker_instrument = instruments[0]
+        quote = await self.ensure_tradeable(instrument)
+        validator = BrokerOrderValidator(
+            broker_instrument,
+            minimum_stop_distance=Decimal("0"),
+        )
+        validator.validate_units(abs(units))
+        order_side = "long" if units > 0 else "short"
+        entry_price = quote.price_for_side(order_side)
+        try:
+            if stop_loss_price is not None:
+                validator.validate_stop(
+                    side=order_side,
+                    entry_price=entry_price,
+                    stop_price=Decimal(stop_loss_price),
+                )
+            if take_profit_price is not None:
+                validator.validate_take_profit(
+                    side=order_side,
+                    entry_price=entry_price,
+                    take_profit_price=Decimal(take_profit_price),
+                )
+        except InvalidOperation as exc:
+            raise ValueError("Protective order prices must be valid decimal numbers") from exc
         order: dict[str, Any] = {
             "type": "MARKET",
             "instrument": instrument,

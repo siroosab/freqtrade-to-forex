@@ -4098,6 +4098,18 @@ async def test_oanda_client_retries_disconnect_and_timeout_during_practice_order
 
     async def handler(request: httpx.Request) -> httpx.Response:
         nonlocal attempts
+        if request.url.path.endswith("/instruments"):
+            return httpx.Response(
+                200,
+                json={"instruments": [{
+                    "name": "EUR_USD",
+                    "displayName": "EUR/USD",
+                    "pipLocation": -4,
+                    "displayPrecision": 5,
+                    "tradeUnitsPrecision": 0,
+                    "minimumTradeSize": "1",
+                }]},
+            )
         if request.url.path.endswith("/pricing"):
             return httpx.Response(
                 200,
@@ -4229,6 +4241,18 @@ async def test_oanda_client_creates_signed_market_order_with_attached_risk_order
 
     async def handler(request: httpx.Request) -> httpx.Response:
         nonlocal captured
+        if request.url.path.endswith("/instruments"):
+            return httpx.Response(
+                200,
+                json={"instruments": [{
+                    "name": "EUR_USD",
+                    "displayName": "EUR/USD",
+                    "pipLocation": -4,
+                    "displayPrecision": 5,
+                    "tradeUnitsPrecision": 0,
+                    "minimumTradeSize": "1",
+                }]},
+            )
         if request.url.path.endswith("/pricing"):
             return httpx.Response(
                 200,
@@ -4272,6 +4296,53 @@ async def test_oanda_client_creates_signed_market_order_with_attached_risk_order
     assert '"price":"1.10200"' in order
     assert '"price":"1.09600"' in order
     assert '"id":"strategy-entry-1"' in order
+
+
+@pytest.mark.asyncio
+async def test_oanda_client_rejects_invalid_automated_take_profit_before_post() -> None:
+    post_requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/instruments"):
+            return httpx.Response(
+                200,
+                json={"instruments": [{
+                    "name": "XAU_CHF",
+                    "displayName": "Gold/CHF",
+                    "pipLocation": -2,
+                    "displayPrecision": 2,
+                    "tradeUnitsPrecision": 0,
+                    "minimumTradeSize": "1",
+                }]},
+            )
+        if request.url.path.endswith("/pricing"):
+            return httpx.Response(
+                200,
+                json={"prices": [{
+                    "instrument": "XAU_CHF",
+                    "time": "2026-09-28T11:15:00Z",
+                    "bids": [{"price": "3450.00"}],
+                    "asks": [{"price": "3450.20"}],
+                }]},
+            )
+        post_requests.append(request)
+        return httpx.Response(201, json={"orderCreateTransaction": {"id": "1"}})
+
+    async with httpx.AsyncClient(
+        base_url=OandaEnvironment.PRACTICE.rest_url,
+        transport=httpx.MockTransport(handler),
+    ) as http_client:
+        async with OandaClient("ignored", "account", http_client=http_client) as client:
+            with pytest.raises(ValueError, match="take-profit price exceeds 2 decimal places"):
+                await client.create_market_order(
+                    "XAU_CHF",
+                    -1000,
+                    stop_loss_price="3470.32",
+                    take_profit_price="3416.82264",
+                    client_order_id="auto-entry-invalid-tp",
+                )
+
+    assert post_requests == []
 
 
 @pytest.mark.asyncio

@@ -480,16 +480,8 @@ def test_order_submit_requires_operator_role_and_csrf_token():
     assert payload['symbol'] == 'EUR/USD'
 
 
-def test_live_order_rejects_excess_price_precision_before_broker_submission(monkeypatch):
-    class FakePrice:
-        tradeable = True
-
-        def price_for_side(self, side):
-            return Decimal('3450.00') if side == 'short' else Decimal('3450.20')
-
+def test_live_order_surfaces_shared_preflight_validation_error(monkeypatch):
     class FakeClient:
-        create_calls = 0
-
         def __init__(self, token, account_id, environment):
             pass
 
@@ -499,19 +491,8 @@ def test_live_order_rejects_excess_price_precision_before_broker_submission(monk
         async def __aexit__(self, exc_type, exc, traceback):
             return None
 
-        async def get_instruments(self, instruments):
-            return [OandaInstrument(
-                name='XAU_CHF', display_name='XAU/CHF', pip_location=-2,
-                display_precision=2, trade_units_precision=0,
-                minimum_trade_size=Decimal('1'),
-            )]
-
-        async def get_prices(self, instruments):
-            return [FakePrice()]
-
         async def create_market_order(self, *args, **kwargs):
-            self.create_calls += 1
-            raise AssertionError('invalid order reached OANDA submission')
+            raise ValueError('take-profit price exceeds 2 decimal places')
 
     environment = type('Env', (), {'value': 'practice'})()
     settings = type('Settings', (), {
@@ -532,7 +513,6 @@ def test_live_order_rejects_excess_price_precision_before_broker_submission(monk
 
     assert response.status_code == 400
     assert 'take-profit price exceeds 2 decimal places' in response.json()['detail']
-    assert FakeClient.create_calls == 0
 
 
 def test_close_endpoint_closes_manual_trade_only(monkeypatch):
