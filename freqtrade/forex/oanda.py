@@ -228,13 +228,15 @@ class OandaClient:
         seen_times: set[str] = set()
         remaining = count
         page_from = from_time
+        page_to = to_time
+        fetch_older = from_time is None
         while remaining > 0:
-            page_count = min(remaining, 5000)
+            page_count = min(remaining + int(fetch_older and bool(collected)), 5000)
             params = {"granularity": granularity, "price": price, "count": page_count}
             if page_from is not None:
                 params["from"] = self._normalize_time(page_from)
-            if to_time is not None:
-                params["to"] = self._normalize_time(to_time)
+            if page_to is not None:
+                params["to"] = self._normalize_time(page_to)
             payload = await self._request(
                 "GET", f"/v3/instruments/{instrument}/candles", params=params
             )
@@ -247,20 +249,22 @@ class OandaClient:
                     continue
                 seen_times.add(candle.time)
                 filtered.append(candle)
-            if page_from is not None and filtered and filtered[0].time == page_from:
-                filtered = filtered[1:]
             if not filtered:
                 break
-            collected.extend(filtered)
+            if fetch_older:
+                collected = filtered + collected
+            else:
+                collected.extend(filtered)
             remaining -= len(filtered)
             if remaining <= 0:
                 break
-            if to_time is not None:
+            if fetch_older:
+                page_to = self._normalize_time(collected[0].time)
+            elif to_time is not None:
                 break
-            if page_from is not None and len(filtered) < page_count:
-                break
-            page_from = self._normalize_time(filtered[-1].time)
-        return collected[:count]
+            else:
+                page_from = self._normalize_time(filtered[-1].time)
+        return sorted(collected, key=lambda candle: candle.time)[-count:]
 
     async def get_prices(self, instruments: Sequence[str]) -> list[OandaPrice]:
         payload = await self._request(

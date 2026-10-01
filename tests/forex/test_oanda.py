@@ -4664,45 +4664,54 @@ async def test_oanda_client_supports_stop_take_profit_modify_and_cancel_orders()
 
 @pytest.mark.asyncio
 async def test_oanda_client_retries_transient_errors_and_pages_large_candle_requests() -> None:
-    page_calls: list[tuple[str, str | None]] = []
+    page_calls: list[tuple[str | None, str | None, str | None]] = []
+    first_page_start = datetime(2026, 9, 15, 10, 0, tzinfo=UTC)
+
+    def candle_payload(candle_time: datetime) -> dict:
+        return {
+            "time": candle_time.isoformat().replace("+00:00", ".000000000Z"),
+            "complete": True,
+            "volume": 42,
+            "mid": {
+                "o": "1.10000",
+                "h": "1.10100",
+                "l": "1.09900",
+                "c": "1.10050",
+            },
+        }
 
     async def handler(request: httpx.Request) -> httpx.Response:
-        page_calls.append((request.url.path, request.url.params.get("from")))
-        if request.url.path.endswith("/candles") and request.url.params.get("from") is None:
-            if len(page_calls) == 1:
-                return httpx.Response(429, headers={"Retry-After": "0"}, json={"errorCode": "RATE_LIMITED"})
-            return httpx.Response(
-                200,
-                json={
-                    "candles": [
-                        {
-                            "time": "2026-09-15T10:00:00.000000000Z",
-                            "complete": True,
-                            "volume": 42,
-                            "mid": {"o": "1.10000", "h": "1.10100", "l": "1.09900", "c": "1.10050"},
-                        },
-                        {
-                            "time": "2026-09-15T10:05:00.000000000Z",
-                            "complete": True,
-                            "volume": 42,
-                            "mid": {"o": "1.10050", "h": "1.10150", "l": "1.09950", "c": "1.10060"},
-                        },
-                    ]
-                },
+        page_calls.append(
+            (
+                request.url.params.get("from"),
+                request.url.params.get("to"),
+                request.url.params.get("count"),
             )
-        if request.url.path.endswith("/candles") and request.url.params.get("from") == "2026-09-15T10:05:00Z":
+        )
+        if request.url.path.endswith("/candles") and request.url.params.get("to") is None:
+            if request.url.params.get("from") is None and len(page_calls) == 1:
+                return httpx.Response(
+                    429,
+                    headers={"Retry-After": "0"},
+                    json={"errorCode": "RATE_LIMITED"},
+                )
             return httpx.Response(
                 200,
-                json={
-                    "candles": [
-                        {
-                            "time": "2026-09-15T10:10:00.000000000Z",
-                            "complete": True,
-                            "volume": 42,
-                            "mid": {"o": "1.10060", "h": "1.10160", "l": "1.09960", "c": "1.10070"},
-                        }
-                    ]
-                },
+                json={"candles": [
+                    candle_payload(first_page_start + timedelta(minutes=5 * index))
+                    for index in range(5000)
+                ]},
+            )
+        if (
+            request.url.path.endswith("/candles")
+            and request.url.params.get("to") == "2026-09-15T10:00:00Z"
+        ):
+            return httpx.Response(
+                200,
+                json={"candles": [
+                    candle_payload(first_page_start - timedelta(minutes=5)),
+                    candle_payload(first_page_start),
+                ]},
             )
         return httpx.Response(500, json={"errorCode": "SERVER_ERROR"})
 
@@ -4711,11 +4720,18 @@ async def test_oanda_client_retries_transient_errors_and_pages_large_candle_requ
         transport=httpx.MockTransport(handler),
     ) as http_client:
         async with OandaClient("ignored", "account", http_client=http_client) as client:
-            candles = await client.get_candles("EUR_USD", "M5", count=10000)
+            candles = await client.get_candles("EUR_USD", "M5", count=5001)
 
-    assert len(candles) == 3
-    assert page_calls[0][0].endswith("/candles")
-    assert page_calls[2][1] == "2026-09-15T10:05:00Z"
+    assert len(candles) == 5001
+    assert candles[0].time == (first_page_start - timedelta(minutes=5)).isoformat().replace(
+        "+00:00", ".000000000Z"
+    )
+    assert candles[-1].time == (first_page_start + timedelta(minutes=5 * 4999)).isoformat().replace(
+        "+00:00", ".000000000Z"
+    )
+    assert page_calls[0] == (None, None, "5000")
+    assert page_calls[1] == (None, None, "5000")
+    assert page_calls[2] == (None, "2026-09-15T10:00:00Z", "2")
 
 
 @pytest.mark.asyncio
