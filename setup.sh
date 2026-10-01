@@ -266,7 +266,10 @@ function config() {
         echo "Config already exists at user_data/config.json; keeping it unchanged."
         return 0
     fi
-    .venv/bin/python -m freqtrade.forex setup --userdir user_data --config user_data/config.json
+    if ! .venv/bin/python -m freqtrade.forex setup --userdir user_data --config user_data/config.json; then
+        echo "Failed to create the forex config skeleton."
+        return 1
+    fi
     echo "Start the API and open /setup to enter OANDA Practice credentials."
 }
 
@@ -291,7 +294,7 @@ function install_forex() {
     ${PYTHON} -m pip install --upgrade -r requirements.txt
     ${PYTHON} -m pip install --upgrade -r requirements-freqai.txt
     ${PYTHON} -m pip install --editable .
-    config
+    config || exit $?
 
     echo_block "Forex setup complete"
     echo "Start the API with: .venv/bin/python -m uvicorn freqtrade.forex.api:app --host 0.0.0.0 --port 8090"

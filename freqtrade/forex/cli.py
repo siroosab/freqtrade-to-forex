@@ -9,7 +9,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Sequence
+from typing import Callable, Sequence
 
 import pandas as pd
 import numpy as np
