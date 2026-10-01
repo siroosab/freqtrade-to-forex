@@ -58,7 +58,12 @@ def load_strategy(
 ) -> IStrategy:
     selected = next((item for item in discover_strategy_files() if item.name == strategy_name), None)
     if selected is None:
-        raise ValueError(f"Strategy class {strategy_name} is not available")
+        available = ", ".join(item.name for item in discover_strategy_files())
+        detail = f"Available classes: {available}" if available else "No strategy classes were discovered"
+        raise ValueError(
+            f"Strategy class {strategy_name} is not available. {detail}. "
+            "Place it in user_data/strategies or configure FOREX_STRATEGIES_DIR."
+        )
     module_name = f"freqtrade_uploaded_strategy_{hashlib.sha256(str(selected.path.resolve()).encode()).hexdigest()[:16]}"
     module = sys.modules.get(module_name)
     if module is None:
@@ -93,6 +98,8 @@ def load_strategy(
         strategy = strategy_class(config)
     except Exception as exc:
         raise ValueError(f"Strategy initialization failed: {exc}") from exc
+    if isinstance(config.get("freqai"), dict):
+        strategy.freqai_info = config["freqai"]
     for name, value in (parameter_values or {}).items():
         current = getattr(strategy, name, None)
         if hasattr(current, "value"):
@@ -188,3 +195,22 @@ class FreqtradeStrategyAdapter:
         latest = populated.iloc[-1]
         column = "exit_long" if direction is Signal.LONG else "exit_short"
         return bool(latest.get(column, False))
+
+
+class CachedFreqAIPredictions:
+    """Serve a fitted model's cached timestamp predictions to a strategy."""
+
+    def __init__(self, predictions: dict[int, dict[str, object]]) -> None:
+        self.predictions = predictions
+
+    def start(self, dataframe: pd.DataFrame, metadata: dict, strategy: IStrategy) -> pd.DataFrame:
+        result = dataframe.copy()
+        timestamps = [int(pd.Timestamp(value).value) for value in result["date"]]
+        rows = [self.predictions.get(timestamp, {}) for timestamp in timestamps]
+        prediction_columns = {
+            column for row in rows for column in row if column != "do_predict"
+        }
+        for column in prediction_columns:
+            result[column] = [row.get(column, pd.NA) for row in rows]
+        result["do_predict"] = [int(row.get("do_predict", 0)) for row in rows]
+        return result

@@ -182,7 +182,7 @@ export function BacktestAnalyticsPage() {
           </article>
           <article className="summary-card">
             <span>Config source</span>
-            <strong>{lastRunResult.aiParameters?.configSource ?? 'pair config'}</strong>
+            <strong>{String(lastRunResult.aiParameters?.configSource ?? 'pair config')}</strong>
           </article>
           <article className="summary-card">
             <span>Net P/L</span>
@@ -203,7 +203,7 @@ export function BacktestAnalyticsPage() {
         <section className="panel page-panel">
           <div className="panel-header compact"><div><p className="eyebrow">AI baseline</p><h3>Parameters used</h3></div></div>
           <div className="summary-grid">
-            {Object.entries(lastRunResult.aiParameters).map(([key, value]) => <article key={key} className="summary-card"><span>{key}</span><strong>{Array.isArray(value) ? value.join(', ') : value}</strong></article>)}
+            {Object.entries(lastRunResult.aiParameters).map(([key, value]) => <article key={key} className="summary-card"><span>{key}</span><strong>{typeof value === 'object' && value !== null ? JSON.stringify(value) : String(value ?? '—')}</strong></article>)}
           </div>
         </section>
       )}

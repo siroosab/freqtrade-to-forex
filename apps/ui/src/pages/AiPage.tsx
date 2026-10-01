@@ -1,9 +1,16 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
-import { getAiConfig, getAiHyperoptLossFunctions, getAiHyperoptReport, getAiHyperoptScheduler, getAiHyperoptStatus, getAiModelComparison, getAiReview, getAiSignals, getAiStatus, getAvailableStrategies, runAiHyperoptSchedulerNow, saveAiConfig, saveAiHyperoptScheduler, saveAiReview, startAiHyperopt, stopAiHyperopt, type AiConfig } from '../api/mockApi'
+import { clearAiResearchCache, getAiConfig, getAiHyperoptLossFunctions, getAiHyperoptReport, getAiHyperoptScheduler, getAiHyperoptStatus, getAiModelComparison, getAiReview, getAiSignals, getAiStatus, getAvailableStrategies, getBacktestJob, runAiHyperoptSchedulerNow, runBacktest, saveAiConfig, saveAiHyperoptScheduler, saveAiReview, startAiHyperopt, stopAiHyperopt, type AiConfig, type AiFreqaiModel, type BacktestRunResult } from '../api/mockApi'
 import { useUiStore } from '../store/useUiStore'
 
 const FEATURE_OPTIONS = ['trend', 'spread', 'session', 'volatility']
+const FREQAI_MODELS = ['LightGBMRegressor', 'LightGBMClassifier', 'ForexAIStrategyBaseline'] as const satisfies readonly AiFreqaiModel[]
+const TIMEFRAME_SECONDS: Record<string, number> = {
+  M1: 60, M5: 300, M15: 900, M30: 1800, H1: 3600, H2: 7200,
+  H4: 14400, H6: 21600, H8: 28800, H12: 43200, D1: 86400, W1: 604800, MN1: 2592000,
+}
+const MAX_RESEARCH_CANDLES = 50000
+const MAX_BASELINE_CANDLES = 10000
 
 export function AiPage() {
   const availablePairs = useUiStore((state) => state.selectedInstruments)
@@ -14,6 +21,7 @@ export function AiPage() {
   }, [availablePairs])
   const [selectedTimeframe, setSelectedTimeframe] = useState<AiConfig['timeframe']>('M5')
   const [selectedStrategyClass, setSelectedStrategyClass] = useState('ForexAIStrategyBaseline')
+  const [selectedFreqaiModel, setSelectedFreqaiModel] = useState<AiFreqaiModel>('LightGBMRegressor')
   const [historyMode, setHistoryMode] = useState<'candles' | 'days'>('candles')
   const [historyValue, setHistoryValue] = useState(250)
   const [attempts, setAttempts] = useState(24)
@@ -22,6 +30,12 @@ export function AiPage() {
   const [schedulerScopes, setSchedulerScopes] = useState<Record<string, { strategyClass: string; timeframe: string }>>({})
   const [schedulerIntervalDays, setSchedulerIntervalDays] = useState(2)
   const [schedulerGapMinutes, setSchedulerGapMinutes] = useState(120)
+  const [schedulerFreqaiModel, setSchedulerFreqaiModel] = useState<AiFreqaiModel>('LightGBMRegressor')
+  const [schedulerRunResult, setSchedulerRunResult] = useState<Awaited<ReturnType<typeof runAiHyperoptSchedulerNow>> | null>(null)
+  const [backtestJobId, setBacktestJobId] = useState<string | null>(null)
+  const [backtestMessage, setBacktestMessage] = useState<string | null>(null)
+  const [backtestResult, setBacktestResult] = useState<BacktestRunResult | null>(null)
+  const [cacheClearContext, setCacheClearContext] = useState<'backtest' | 'hyperopt' | null>(null)
   const [featureSet, setFeatureSet] = useState<string[]>(FEATURE_OPTIONS)
   const [freqaiForm, setFreqaiForm] = useState({
     trainPeriodDays: '30',
@@ -50,11 +64,24 @@ export function AiPage() {
   const hyperoptLossFunctionsQuery = useQuery({ queryKey: ['ai-hyperopt-loss-functions'], queryFn: getAiHyperoptLossFunctions, staleTime: Infinity })
   const schedulerQuery = useQuery({ queryKey: ['ai-hyperopt-scheduler'], queryFn: () => getAiHyperoptScheduler(), refetchInterval: 10000 })
   const hyperoptStatusQuery = useQuery({
-    queryKey: ['ai-hyperopt-status', selectedPair, selectedStrategyClass, selectedTimeframe],
-    queryFn: () => getAiHyperoptStatus(selectedPair, selectedStrategyClass, selectedTimeframe),
+    queryKey: ['ai-hyperopt-status', selectedPair, selectedStrategyClass, selectedTimeframe, selectedFreqaiModel],
+    queryFn: () => getAiHyperoptStatus(selectedPair, selectedStrategyClass, selectedTimeframe, selectedFreqaiModel),
     refetchInterval: (query) => (query.state.data?.status === 'running' ? 1000 : false),
   })
-  const hyperoptReportQuery = useQuery({ queryKey: ['ai-hyperopt-report', selectedPair, selectedStrategyClass, selectedTimeframe], queryFn: () => getAiHyperoptReport(selectedPair, selectedStrategyClass, selectedTimeframe) })
+  const hyperoptReportQuery = useQuery({
+    queryKey: ['ai-hyperopt-report', selectedPair, selectedStrategyClass, selectedTimeframe, selectedFreqaiModel],
+    queryFn: () => getAiHyperoptReport(selectedPair, selectedStrategyClass, selectedTimeframe, selectedFreqaiModel),
+  })
+  const backtestJobQuery = useQuery({
+    queryKey: ['ai-backtest-job', backtestJobId],
+    queryFn: () => getBacktestJob(backtestJobId ?? ''),
+    enabled: Boolean(backtestJobId),
+    refetchInterval: (query) => (
+      query.state.data?.status === 'completed' || query.state.data?.status === 'failed'
+        ? false
+        : 1000
+    ),
+  })
   const [hyperoptWarning, setHyperoptWarning] = useState<string | null>(null)
   const startHyperoptMutation = useMutation({
     mutationFn: startAiHyperopt,
@@ -67,22 +94,61 @@ export function AiPage() {
     mutationFn: () => stopAiHyperopt(selectedPair, selectedStrategyClass, selectedTimeframe),
     onSuccess: () => { void hyperoptStatusQuery.refetch() },
   })
-  const schedulerMutation = useMutation({ mutationFn: saveAiHyperoptScheduler, onSuccess: (data) => { setSchedulerPairs(data.pairs); setSchedulerIntervalDays(data.intervalDays); setSchedulerGapMinutes(data.gapMinutes); void schedulerQuery.refetch() } })
+  const schedulerMutation = useMutation({ mutationFn: saveAiHyperoptScheduler, onSuccess: (data) => { setSchedulerPairs(data.pairs); setSchedulerIntervalDays(data.intervalDays); setSchedulerGapMinutes(data.gapMinutes); setSchedulerFreqaiModel(data.freqaimodel); void schedulerQuery.refetch() } })
   const schedulerRunMutation = useMutation({
     mutationFn: runAiHyperoptSchedulerNow,
     onSuccess: (data) => {
+      setSchedulerRunResult(data)
       if (data.warnings?.length) setHyperoptWarning(data.warnings[0])
       void schedulerQuery.refetch()
     },
   })
+  const backtestMutation = useMutation({
+    mutationFn: runBacktest,
+    onSuccess: (job) => {
+      setBacktestJobId(job.id)
+      setBacktestMessage(job.message)
+      setBacktestResult(job)
+    },
+    onError: (error) => setBacktestMessage(error.message),
+  })
+  const cacheClearMutation = useMutation({ mutationFn: clearAiResearchCache })
   const isHyperoptRunning = hyperoptStatusQuery.data?.status === 'running'
+  const isBacktestRunning = Boolean(
+    backtestJobId
+    && backtestResult?.status !== 'completed'
+    && backtestResult?.status !== 'failed',
+  )
+  const isResearchBusy = backtestMutation.isPending || isBacktestRunning
+    || startHyperoptMutation.isPending || isHyperoptRunning || cacheClearMutation.isPending
+  const completedBacktest = backtestResult?.result
+    ?? (backtestResult?.status === 'completed' ? backtestResult : null)
+  const backtestSummary = completedBacktest?.summary
+  const selectedSeconds = TIMEFRAME_SECONDS[selectedTimeframe] ?? 300
+  const maximumResearchCandles = selectedFreqaiModel === 'ForexAIStrategyBaseline'
+    ? MAX_BASELINE_CANDLES
+    : MAX_RESEARCH_CANDLES
+  const configuredPeriods = freqaiForm.indicatorPeriodsCandles
+    .split(',')
+    .map((value) => Number(value.trim()))
+    .filter((value) => Number.isFinite(value) && value > 0)
+  const minimumModelHistory = selectedFreqaiModel === 'ForexAIStrategyBaseline'
+    ? 30
+    : Math.ceil(
+      ((Number(freqaiForm.trainPeriodDays) || 30)
+        + (Number(freqaiForm.backtestPeriodDays) || 7))
+        * 86400 / selectedSeconds,
+    )
+      + 40 + (Number(freqaiForm.labelPeriodCandles) || 2)
+      + (configuredPeriods.length ? Math.max(...configuredPeriods) : 14)
+      + (Number(freqaiForm.includeShiftedCandles) || 0)
   useEffect(() => {
     if (!schedulerQuery.data) return
     setSchedulerPairs((current) => {
-      const validCurrent = current.filter((pair) => schedulerQuery.data.approvedPairs.includes(pair))
+      const validCurrent = current.filter((pair) => schedulerQuery.data.approvedScopes[pair]?.length)
       if (validCurrent.length) return validCurrent
-      const saved = schedulerQuery.data.pairs.filter((pair) => schedulerQuery.data.approvedPairs.includes(pair))
-      return saved.length ? saved : schedulerQuery.data.approvedPairs.slice(0, 2)
+      const saved = schedulerQuery.data.pairs.filter((pair) => schedulerQuery.data.approvedScopes[pair]?.length)
+      return saved.length ? saved : Object.keys(schedulerQuery.data.approvedScopes).slice(0, 2)
     })
     setSchedulerScopes((current) => Object.fromEntries(
       Object.entries(schedulerQuery.data.approvedScopes).map(([pair, scopes]) => {
@@ -97,7 +163,20 @@ export function AiPage() {
     ))
     setSchedulerIntervalDays(schedulerQuery.data.intervalDays)
     setSchedulerGapMinutes(schedulerQuery.data.gapMinutes)
+    setSchedulerFreqaiModel(
+      schedulerQuery.data.freqaimodel || 'LightGBMRegressor',
+    )
   }, [schedulerQuery.data])
+  useEffect(() => {
+    const job = backtestJobQuery.data
+    if (!job) return
+    setBacktestResult((current) => ({ ...current, ...job, ...(job.result ?? {}) }))
+    setBacktestMessage(job.message)
+    if (job.status === 'completed') {
+      void statusQuery.refetch()
+      void comparisonQuery.refetch()
+    }
+  }, [backtestJobQuery.data])
   useEffect(() => {
     if (hyperoptStatusQuery.data?.status === 'completed' || hyperoptStatusQuery.data?.status === 'stopped') {
       void hyperoptReportQuery.refetch()
@@ -161,8 +240,71 @@ export function AiPage() {
 
   const toggleFeature = (feature: string) => setFeatureSet((current) => (current.includes(feature) ? current.filter((item) => item !== feature) : [...current, feature]))
 
-  const handleHyperopt = () => startHyperoptMutation.mutate({ pair: selectedPair, timeframe: selectedTimeframe, strategyClass: selectedStrategyClass, steps: historyMode === 'candles' ? historyValue : 250, historyMode, historyValue, attempts, hyperoptLoss })
+  const resolveResearchHistory = () => {
+    const requestedCandles = historyMode === 'days'
+      ? Math.ceil((historyValue * 86400) / selectedSeconds)
+      : historyValue
+    const effectiveCandles = Math.max(requestedCandles, minimumModelHistory, 30)
+    if (effectiveCandles > maximumResearchCandles) {
+      return { error: `This research window needs ${effectiveCandles.toLocaleString()} candles, above the ${maximumResearchCandles.toLocaleString()}-candle limit for ${selectedFreqaiModel}. Reduce the requested history or use a larger timeframe.` }
+    }
+    if (effectiveCandles > requestedCandles) {
+      setHistoryMode('candles')
+      setHistoryValue(effectiveCandles)
+      setHyperoptWarning(
+        `History raised to ${effectiveCandles.toLocaleString()} candles to cover FreqAI training, validation and OOS windows.`,
+      )
+    }
+    return {
+      steps: effectiveCandles,
+      historyMode: 'candles' as const,
+      historyValue: effectiveCandles,
+    }
+  }
+
+  const handleHyperopt = () => {
+    const history = resolveResearchHistory()
+    if ('error' in history) {
+      setHyperoptWarning(history.error ?? 'FreqAI history settings exceed the supported data range.')
+      return
+    }
+    startHyperoptMutation.mutate({
+      pair: selectedPair,
+      timeframe: selectedTimeframe,
+      strategyClass: selectedStrategyClass,
+      freqaimodel: selectedFreqaiModel,
+      ...history,
+      attempts,
+      hyperoptLoss,
+    })
+  }
   const handleStopHyperopt = () => stopHyperoptMutation.mutate()
+  const handleBacktest = () => {
+    const history = resolveResearchHistory()
+    if ('error' in history) {
+      setBacktestMessage(history.error ?? 'FreqAI history settings exceed the supported data range.')
+      return
+    }
+    setBacktestMessage(null)
+    setBacktestResult(null)
+    setBacktestJobId(null)
+    backtestMutation.mutate({
+      pair: selectedPair,
+      timeframe: selectedTimeframe,
+      strategyClass: selectedStrategyClass,
+      freqaimodel: selectedFreqaiModel,
+      ...history,
+    })
+  }
+  const handleClearResearchCaches = (context: 'backtest' | 'hyperopt') => {
+    const confirmed = window.confirm(
+      `Clear downloaded candles for ${selectedPair} (${selectedTimeframe}) and all cached AI models for this pair? Hyperopt reports will be kept.`,
+    )
+    if (!confirmed) return
+    setCacheClearContext(context)
+    cacheClearMutation.reset()
+    cacheClearMutation.mutate({ pair: selectedPair, timeframe: selectedTimeframe, candles: true, models: true })
+  }
   const toggleSchedulerPair = (pair: string) => setSchedulerPairs((current) => current.includes(pair) ? current.filter((item) => item !== pair) : [...current, pair])
   const saveScheduler = (enabled: boolean) => {
     const pairStrategies = Object.fromEntries(schedulerPairs.map((pair) => [pair, schedulerScopes[pair]?.strategyClass]).filter((entry): entry is [string, string] => Boolean(entry[1])))
@@ -174,6 +316,7 @@ export function AiPage() {
       gapMinutes: schedulerGapMinutes,
       pairs: schedulerPairs,
       strategyClass: firstScope?.strategyClass ?? 'ForexAIStrategyBaseline',
+      freqaimodel: schedulerFreqaiModel,
       timeframe: firstScope?.timeframe ?? 'M5',
       pairStrategies,
       pairTimeframes,
@@ -258,11 +401,72 @@ export function AiPage() {
             {signalsQuery.data && <div className="strategy-table-wrap ai-signal-trace-scroll"><table className="positions-table"><thead><tr><th>Time</th><th>Signal</th><th>Reason</th><th>Strength</th><th>Spread</th><th>Volatility</th><th>ATR</th><th>Session</th></tr></thead><tbody>{signalsQuery.data.signals.slice(-10).reverse().map((signal, index) => <tr key={`${signal.time ?? 'signal'}-${index}`} className={signal.signal === 'long' ? 'row-profit' : signal.signal === 'short' ? 'row-loss' : undefined}><td>{signal.time ? new Date(signal.time).toLocaleString() : '-'}</td><td className={signal.signal === 'long' ? 'long' : signal.signal === 'short' ? 'short' : undefined}>{signal.signal}</td><td>{signal.reason}</td><td>{signal.signalStrength?.toFixed(3) ?? '-'}</td><td>{signal.spreadPct?.toFixed(5) ?? '-'}</td><td>{signal.volatility?.toFixed(5) ?? '-'}</td><td>{signal.atr?.toFixed(5) ?? '-'}</td><td>{signal.sessionHour ?? '-'}</td></tr>)}</tbody></table></div>}
           </div>
 
-          <div className="panel">
-            <div className="panel-header compact"><div><p className="eyebrow">Automation</p><h3>Scheduled Hyperopt</h3></div><span className="pill neutral">sequential queue</span></div>
+          <div className="panel ai-research-panel ai-backtest-panel">
+            <div className="panel-header compact">
+              <div><p className="eyebrow">Research · 01</p><h3>Backtest</h3></div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                <button className="secondary-action" onClick={() => handleClearResearchCaches('backtest')} disabled={isResearchBusy}>Clear caches</button>
+                <button className="primary-action" onClick={handleBacktest} disabled={isResearchBusy}>
+                  {backtestMutation.isPending || isBacktestRunning ? 'Backtest running…' : 'Run backtest'}
+                </button>
+              </div>
+            </div>
+            <div className="ai-run-scope">
+              <span>{selectedPair}</span><span>{selectedTimeframe}</span>
+              <span>{selectedStrategyClass}</span><span>{selectedFreqaiModel}</span>
+            </div>
+            {cacheClearContext === 'backtest' && cacheClearMutation.data && <p className="ai-job-message" aria-live="polite">Cleared {cacheClearMutation.data.candleItemsRemoved} candle cache item(s) and {cacheClearMutation.data.modelFilesRemoved} cached AI model file(s) for {cacheClearMutation.data.pair}. Hyperopt reports were kept.</p>}
+            {cacheClearContext === 'backtest' && cacheClearMutation.error && <p className="ai-error-message" aria-live="polite">Cache clear failed: {cacheClearMutation.error.message}</p>}
+            {backtestMessage && <p className="ai-job-message" aria-live="polite">{backtestMessage}</p>}
+            {isBacktestRunning && (
+              <div className="progress-stack ai-job-progress" aria-live="polite">
+                <div><span>History</span><strong>{backtestJobQuery.data?.historyProgress ?? 0}%</strong></div>
+                <progress max="100" value={backtestJobQuery.data?.historyProgress ?? 0} />
+                <div><span>OOS backtest</span><strong>{backtestJobQuery.data?.backtestProgress ?? 0}%</strong></div>
+                <progress max="100" value={backtestJobQuery.data?.backtestProgress ?? 0} />
+                <small>{backtestJobQuery.data?.phase ?? backtestResult?.phase ?? 'queued'}</small>
+              </div>
+            )}
+            {completedBacktest && (
+              <>
+                <div className="ai-backtest-metrics">
+                  <div><span>Net P/L</span><strong>{completedBacktest.netPl ?? '0'}</strong></div>
+                  <div><span>Trades / win rate</span><strong>{completedBacktest.trades ?? 0} / {completedBacktest.winRate ?? '0'}%</strong></div>
+                  <div><span>Max drawdown</span><strong>{completedBacktest.maxDrawdown ?? '0'}%</strong></div>
+                  <div><span>Model</span><strong>{completedBacktest.aiParameters?.freqaimodel ?? selectedFreqaiModel}</strong></div>
+                </div>
+                <div className="bullet-list ai-backtest-details">
+                  <div><span>Window / strategy</span><strong>{completedBacktest.backtestWindow ?? 'backtest'} · {completedBacktest.strategy ?? selectedStrategyClass}</strong></div>
+                  <div><span>Model state</span><strong>{completedBacktest.aiParameters?.modelReused === true ? 'trained model reused' : completedBacktest.aiParameters?.modelReused === false ? 'model trained for this run' : 'reported by backend'}</strong></div>
+                  {completedBacktest.warning && <div><span>Data notice</span><strong>{completedBacktest.warning}</strong></div>}
+                </div>
+                {backtestSummary && (
+                  <div className="strategy-table-wrap ai-backtest-table-wrap">
+                    <table className="positions-table ai-backtest-table">
+                      <thead><tr><th>Metric</th><th>Result</th></tr></thead>
+                      <tbody>
+                        <tr><td>Wins / draws / losses</td><td>{String(backtestSummary.wins ?? 0)} / {String(backtestSummary.draws ?? 0)} / {String(backtestSummary.losses ?? 0)}</td></tr>
+                        <tr><td>Average P/L per trade ({String(backtestSummary.accountCurrency ?? 'account currency')})</td><td>{String(backtestSummary.averageProfitPerTrade ?? '—')}</td></tr>
+                        <tr><td>Gross profit / loss ({String(backtestSummary.accountCurrency ?? 'account currency')})</td><td>{String(backtestSummary.grossProfit ?? '—')} / {String(backtestSummary.grossLoss ?? '—')}</td></tr>
+                        <tr><td>Profit factor</td><td>{backtestSummary.profitFactor == null ? 'n/a' : String(backtestSummary.profitFactor)}</td></tr>
+                        <tr><td>Costs / average duration</td><td>{String(backtestSummary.totalCosts ?? '—')} {String(backtestSummary.accountCurrency ?? '')} / {String(backtestSummary.averageDurationMinutes ?? '—')} min</td></tr>
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </>
+            )}
+            {backtestResult?.status === 'failed' && <p className="ai-error-message">Backtest failed: {backtestResult.message}</p>}
+          </div>
+
+          <div className="panel ai-research-panel ai-auto-hyperopt-panel">
+            <div className="panel-header compact"><div><p className="eyebrow">03 · Automatic Hyperopt</p><h3>Scheduled Hyperopt</h3></div><span className="pill neutral">sequential queue</span></div>
             <p>Each queued pair runs its own approved strategy and timeframe.</p>
             <div className="strategy-stack">
-              {(availablePairs.length ? availablePairs : ['EUR/USD', 'GBP/USD', 'USD/JPY']).map((pair) => {
+              {[...new Set([
+                ...(availablePairs.length ? availablePairs : ['EUR/USD', 'GBP/USD', 'USD/JPY']),
+                ...Object.keys(schedulerQuery.data?.approvedScopes ?? {}),
+              ])].map((pair) => {
                 const scopes = schedulerQuery.data?.approvedScopes[pair] ?? []
                 const selectedScope = schedulerScopes[pair]
                 const scopeValue = selectedScope ? `${selectedScope.strategyClass}|${selectedScope.timeframe}` : ''
@@ -280,22 +484,31 @@ export function AiPage() {
               })}
             </div>
             <div className="settings-grid" style={{ marginTop: '16px' }}><label className="field-block"><span>Repeat every (days)</span><input type="number" min="1" max="30" value={schedulerIntervalDays ?? 2} onChange={(event) => setSchedulerIntervalDays(Number(event.target.value) || 2)} /></label><label className="field-block"><span>Gap between pairs (minutes)</span><input type="number" min="1" max="1440" value={schedulerGapMinutes ?? 120} onChange={(event) => setSchedulerGapMinutes(Number(event.target.value) || 120)} /></label></div>
+            <label className="field-block ai-model-select"><span>FreqAI model</span><select value={schedulerFreqaiModel} onChange={(event) => setSchedulerFreqaiModel(event.target.value as AiFreqaiModel)}>{FREQAI_MODELS.map((model) => <option key={model} value={model}>{model}</option>)}</select></label>
             <div className="summary-grid" style={{ marginTop: '14px' }}><button className="primary-action" onClick={() => saveScheduler(true)} disabled={schedulerMutation.isPending || schedulerPairs.length === 0}>{schedulerMutation.isPending ? 'Saving…' : 'Enable automatic mode'}</button><button className="secondary-action" onClick={() => saveScheduler(false)} disabled={schedulerMutation.isPending}>Disable</button><button className="secondary-action" onClick={() => schedulerRunMutation.mutate()} disabled={schedulerRunMutation.isPending || schedulerPairs.length === 0}>Run now</button></div>
-            {schedulerQuery.data && <div className="bullet-list"><div><span>Status</span><strong>{schedulerQuery.data.enabled ? 'enabled' : 'disabled'}{schedulerQuery.data.running ? ' • running' : ''}</strong></div><div><span>Approved pairs</span><strong>{schedulerQuery.data.approvedPairs.join(' • ') || 'none'}</strong></div>{Object.entries(schedulerQuery.data.nextRuns ?? {}).map(([pair, scheduledAt]) => <div key={pair}><span>Next {pair}</span><strong>{new Date(scheduledAt).toLocaleString()}</strong></div>)}</div>}
+            {schedulerQuery.data && <div className="bullet-list"><div><span>Status</span><strong>{schedulerQuery.data.enabled ? 'enabled' : 'disabled'}{schedulerQuery.data.running ? ' • running' : ''}</strong></div><div><span>FreqAI model</span><strong>{schedulerQuery.data.freqaimodel ?? schedulerFreqaiModel}</strong></div><div><span>Scheduled scopes</span><strong>{schedulerPairs.map((pair) => `${pair} (${schedulerScopes[pair]?.strategyClass ?? 'unselected'} · ${schedulerScopes[pair]?.timeframe ?? '-'})`).join(' • ') || 'none'}</strong></div>{Object.entries(schedulerQuery.data.nextRuns ?? {}).map(([pair, scheduledAt]) => <div key={pair}><span>Next {pair}</span><strong>{new Date(scheduledAt).toLocaleString()}</strong></div>)}{schedulerQuery.data.lastError && <div><span>Last scheduler error</span><strong>{schedulerQuery.data.lastError}</strong></div>}</div>}
+            {schedulerRunResult && <div className="auto-run-results" aria-live="polite"><strong>Latest queue run · {schedulerRunResult.status}</strong>{schedulerRunResult.jobs?.map((job) => <div key={job.pair}><span>{job.pair}</span><span className={`pill ${job.status === 'completed' ? 'positive' : job.status === 'failed' ? 'negative' : 'neutral'}`}>{job.status}</span>{job.freqaimodel && <span>{job.freqaimodel}</span>}{job.warning && <small>{job.warning}</small>}</div>)}</div>}
             {schedulerMutation.error && <p>Scheduler update failed: {schedulerMutation.error.message}</p>}
             {schedulerRunMutation.error && <p>Scheduler run failed: {schedulerRunMutation.error.message}</p>}
           </div>
 
-          <div className="panel">
-            <div className="panel-header compact"><div><p className="eyebrow">Optimization</p><h3>AI hyperopt</h3></div><div style={{ display: 'flex', gap: '8px' }}><button className="primary-action" onClick={handleHyperopt} disabled={startHyperoptMutation.isPending || isHyperoptRunning}>{isHyperoptRunning ? 'Running…' : 'Run hyperopt'}</button><button className="secondary-action" onClick={handleStopHyperopt} disabled={!isHyperoptRunning || stopHyperoptMutation.isPending}>{stopHyperoptMutation.isPending ? 'Stopping…' : 'Stop'}</button></div></div>
+          <div className="panel ai-research-panel ai-manual-hyperopt-panel">
+            <div className="panel-header compact"><div><p className="eyebrow">02 · Manual Hyperopt</p><h3>Optimize strategy parameters</h3></div><div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}><button className="secondary-action" onClick={() => handleClearResearchCaches('hyperopt')} disabled={isResearchBusy}>Clear caches</button><button className="primary-action" onClick={handleHyperopt} disabled={isResearchBusy}>{isHyperoptRunning ? 'Running…' : 'Run hyperopt'}</button><button className="secondary-action" onClick={handleStopHyperopt} disabled={!isHyperoptRunning || stopHyperoptMutation.isPending}>{stopHyperoptMutation.isPending ? 'Stopping…' : 'Stop'}</button></div></div>
+            {cacheClearContext === 'hyperopt' && cacheClearMutation.data && <p className="ai-job-message" aria-live="polite">Cleared {cacheClearMutation.data.candleItemsRemoved} candle cache item(s) and {cacheClearMutation.data.modelFilesRemoved} cached AI model file(s) for {cacheClearMutation.data.pair}. Hyperopt reports were kept.</p>}
+            {cacheClearContext === 'hyperopt' && cacheClearMutation.error && <p className="ai-error-message" aria-live="polite">Cache clear failed: {cacheClearMutation.error.message}</p>}
             <div className="settings-grid">
               <label className="field-block"><span>Pair</span><select value={selectedPair} onChange={(event) => setSelectedPair(event.target.value)}>{(availablePairs.length ? availablePairs : ['EUR/USD', 'GBP/USD', 'USD/JPY']).map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
               <label className="field-block"><span>Strategy timeframe</span><select value={selectedTimeframe} onChange={(event) => setSelectedTimeframe(event.target.value as AiConfig['timeframe'])}>{['M1', 'M5', 'M15', 'M30', 'H1', 'H2', 'H4', 'H6', 'H8', 'H12', 'D1', 'W1', 'MN1'].map((item) => <option key={item}>{item}</option>)}</select></label>
               <label className="field-block"><span>History unit</span><select value={historyMode} onChange={(event) => setHistoryMode(event.target.value as 'candles' | 'days')}><option value="candles">Candles</option><option value="days">Days</option></select></label>
-              <label className="field-block"><span>History value</span><input type="number" min="1" max={historyMode === 'candles' ? 10000 : 30} value={historyValue} onChange={(event) => setHistoryValue(Number(event.target.value) || 1)} /></label>
+              <label className="field-block"><span>History value</span><input type="number" min="1" max={historyMode === 'candles' ? MAX_RESEARCH_CANDLES : 365} value={historyValue} onChange={(event) => setHistoryValue(Number(event.target.value) || 1)} /></label>
+                            <label className="field-block"><span>History value</span><input type="number" min="1" max={historyMode === 'candles' ? maximumResearchCandles : Math.max(1, Math.floor(maximumResearchCandles * selectedSeconds / 86400))} value={historyValue} onChange={(event) => setHistoryValue(Number(event.target.value) || 1)} /></label>
               <label className="field-block"><span>Attempts</span><input type="number" min="1" max="900" value={attempts} onChange={(event) => setAttempts(Number(event.target.value) || 24)} /></label>
               <label className="field-block"><span>Hyperopt loss</span><select value={hyperoptLoss} onChange={(event) => setHyperoptLoss(event.target.value)} disabled={hyperoptLossFunctionsQuery.isLoading}><option value="">{hyperoptLossFunctionsQuery.isLoading ? 'Loading loss functions…' : 'Select loss function'}</option>{hyperoptLossFunctionsQuery.data?.options.map((loss) => <option key={loss} value={loss}>{loss}</option>)}</select></label>
             </div>
+            {selectedFreqaiModel !== 'ForexAIStrategyBaseline' && <p className="ai-history-hint">Minimum for this FreqAI setup: {minimumModelHistory.toLocaleString()} candles. Smaller requests are raised automatically; the API limit is {MAX_RESEARCH_CANDLES.toLocaleString()}.</p>}
+                        <p className="ai-history-hint">Maximum for {selectedFreqaiModel}: {maximumResearchCandles.toLocaleString()} candles.{selectedFreqaiModel !== 'ForexAIStrategyBaseline' && ` Minimum for this FreqAI setup: ${minimumModelHistory.toLocaleString()} candles; smaller requests are raised automatically.`}</p>
+                        {schedulerQuery.data && <div className="bullet-list"><div><span>Status</span><strong>{schedulerQuery.data.enabled ? 'enabled' : 'disabled'}{schedulerQuery.data.running ? ' • running' : ''}</strong></div><div><span>FreqAI model</span><strong>{schedulerQuery.data.freqaimodel ?? schedulerFreqaiModel}</strong></div><div><span>Scheduled scopes</span><strong>{schedulerPairs.map((pair) => `${pair} (${schedulerScopes[pair]?.strategyClass ?? 'unselected'} · ${schedulerScopes[pair]?.timeframe ?? '-'})`).join(' • ') || 'none'}</strong></div>{Object.entries(schedulerQuery.data.nextRuns ?? {}).map(([pair, scheduledAt]) => <div key={pair}><span>Next {pair}</span><strong>{new Date(scheduledAt).toLocaleString()}</strong></div>)}{schedulerQuery.data.lastError && <div><span>Last scheduler error</span><strong>{schedulerQuery.data.lastError}</strong></div>}</div>}
+            <label className="field-block ai-model-select"><span>FreqAI model</span><select value={selectedFreqaiModel} onChange={(event) => setSelectedFreqaiModel(event.target.value as AiFreqaiModel)}>{FREQAI_MODELS.map((model) => <option key={model} value={model}>{model}</option>)}</select></label>
             <label className="field-block" style={{ marginTop: '12px' }}><span>Strategy class</span><select value={selectedStrategyClass} onChange={(event) => setSelectedStrategyClass(event.target.value)} disabled={strategiesQuery.isLoading || !strategiesQuery.data?.length}>{strategiesQuery.data?.map((strategy) => <option key={strategy.name} value={strategy.name}>{strategy.name}</option>)}</select></label>
             <div className="panel-header compact"><span>Configured strategy timeframe: <strong>{aiConfigQuery.data?.timeframe ?? 'M5'}</strong></span><button className="secondary-action" onClick={handleTimeframeApply} disabled={timeframeMutation.isPending || selectedTimeframe === aiConfigQuery.data?.timeframe}>{timeframeMutation.isPending ? 'Applying…' : 'Apply timeframe'}</button></div>
 
@@ -311,7 +524,7 @@ export function AiPage() {
               <>
                 <p>
                   {isHyperoptRunning
-                    ? `Running… attempt ${hyperoptStatusQuery.data.attemptsCompleted} of ${hyperoptStatusQuery.data.attemptsTotal || '?'}`
+                    ? `${hyperoptStatusQuery.data.phase ?? 'Running'} · attempt ${hyperoptStatusQuery.data.attemptsCompleted} of ${hyperoptStatusQuery.data.attemptsTotal || '?'}`
                     : `Hyperopt failed: ${hyperoptStatusQuery.data.error ?? 'unknown error'}`}
                 </p>
                 {isHyperoptRunning && hyperoptStatusQuery.data.attemptsTotal > 0 && (
@@ -327,11 +540,13 @@ export function AiPage() {
                   <span className="pill neutral">{hyperoptReportQuery.data.ageDays === 0 ? 'today' : `${hyperoptReportQuery.data.ageDays} day(s) ago`}</span>
                 </div>
                 <div className="bullet-list">
+                  <div><span>FreqAI model</span><strong>{hyperoptReportQuery.data.report.freqaimodel ?? 'ForexAIStrategyBaseline'}{hyperoptReportQuery.data.report.modelReused === true ? ' · reused' : hyperoptReportQuery.data.report.modelReused === false ? ' · trained' : ''}</strong></div>
                   <div><span>Loss function</span><strong>{hyperoptReportQuery.data.report.hyperoptLoss ?? hyperoptLoss}</strong></div>
                   <div><span>Best parameters</span><strong>{Object.entries(hyperoptReportQuery.data.report.bestParameters ?? {}).map(([key, value]) => `${key}=${value}`).join(' • ') || 'not available'}</strong></div>
                   <div><span>Train</span><strong>{hyperoptReportQuery.data.report.train.netPl} / DD {hyperoptReportQuery.data.report.train.drawdown} / {hyperoptReportQuery.data.report.train.trades} trades</strong></div>
                   <div><span>Validation</span><strong>{hyperoptReportQuery.data.report.validation.netPl} / DD {hyperoptReportQuery.data.report.validation.drawdown} / {hyperoptReportQuery.data.report.validation.trades} trades</strong></div>
                   <div><span>Objective</span><strong>{hyperoptReportQuery.data.report.objective}</strong></div>
+                  {hyperoptReportQuery.data.report.modelTraining && <div><span>Model training metrics</span><strong className="ai-metrics-json">{JSON.stringify(hyperoptReportQuery.data.report.modelTraining)}</strong></div>}
                 </div>
                 <pre className="hyperopt-report">{hyperoptReportQuery.data.report.reportText}</pre>
                 <div className="strategy-table-wrap" style={{ marginTop: '18px' }}>

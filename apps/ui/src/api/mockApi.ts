@@ -36,6 +36,8 @@ export type AiFreqaiConfig = {
   featureParameters: AiFreqaiFeatureParameters
 }
 
+export type AiFreqaiModel = 'ForexAIStrategyBaseline' | 'LightGBMRegressor' | 'LightGBMClassifier'
+
 export type AiConfig = {
   configRevision?: string
   updatedAt?: string
@@ -125,6 +127,11 @@ export type AiHyperoptReport = {
   status: string
   strategy: string
   strategyClass?: string
+  freqaimodel?: AiFreqaiModel
+  modelReused?: boolean | null
+  modelTraining?: Record<string, unknown> | null
+  trainingContext?: Record<string, unknown> | null
+  trainingContextHash?: string
   dataSource: string
   dataRevision: string
   dataHash: string
@@ -140,7 +147,7 @@ export type AiHyperoptReport = {
   historyValue?: number
   trainCandles: number
   validationCandles: number
-  bestParameters: Record<string, string>
+  bestParameters: Record<string, string | number | boolean>
   objective: string
   train: { netPl: string; drawdown: string; trades: number }
   validation: { netPl: string; drawdown: string; trades: number }
@@ -152,6 +159,8 @@ export type AiHyperoptStatus = {
   pair: string
   timeframe?: string
   strategyClass?: string
+  freqaimodel?: string
+  phase?: string
   status: 'idle' | 'running' | 'completed' | 'stopped' | 'failed'
   attemptsCompleted: number
   attemptsTotal: number
@@ -161,7 +170,7 @@ export type AiHyperoptStatus = {
   hasLastReport?: boolean
 }
 
-export async function startAiHyperopt(payload: { pair: string; timeframe: string; strategyClass?: string; steps: number; attempts: number; historyMode?: 'candles' | 'days'; historyValue?: number; resetPrevious?: boolean; hyperoptLoss?: string }): Promise<{ pair: string; status: string; attemptsTotal: number; warning?: string }> {
+export async function startAiHyperopt(payload: { pair: string; timeframe: string; strategyClass?: string; freqaimodel?: AiFreqaiModel; steps: number; attempts: number; historyMode?: 'candles' | 'days'; historyValue?: number; resetPrevious?: boolean; hyperoptLoss?: string }): Promise<{ pair: string; status: string; freqaimodel?: AiFreqaiModel; attemptsTotal: number; warning?: string }> {
   const response = await fetch(buildApiUrl('/api/v1/ai/hyperopt/start'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-User-Role': 'operator', 'X-CSRF-Token': 'ai-hyperopt' },
@@ -177,13 +186,14 @@ export async function startAiHyperopt(payload: { pair: string; timeframe: string
     }
     throw new Error(`AI hyperopt rejected: ${detail}`)
   }
-  return response.json() as Promise<{ pair: string; status: string; attemptsTotal: number; warning?: string }>
+  return response.json() as Promise<{ pair: string; status: string; freqaimodel?: AiFreqaiModel; attemptsTotal: number; warning?: string }>
 }
 
-export async function getAiHyperoptStatus(pair = 'EUR/USD', strategyClass?: string, timeframe?: string): Promise<AiHyperoptStatus> {
+export async function getAiHyperoptStatus(pair = 'EUR/USD', strategyClass?: string, timeframe?: string, freqaimodel?: AiFreqaiModel): Promise<AiHyperoptStatus> {
   const params = new URLSearchParams({ pair })
   if (strategyClass) params.set('strategy_class', strategyClass)
   if (timeframe) params.set('timeframe', timeframe)
+  if (freqaimodel) params.set('freqaimodel', freqaimodel)
   const response = await fetch(buildApiUrl(`/api/v1/ai/hyperopt/status?${params.toString()}`))
   if (!response.ok) throw new Error('Hyperopt status unavailable')
   return response.json() as Promise<AiHyperoptStatus>
@@ -208,10 +218,11 @@ export async function stopAiHyperopt(pair = 'EUR/USD', strategyClass?: string, t
   return response.json() as Promise<{ pair: string; status: string }>
 }
 
-export async function getAiHyperoptReport(pair = 'EUR/USD', strategyClass?: string, timeframe?: string) {
+export async function getAiHyperoptReport(pair = 'EUR/USD', strategyClass?: string, timeframe?: string, freqaimodel?: AiFreqaiModel) {
   const params = new URLSearchParams({ pair })
   if (strategyClass) params.set('strategy_class', strategyClass)
   if (timeframe) params.set('timeframe', timeframe)
+  if (freqaimodel) params.set('freqaimodel', freqaimodel)
   const response = await fetch(buildApiUrl(`/api/v1/ai/hyperopt/report?${params.toString()}`))
   if (!response.ok) throw new Error('Hyperopt report unavailable')
   return response.json() as Promise<{ pair: string; available: boolean; completedAt?: string; ageDays?: number; report?: AiHyperoptReport }>
@@ -222,6 +233,7 @@ export type AiHyperoptScheduler = {
   intervalDays: number
   gapMinutes: number
   strategyClass: string
+  freqaimodel: AiFreqaiModel
   timeframe: string
   pairStrategies: Record<string, string>
   pairTimeframes: Record<string, string>
@@ -245,7 +257,7 @@ export async function getAiHyperoptScheduler(strategyClass?: string, timeframe?:
   return response.json() as Promise<AiHyperoptScheduler>
 }
 
-export async function saveAiHyperoptScheduler(config: { enabled: boolean; intervalDays: number; gapMinutes: number; pairs: string[]; strategyClass: string; timeframe: string; pairStrategies: Record<string, string>; pairTimeframes: Record<string, string> }): Promise<AiHyperoptScheduler> {
+export async function saveAiHyperoptScheduler(config: { enabled: boolean; intervalDays: number; gapMinutes: number; pairs: string[]; strategyClass: string; freqaimodel: AiFreqaiModel; timeframe: string; pairStrategies: Record<string, string>; pairTimeframes: Record<string, string> }): Promise<AiHyperoptScheduler> {
   const response = await fetch(buildApiUrl('/api/v1/ai/hyperopt/scheduler'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-User-Role': 'operator', 'X-CSRF-Token': 'hyperopt-scheduler' },
@@ -259,13 +271,13 @@ export async function saveAiHyperoptScheduler(config: { enabled: boolean; interv
   return response.json() as Promise<AiHyperoptScheduler>
 }
 
-export async function runAiHyperoptSchedulerNow(): Promise<{ status: string; pairs: string[]; jobs?: Array<{ pair: string; status: string; warning?: string }>; warnings?: string[] }> {
+export async function runAiHyperoptSchedulerNow(): Promise<{ status: string; pairs: string[]; jobs?: Array<{ pair: string; status: string; freqaimodel?: AiFreqaiModel; attemptsCompleted?: number; warning?: string }>; warnings?: string[] }> {
   const response = await fetch(buildApiUrl('/api/v1/ai/hyperopt/scheduler/run-now'), {
     method: 'POST',
     headers: { 'X-User-Role': 'operator', 'X-CSRF-Token': 'hyperopt-scheduler-run' },
   })
   if (!response.ok) throw new Error('Scheduled Hyperopt start rejected')
-  return response.json() as Promise<{ status: string; pairs: string[]; jobs?: Array<{ pair: string; status: string; warning?: string }>; warnings?: string[] }>
+  return response.json() as Promise<{ status: string; pairs: string[]; jobs?: Array<{ pair: string; status: string; freqaimodel?: AiFreqaiModel; attemptsCompleted?: number; warning?: string }>; warnings?: string[] }>
 }
 
 export async function getAiHyperoptLossFunctions(): Promise<{ default: string; options: string[] }> {
@@ -840,10 +852,24 @@ export type BacktestRunResult = {
   winRate?: string
   maxDrawdown?: string
   strategy?: string
+  freqaimodel?: string
+  backtestWindow?: string
+  modelReused?: boolean | null
+  modelTraining?: Record<string, unknown> | null
   dataSource?: string
   warning?: string
-  aiParameters?: Record<string, string | string[]>
-  tradeDetails?: Array<Record<string, string | number | null>>
+  aiParameters?: {
+    model?: string
+    freqaimodel?: string
+    backtestWindow?: string
+    modelReused?: boolean | null
+    modelTraining?: Record<string, unknown> | null
+    strategyParameters?: Record<string, string | number | boolean>
+    backtestReport?: Record<string, unknown> | null
+    [key: string]: unknown
+  }
+  tradeDetails?: Array<Record<string, string | number | null | boolean>>
+  summary?: Record<string, string | number | null>
   result?: BacktestRunResult
 }
 
@@ -853,7 +879,33 @@ export async function getBacktestJob(jobId: string): Promise<BacktestRunResult> 
   return response.json() as Promise<BacktestRunResult>
 }
 
-export async function runBacktest(payload: { pair: string; timeframe: string; strategyClass?: string; steps: number; historyMode?: 'candles' | 'days'; historyValue?: number }): Promise<BacktestRunResult> {
+export async function clearAiResearchCache(payload: { pair: string; timeframe: string; candles?: boolean; models?: boolean }): Promise<{
+  pair: string
+  timeframe: string
+  candleItemsRemoved: number
+  modelFilesRemoved: number
+  removed: string[]
+}> {
+  const response = await fetch(buildApiUrl('/api/v1/ai/research-cache/clear'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-User-Role': 'operator', 'X-CSRF-Token': 'ai-research-cache-clear' },
+    body: JSON.stringify(payload),
+  })
+  if (!response.ok) {
+    let detail = `HTTP ${response.status}`
+    try { detail = ((await response.json()) as { detail?: string }).detail ?? detail } catch { /* status is enough */ }
+    throw new Error(`Cache clear rejected: ${detail}`)
+  }
+  return response.json() as Promise<{
+    pair: string
+    timeframe: string
+    candleItemsRemoved: number
+    modelFilesRemoved: number
+    removed: string[]
+  }>
+}
+
+export async function runBacktest(payload: { pair: string; timeframe: string; strategyClass?: string; freqaimodel?: string; steps: number; historyMode?: 'candles' | 'days'; historyValue?: number }): Promise<BacktestRunResult> {
   const response = await fetch(buildApiUrl('/api/v1/backtests/run'), {
     method: 'POST',
     headers: {

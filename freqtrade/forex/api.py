@@ -8,7 +8,6 @@ import json
 import os
 import re
 import secrets
-import shutil
 import sqlite3
 import threading
 from contextlib import suppress
@@ -26,6 +25,7 @@ from freqtrade.forex.ai_strategy import ForexAIStrategyBaseline
 from freqtrade.forex.ai_hyperopt import run_ai_hyperopt_robust
 from freqtrade.forex.config import OandaSettings, load_forex_config, save_forex_config
 from freqtrade.forex.health import OandaHealthCheck
+from freqtrade.forex.historical import HistoricalCandleStore
 from freqtrade.forex.ledger import PaperLedger
 from freqtrade.forex.models import OandaEnvironment, OandaInstrument
 from freqtrade.forex.oanda import OandaAPIError, OandaClient, discover_oanda_accounts
@@ -61,20 +61,63 @@ def _render_ui_index(ui_index: Path) -> str:
 
 
 def _clear_cached_historical_data(pair: str | None = None, timeframe: str | None = None) -> list[str]:
+    if not pair or not timeframe:
+        return []
+
     data_dir = Path("user_data/data")
     if not data_dir.exists():
         return []
 
     removed: list[str] = []
-    for child in sorted(data_dir.iterdir(), key=lambda item: item.name):
-        removed.append(str(child))
-        if child.is_dir():
-            shutil.rmtree(child, ignore_errors=True)
-        else:
-            child.unlink(missing_ok=True)
+    instrument = pair.replace("/", "_").upper()
+    normalized_timeframe = freqtrade_timeframe(timeframe)
+    store_path = data_dir / "oanda" / "candles.json"
+    cleared_ranges = HistoricalCandleStore(store_path).clear(
+        instrument=instrument,
+        timeframe=normalized_timeframe,
+    )
+    if cleared_ranges:
+        removed.append(f"{store_path} ({cleared_ranges} ranges)")
 
-    if pair and timeframe:
-        return [str(child) for child in removed if pair.replace("/", "_").upper() in str(child).upper() or timeframe.upper() in str(child).upper()]
+    timeframe_tokens = {timeframe.upper(), normalized_timeframe.upper()}
+    try:
+        timeframe_tokens.add(oanda_granularity(normalized_timeframe).upper())
+    except ValueError:
+        pass
+    candle_extensions = (".feather", ".parquet", ".csv")
+    for candidate in data_dir.rglob("*"):
+        if not candidate.is_file() or not candidate.name.upper().startswith(instrument):
+            continue
+        filename = candidate.name.upper()
+        if not any(filename.endswith(extension.upper()) for extension in candle_extensions):
+            continue
+        if any(
+            filename.startswith(f"{instrument}{separator}{token}")
+            and filename[len(instrument) + 1 + len(token):len(instrument) + 2 + len(token)] in {".", "-", "_"}
+            for token in timeframe_tokens
+            for separator in ("-", "_")
+        ):
+            candidate.unlink(missing_ok=True)
+            removed.append(str(candidate))
+    return removed
+
+
+def _clear_cached_ai_models(pair: str) -> list[str]:
+    model_dir = Path("user_data/hyperopt_results")
+    if not model_dir.exists():
+        return []
+
+    instrument = pair.replace("/", "_").upper()
+    cache_suffixes = (".txt", ".model.json", ".predictions.json")
+    removed: list[str] = []
+    for candidate in model_dir.rglob("*"):
+        if (
+            candidate.is_file()
+            and candidate.name.upper().startswith(f"{instrument}_")
+            and candidate.name.lower().endswith(cache_suffixes)
+        ):
+            candidate.unlink(missing_ok=True)
+            removed.append(str(candidate))
     return removed
 
 
@@ -458,11 +501,13 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             if not (item.get("pair") == normalized and item.get("timeframe", "").upper() == timeframe.upper() and item.get("strategy") == strategy_class)
         ]
 
-    def resolve_history_request(payload: dict, timeframe: str) -> tuple[str, int]:
+    def resolve_history_request(
+        payload: dict, timeframe: str, *, max_candles: int = 10000
+    ) -> tuple[str, int]:
         mode = str(payload.get("historyMode", "candles")).lower()
         value = max(1, int(payload.get("historyValue", payload.get("steps", 250))))
         if mode == "candles":
-            return mode, min(value, 10000)
+            return mode, min(value, max_candles)
         if mode != "days":
             raise HTTPException(status_code=400, detail="historyMode must be candles or days")
         try:
@@ -470,7 +515,22 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=f"Days history is unsupported for timeframe {timeframe}") from exc
         requested_candles = (value * 86400 + timeframe_seconds - 1) // timeframe_seconds
-        return mode, min(requested_candles, 10000)
+        return mode, min(requested_candles, max_candles)
+
+    def minimum_freqai_history(freqai_config: dict[str, object], timeframe: str) -> int:
+        feature_source = freqai_config.get("featureParameters", {})
+        feature_source = feature_source if isinstance(feature_source, dict) else {}
+        try:
+            seconds = timeframe_to_seconds(freqtrade_timeframe(timeframe))
+            train_days = int(freqai_config.get("trainPeriodDays", 30))
+            validation_days = int(freqai_config.get("backtestPeriodDays", 7))
+            label_period = int(feature_source.get("labelPeriodCandles", 2))
+            periods = [int(value) for value in feature_source.get("indicatorPeriodsCandles", [5, 14])]
+            shifted = int(feature_source.get("includeShiftedCandles", 0))
+        except (TypeError, ValueError, KeyError) as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid FreqAI history settings: {exc}") from exc
+        warmup = max(periods, default=14) + shifted
+        return ((train_days + validation_days) * 86400 + seconds - 1) // seconds + 40 + label_period + warmup
     AI_REVIEW_STATE: dict[str, object] = {
         "status": "pending",
         "strategyName": "FX Trend Pulse",
@@ -538,6 +598,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         "intervalDays": 2,
         "gapMinutes": 120,
         "strategyClass": "ForexAIStrategyBaseline",
+        "freqaimodel": "ForexAIStrategyBaseline",
         "timeframe": "M5",
         "pairStrategies": {},
         "pairTimeframes": {},
@@ -1958,6 +2019,8 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         history_value: int,
         attempts: int,
         hyperopt_loss: str,
+        freqaimodel: str,
+        freqai_config: dict[str, object],
         candles_by_pair: dict[str, pd.DataFrame],
         instruments: dict[str, object],
         spreads: dict[str, Decimal],
@@ -1978,8 +2041,69 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         def should_stop() -> bool:
             return stop_event.is_set()
 
+        model_training: dict[str, object] | None = None
+        model_reused: bool | None = None
+        training_context: dict[str, object] | None = None
+        model_version = "baseline-v1"
+
         try:
-            if strategy_class != "ForexAIStrategyBaseline":
+            if freqaimodel != "ForexAIStrategyBaseline":
+                if len(pairs) != 1:
+                    raise ValueError("FreqAI model Hyperopt currently runs one pair per job")
+                from freqtrade.forex.cli import (
+                    _resolve_cli_freqai_config,
+                    _run_lightgbm_hyperopt,
+                )
+
+                normalized_freqai_config = _resolve_cli_freqai_config(
+                    timeframe, {"freqai": freqai_config}
+                )
+
+                def on_model_progress(phase: str, done: int, total: int) -> None:
+                    job["phase"] = phase
+                    job["attemptsCompleted"] = done
+                    job["attemptsTotal"] = total
+
+                pair = pairs[0].replace("_", "/").upper()
+                model_report_path, model_weights_path, model_report = _run_lightgbm_hyperopt(
+                    candles_by_pair[instrument_names[0]],
+                    instrument=instruments[instrument_names[0]],
+                    pair=pair,
+                    timeframe=freqtrade_timeframe(timeframe),
+                    model_name=freqaimodel,
+                    epochs=attempts,
+                    model_dir=Path("user_data/hyperopt_results"),
+                    starting_balance=starting_balance,
+                    risk_fraction=risk_fraction,
+                    spread=spreads[instrument_names[0]],
+                    slippage=Decimal("0"),
+                    financing_rate_per_day=Decimal("0"),
+                    quote_to_account_rate=Decimal("1"),
+                    stop_pips=Decimal("0.5"),
+                    hyperopt_loss=hyperopt_loss,
+                    strategy_class=strategy_class,
+                    freqai_config=normalized_freqai_config,
+                    on_progress=on_model_progress,
+                )
+                model_training = dict(model_report.get("model_training", {}))
+                model_reused = bool(model_report.get("model_reused", False))
+                training_context = dict(model_report.get("training_context", {}))
+                model_version = f"{freqaimodel}:{model_report.get('training_context_hash', '')}"
+                candidates = [
+                    {
+                        "parameters": item.get("parameters", {}),
+                        "objective": str(item.get("objective", "0")),
+                        "trainNetPl": str(item.get("trainNetPl", "0")),
+                        "validationNetPl": str(item.get("validationNetPl", item.get("validation_net_pl", "0"))),
+                        "validationDrawdown": str(item.get("validationDrawdown", item.get("validation_drawdown", "0"))),
+                        "validationTrades": int(item.get("validationTrades", item.get("validation_trades", 0))),
+                        "coverage": 1,
+                    }
+                    for item in model_report.get("candidates", [])
+                ]
+                job["modelPath"] = str(model_weights_path)
+                job["reportPath"] = str(model_report_path)
+            elif strategy_class != "ForexAIStrategyBaseline":
                 if len(pairs) != 1:
                     raise ValueError("Custom strategy Hyperopt currently runs one pair per job")
                 candidates = run_strategy_hyperopt(
@@ -2027,6 +2151,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "historyMode": history_mode,
                 "historyValue": history_value,
                 "attempts": attempts,
+                "freqaimodel": freqaimodel,
                 "entryThreshold": str(best.get("entryThreshold", "")),
                 "maxSpreadPct": str(best.get("maxSpreadPct", "")),
                 "parameters": best.get("parameters", {}),
@@ -2035,7 +2160,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "dataRevision": completed_at,
                 "dataHash": data_hash,
                 "featureSchemaHash": schema_hash,
-                "modelVersion": "baseline-v1",
+                "modelVersion": model_version,
             }
             report = {
                 "pair": normalized_pair,
@@ -2046,32 +2171,43 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "dataRevision": completed_at,
                 "dataHash": data_hash,
                 "featureSchemaHash": schema_hash,
-                "modelVersion": "baseline-v1",
+                "modelVersion": model_version,
                 "candidatesTested": len(candidates),
                 "pairsTested": len(pairs),
                 "periodsTested": 2,
-                "coverage": len(pairs) * 2,
+                "coverage": 1 if freqaimodel != "ForexAIStrategyBaseline" else len(pairs) * 2,
                 "attemptsRequested": attempts,
                 "hyperoptLoss": hyperopt_loss,
+                "freqaimodel": freqaimodel,
+                "modelReused": model_reused,
+                "modelTraining": model_training,
                 "historyMode": history_mode,
                 "historyValue": history_value,
-                "trainCandles": max(len(candle_frame) // 2 for candle_frame in candles_by_pair.values()),
-                "validationCandles": max(len(candle_frame) // 2 for candle_frame in candles_by_pair.values()),
+                "trainCandles": (
+                    int(training_context.get("train_rows", 0))
+                    if training_context else max(len(candle_frame) // 2 for candle_frame in candles_by_pair.values())
+                ),
+                "validationCandles": (
+                    int(training_context.get("validation_rows", 0))
+                    if training_context else max(len(candle_frame) // 2 for candle_frame in candles_by_pair.values())
+                ),
+                "trainingContext": training_context,
                 "bestParameters": dict(best.get("parameters") or {
                     "entryThreshold": str(best.get("entryThreshold", "")),
                     "maxSpreadPct": str(best.get("maxSpreadPct", "")),
                 }),
                 "objective": str(best["objective"]),
                 "train": {
-                    "netPl": str(best["trainNetPl"]),
-                    "drawdown": str(best["validationDrawdown"]),
-                    "trades": int(best["validationTrades"]),
+                    "netPl": str(best.get("trainNetPl", "0")),
+                    "drawdown": str(best.get("trainDrawdown", "0")),
+                    "trades": int(best.get("trainTrades", 0)),
                 },
                 "validation": {
                     "netPl": str(best["validationNetPl"]),
                     "drawdown": str(best["validationDrawdown"]),
                     "trades": int(best["validationTrades"]),
                 },
+                "trainingContext": training_context,
                 "candidates": [{"rank": rank, **candidate} for rank, candidate in enumerate(candidates, start=1)],
             }
             report["reportText"] = format_hyperopt_report(report)
@@ -2083,6 +2219,47 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         except Exception as exc:  # pragma: no cover - background worker boundary
             job["status"] = "failed"
             job["error"] = str(exc)
+
+    @app.post("/api/v1/ai/research-cache/clear")
+    async def clear_ai_research_cache(
+        payload: dict,
+        user_role: str | None = Header(default=None, alias="X-User-Role"),
+        csrf_token: str | None = Header(default=None, alias="X-CSRF-Token"),
+    ) -> dict:
+        validate_write_access(user_role, csrf_token)
+        pair = normalize_pair(str(payload.get("pair", "EUR/USD")))
+        timeframe = str(payload.get("timeframe", "M5")).upper()
+        clear_candles = bool(payload.get("candles", True))
+        clear_models = bool(payload.get("models", True))
+        if not clear_candles and not clear_models:
+            raise HTTPException(status_code=400, detail="Select at least one cache type to clear")
+
+        active_backtest = any(
+            job.get("status") in {"queued", "running"}
+            and job.get("pair") == pair
+            for job in BACKTEST_JOBS.values()
+        )
+        active_hyperopt = any(
+            job.get("status") == "running" and job.get("pair") == pair
+            for job in AI_HYPEROPT_JOBS.values()
+        )
+        if active_backtest or active_hyperopt:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Cannot clear research caches while a backtest or Hyperopt is running for {pair}",
+            )
+
+        removed_candles = (
+            _clear_cached_historical_data(pair, timeframe) if clear_candles else []
+        )
+        removed_models = _clear_cached_ai_models(pair) if clear_models else []
+        return {
+            "pair": pair,
+            "timeframe": timeframe,
+            "candleItemsRemoved": len(removed_candles),
+            "modelFilesRemoved": len(removed_models),
+            "removed": [*removed_candles, *removed_models],
+        }
 
     @app.post("/api/v1/ai/hyperopt/start")
     async def ai_hyperopt_start(
@@ -2104,8 +2281,43 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         if payload.get("resetPrevious", True):
             for selected_pair in pairs:
                 reset_pair_research_state(selected_pair, strategy_class_name, timeframe)
-        history_mode, steps = resolve_history_request(payload, timeframe)
-        history_value = int(payload.get("historyValue", steps))
+        freqaimodel = str(payload.get("freqaimodel", "ForexAIStrategyBaseline"))
+        if freqaimodel not in {
+            "ForexAIStrategyBaseline", "LightGBMRegressor", "LightGBMClassifier"
+        }:
+            raise HTTPException(status_code=400, detail=f"Unsupported FreqAI model: {freqaimodel}")
+        freqai_config = dict(pair_config.get("freqai") or {})
+        if freqaimodel != "ForexAIStrategyBaseline" and len(pairs) != 1:
+            raise HTTPException(
+                status_code=400,
+                detail="FreqAI model Hyperopt currently supports one pair per job",
+            )
+        history_mode, steps = resolve_history_request(
+            payload,
+            timeframe,
+            max_candles=50000 if freqaimodel != "ForexAIStrategyBaseline" else 10000,
+        )
+        if freqaimodel != "ForexAIStrategyBaseline":
+            minimum_candles = minimum_freqai_history(freqai_config, timeframe)
+            if minimum_candles > 50000:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Configured FreqAI window needs {minimum_candles} candles; reduce its training windows or increase the timeframe.",
+                )
+            if steps < minimum_candles:
+                history_mode = "candles"
+                steps = minimum_candles
+        if freqaimodel != "ForexAIStrategyBaseline":
+            minimum_candles = minimum_freqai_history(freqai_config, timeframe)
+            if minimum_candles > 50000:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Configured FreqAI window needs {minimum_candles} candles; reduce its training windows or increase the timeframe.",
+                )
+            if steps < minimum_candles:
+                history_mode = "candles"
+                steps = minimum_candles
+        history_value = steps
         attempts = max(1, min(int(payload.get("attempts", 24)), 900))
         from freqtrade.forex.ai_hyperopt import DEFAULT_HYPEROPT_LOSS, HYPEROPT_LOSS_FUNCTIONS
         hyperopt_loss = str(payload.get("hyperoptLoss", DEFAULT_HYPEROPT_LOSS))
@@ -2183,6 +2395,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             "pair": normalized_pair,
             "timeframe": timeframe.upper(),
             "strategyClass": strategy_class_name,
+            "freqaimodel": freqaimodel,
             "scopeKey": scope_key,
             "status": "running",
             "attemptsCompleted": 0,
@@ -2205,6 +2418,8 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             history_value,
             attempts,
             hyperopt_loss,
+            freqaimodel,
+            freqai_config,
             candles_by_pair,
             instruments,
             spreads,
@@ -2217,6 +2432,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             "pair": normalized_pair,
             "timeframe": timeframe.upper(),
             "strategyClass": strategy_class_name,
+            "freqaimodel": freqaimodel,
             "status": "running",
             "attemptsTotal": job["attemptsTotal"],
             "warning": history_warning,
@@ -2228,18 +2444,34 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         return {"default": DEFAULT_HYPEROPT_LOSS, "options": list(HYPEROPT_LOSS_FUNCTIONS)}
 
     @app.get("/api/v1/ai/hyperopt/status")
-    async def ai_hyperopt_status(pair: str = "EUR/USD", strategy_class: str | None = None, timeframe: str | None = None) -> dict:
+    async def ai_hyperopt_status(
+        pair: str = "EUR/USD",
+        strategy_class: str | None = None,
+        timeframe: str | None = None,
+        freqaimodel: str | None = None,
+    ) -> dict:
         normalized_pair = normalize_pair(pair)
         pair_config = ai_config_for_pair(normalized_pair)
         selected_class = strategy_class or str(pair_config.get("strategyClass", "ForexAIStrategyBaseline"))
         selected_timeframe = (timeframe or str(pair_config.get("timeframe", "M5"))).upper()
+        selected_freqaimodel = freqaimodel
         scope_key = hyperopt_scope(normalized_pair, selected_class, selected_timeframe)
         job = AI_HYPEROPT_JOBS.get(scope_key)
+        if (
+            job is not None
+            and selected_freqaimodel
+            and job.get("freqaimodel") != selected_freqaimodel
+        ):
+            job = None
         if job is None:
             last_report = AI_HYPEROPT_REPORTS.get(scope_key) or AI_HYPEROPT_REPORTS.get(normalized_pair)
+            last_report_value = last_report.get("report", {}) if last_report else {}
+            if selected_freqaimodel and last_report_value.get("freqaimodel") != selected_freqaimodel:
+                last_report = None
             return {
                 "pair": normalized_pair,
                 "strategyClass": selected_class,
+                "freqaimodel": freqaimodel or (last_report.get("report", {}).get("freqaimodel") if last_report else None),
                 "timeframe": selected_timeframe,
                 "status": "idle",
                 "attemptsCompleted": 0,
@@ -2249,6 +2481,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         return {
             "pair": normalized_pair,
             "status": job["status"],
+            "strategyClass": selected_class,
+            "freqaimodel": job.get("freqaimodel"),
+            "phase": job.get("phase"),
             "attemptsCompleted": job["attemptsCompleted"],
             "attemptsTotal": job["attemptsTotal"],
             "startedAt": job["startedAt"],
@@ -2275,13 +2510,24 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         return {"pair": normalized_pair, "timeframe": timeframe, "strategyClass": strategy_class, "status": "stopping"}
 
     @app.get("/api/v1/ai/hyperopt/report")
-    async def ai_hyperopt_report(pair: str = "EUR/USD", strategy_class: str | None = None, timeframe: str | None = None) -> dict:
+    async def ai_hyperopt_report(
+        pair: str = "EUR/USD",
+        strategy_class: str | None = None,
+        timeframe: str | None = None,
+        freqaimodel: str | None = None,
+    ) -> dict:
         normalized_pair = normalize_pair(pair)
         pair_config = ai_config_for_pair(normalized_pair)
         selected_class = strategy_class or str(pair_config.get("strategyClass", "ForexAIStrategyBaseline"))
         selected_timeframe = (timeframe or str(pair_config.get("timeframe", "M5"))).upper()
         scope_key = hyperopt_scope(normalized_pair, selected_class, selected_timeframe)
         entry = AI_HYPEROPT_REPORTS.get(scope_key) or AI_HYPEROPT_REPORTS.get(normalized_pair)
+        if (
+            entry is not None
+            and freqaimodel
+            and entry.get("report", {}).get("freqaimodel") != freqaimodel
+        ):
+            entry = None
         if entry is None:
             return {"pair": normalized_pair, "available": False}
         return {
@@ -2378,6 +2624,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     "pair": pair,
                     "timeframe": timeframe,
                     "strategyClass": strategy_class,
+                    "freqaimodel": AI_HYPEROPT_SCHEDULER.get(
+                        "freqaimodel", "ForexAIStrategyBaseline"
+                    ),
                     "historyMode": hyperopt.get("historyMode", "candles"),
                     "historyValue": history_value,
                     "steps": history_value,
@@ -2393,6 +2642,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 item = {
                     "pair": pair,
                     "status": result.get("status", started_job.get("status")),
+                    "freqaimodel": result.get("freqaimodel", payload["freqaimodel"]),
                     "attemptsCompleted": result.get("attemptsCompleted", 0),
                 }
                 if warning:
@@ -2445,6 +2695,17 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         validate_write_access(user_role, csrf_token)
         pairs = list(dict.fromkeys(normalize_pair(str(pair)) for pair in payload.get("pairs", [])))
         strategy_class = str(payload.get("strategyClass", AI_HYPEROPT_SCHEDULER["strategyClass"]))
+        freqaimodel = str(
+            payload.get(
+                "freqaimodel", AI_HYPEROPT_SCHEDULER.get(
+                    "freqaimodel", "ForexAIStrategyBaseline"
+                )
+            )
+        )
+        if freqaimodel not in {
+            "ForexAIStrategyBaseline", "LightGBMRegressor", "LightGBMClassifier"
+        }:
+            raise HTTPException(status_code=400, detail=f"Unsupported FreqAI model: {freqaimodel}")
         timeframe = str(payload.get("timeframe", AI_HYPEROPT_SCHEDULER["timeframe"])).upper()
         requested_strategies = {normalize_pair(str(pair)): str(value) for pair, value in dict(payload.get("pairStrategies", {})).items()}
         requested_timeframes = {normalize_pair(str(pair)): str(value).upper() for pair, value in dict(payload.get("pairTimeframes", {})).items()}
@@ -2471,7 +2732,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             raise HTTPException(status_code=400, detail="intervalDays must be between 1 and 30")
         if not 1 <= gap_minutes <= 1440:
             raise HTTPException(status_code=400, detail="gapMinutes must be between 1 and 1440")
-        AI_HYPEROPT_SCHEDULER.update({"enabled": bool(payload.get("enabled", False)), "intervalDays": interval_days, "gapMinutes": gap_minutes, "pairs": pairs, "strategyClass": strategy_class, "timeframe": timeframe, "pairStrategies": selected_strategies, "pairTimeframes": selected_timeframes})
+        AI_HYPEROPT_SCHEDULER.update({"enabled": bool(payload.get("enabled", False)), "intervalDays": interval_days, "gapMinutes": gap_minutes, "pairs": pairs, "strategyClass": strategy_class, "freqaimodel": freqaimodel, "timeframe": timeframe, "pairStrategies": selected_strategies, "pairTimeframes": selected_timeframes})
         if AI_HYPEROPT_SCHEDULER["enabled"]:
             next_runs = schedule_pair_slots(pairs)
             AI_HYPEROPT_SCHEDULER["nextRuns"] = next_runs
@@ -2742,6 +3003,8 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             job_id = f"bt-job-{secrets.token_hex(4)}"
             BACKTEST_JOBS[job_id] = {
                 "id": job_id,
+                "pair": normalize_pair(str(payload.get("pair", "EUR/USD"))),
+                "timeframe": str(payload.get("timeframe", "M5")).upper(),
                 "status": "queued",
                 "phase": "queued",
                 "historyProgress": 0,
@@ -2771,6 +3034,12 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         normalized_pair = normalize_pair(pair)
         instrument_name = pair.replace("/", "_").upper()
         pair_config = ai_config_for_pair(pair)
+        freqaimodel = str(payload.get("freqaimodel", "ForexAIStrategyBaseline"))
+        if freqaimodel not in {
+            "ForexAIStrategyBaseline", "LightGBMRegressor", "LightGBMClassifier"
+        }:
+            raise HTTPException(status_code=400, detail=f"Unsupported FreqAI model: {freqaimodel}")
+        freqai_config = dict(pair_config.get("freqai") or {})
         persisted_setup = load_forex_config(Path(os.environ.get("OANDA_CONFIG_PATH", "user_data/config.json")))
         configured_strategy = dict(persisted_setup.get("pair_strategies", {})).get(instrument_name)
         strategy_class_name = str(payload.get("strategyClass") or configured_strategy or pair_config.get("strategyClass") or "ForexAIStrategyBaseline")
@@ -2781,7 +3050,11 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         )
         update_backtest_job(job_id, status="running", phase="validating", message=history_notice)
         _clear_cached_historical_data(pair=normalized_pair, timeframe=timeframe)
-        history_mode, steps = resolve_history_request(payload, timeframe)
+        history_mode, steps = resolve_history_request(
+            payload,
+            timeframe,
+            max_candles=50000 if freqaimodel != "ForexAIStrategyBaseline" else 10000,
+        )
         BACKTEST_HISTORY[:] = [
             item for item in BACKTEST_HISTORY
             if not (
@@ -2889,28 +3162,142 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 data_hash = candle_frame_hash({instrument_name: frame, **{f"{instrument_name}:{key}": value for key, value in informative_frames.items()}})
                 price_row = (await client.get_prices((instrument_name,)))[0]
                 update_backtest_job(job_id, phase="backtest", historyProgress=100, backtestProgress=10, message=f"History ready: {len(frame)} {timeframe} candles and {len(informative_frames)} informative timeframe(s). Running {strategy_class_name}.")
-                strategy = FreqtradeStrategyAdapter(strategy_instance, normalized_pair, informative_frames)
-                result = ForexBacktester(
-                    strategy,
-                    metadata[0],
-                    starting_balance=Decimal(str(account.balance)),
-                    risk_fraction=Decimal(str(settings.risk_fraction)),
-                    stop_pips=Decimal("0.5"),
-                    spread=price_row.spread,
-                    slippage=Decimal("0"),
-                    financing_rate_per_day=Decimal("0"),
-                    quote_to_account_rate=Decimal("1"),
-                ).run(frame)
+                model_backtest_report: dict[str, object] | None = None
+                if freqaimodel != "ForexAIStrategyBaseline":
+                    if len(informative_timeframes):
+                        raise HTTPException(
+                            status_code=400,
+                            detail="FreqAI UI backtest does not yet support informative strategy timeframes",
+                        )
+                    from freqtrade.forex.cli import (
+                        _resolve_cli_freqai_config,
+                        _run_lightgbm_hyperopt,
+                    )
+
+                    normalized_freqai_config = _resolve_cli_freqai_config(
+                        timeframe, {"freqai": freqai_config}
+                    )
+
+                    def update_model_backtest_progress(
+                        phase: str, done: int, total: int
+                    ) -> None:
+                        update_backtest_job(
+                            job_id,
+                            phase=phase,
+                            backtestProgress=(
+                                min(90, int(done / total * 90)) if total else 10
+                            ),
+                            message=(
+                                f"FreqAI {phase.replace('_', ' ')} "
+                                f"({done}/{total})"
+                            ),
+                        )
+
+                    _, _, model_backtest_report = await asyncio.to_thread(
+                        _run_lightgbm_hyperopt,
+                        frame,
+                        instrument=metadata[0],
+                        pair=normalized_pair,
+                        timeframe=freqtrade_timeframe(timeframe),
+                        model_name=freqaimodel,
+                        epochs=max(1, int(payload.get("attempts", 24))),
+                        model_dir=Path("user_data/hyperopt_results"),
+                        starting_balance=Decimal(str(account.balance)),
+                        risk_fraction=Decimal(str(settings.risk_fraction)),
+                        spread=price_row.spread,
+                        slippage=Decimal("0"),
+                        financing_rate_per_day=Decimal("0"),
+                        quote_to_account_rate=Decimal("1"),
+                        stop_pips=Decimal("0.5"),
+                        hyperopt_loss=str(payload.get("hyperoptLoss", "ProfitDrawDownHyperOptLoss")),
+                        strategy_class=strategy_class_name,
+                        freqai_config=normalized_freqai_config,
+                        optimize_strategy=False,
+                        on_progress=update_model_backtest_progress,
+                    )
+                    result = model_backtest_report.pop("_backtest_result")
+                    strategy_parameters = dict(
+                        model_backtest_report.get("strategy_parameters", {})
+                    )
+                else:
+                    strategy = FreqtradeStrategyAdapter(
+                        strategy_instance, normalized_pair, informative_frames
+                    )
+                    result = ForexBacktester(
+                        strategy,
+                        metadata[0],
+                        starting_balance=Decimal(str(account.balance)),
+                        risk_fraction=Decimal(str(settings.risk_fraction)),
+                        stop_pips=Decimal("0.5"),
+                        spread=price_row.spread,
+                        slippage=Decimal("0"),
+                        financing_rate_per_day=Decimal("0"),
+                        quote_to_account_rate=Decimal("1"),
+                    ).run(frame)
+                    strategy_parameters = dict(
+                        approved_run.get("parameters", {})
+                        if isinstance(approved_run, dict) else {}
+                    )
                 update_backtest_job(job_id, backtestProgress=95, message="Aggregating trades, P/L and risk metrics.")
                 drawdown_rate = getattr(result, "max_drawdown_rate", None)
                 if drawdown_rate is None:
                     drawdown_rate = Decimal(str(getattr(result, "max_drawdown", 0))) / result.starting_balance
+                winning_trades = [trade for trade in result.trades if trade.net_pl > 0]
+                losing_trades = [trade for trade in result.trades if trade.net_pl < 0]
+                drawn_trades = len(result.trades) - len(winning_trades) - len(losing_trades)
+                gross_profit = sum((trade.net_pl for trade in winning_trades), Decimal("0"))
+                gross_loss = abs(sum((trade.net_pl for trade in losing_trades), Decimal("0")))
+                duration_minutes: list[float] = []
+                for trade in result.trades:
+                    entry_time = getattr(trade, "entry_time", None)
+                    exit_time = getattr(trade, "exit_time", None)
+                    if entry_time is None or exit_time is None:
+                        continue
+                    duration_minutes.append(
+                        max(
+                            0.0,
+                            (pd.Timestamp(exit_time) - pd.Timestamp(entry_time)).total_seconds() / 60,
+                        )
+                    )
+                account_currency = str(account.currency)
+                backtest_window = (
+                    str(model_backtest_report.get("backtest_window", "out_of_sample"))
+                    if model_backtest_report else "full_range"
+                )
+                backtest_metrics = {
+                    "accountCurrency": account_currency,
+                    "backtestWindow": backtest_window,
+                    "candles": len(frame),
+                    "trades": len(result.trades),
+                    "wins": len(winning_trades),
+                    "draws": drawn_trades,
+                    "losses": len(losing_trades),
+                    "winRate": format_decimal(result.win_rate * Decimal("100")),
+                    "startingBalance": format_decimal(result.starting_balance),
+                    "endingBalance": format_decimal(result.ending_balance),
+                    "netProfit": format_decimal(result.net_pl),
+                    "averageProfitPerTrade": format_decimal(
+                        result.net_pl / len(result.trades) if result.trades else Decimal("0")
+                    ),
+                    "grossProfit": format_decimal(gross_profit),
+                    "grossLoss": format_decimal(gross_loss),
+                    "profitFactor": (
+                        format_decimal(gross_profit / gross_loss) if gross_loss else None
+                    ),
+                    "maxDrawdown": format_decimal(result.max_drawdown),
+                    "maxDrawdownRate": format_decimal(drawdown_rate * Decimal("100")),
+                    "totalCosts": format_decimal(getattr(result, "total_costs", Decimal("0"))),
+                    "averageDurationMinutes": (
+                        sum(duration_minutes) / len(duration_minutes) if duration_minutes else 0
+                    ),
+                }
                 summary = {
                     "id": f"bt-{secrets.token_hex(4)}",
                     "name": f"{normalize_pair(pair)} {strategy_class_name}",
                     "pair": normalize_pair(pair),
                     "timeframe": timeframe,
                     "strategy": strategy_class_name,
+                    "freqaimodel": freqaimodel,
                     "status": "Completed",
                     "result": f"{((result.net_pl / result.starting_balance) * Decimal('100')):.2f}%",
                     "netProfit": f"${format_decimal(result.net_pl)}",
@@ -2940,10 +3327,43 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     "winRate": format_decimal(result.win_rate * Decimal('100')),
                     "maxDrawdown": format_decimal(drawdown_rate * Decimal('100')),
                     "strategy": strategy_class_name,
+                    "freqaimodel": freqaimodel,
+                    "backtestWindow": backtest_window,
+                    "modelReused": (
+                        model_backtest_report.get("model_reused")
+                        if model_backtest_report else None
+                    ),
+                    "modelTraining": (
+                        model_backtest_report.get("model_training")
+                        if model_backtest_report else None
+                    ),
                     "dataSource": "OANDA historical candles",
                     "dataRevision": data_revision,
+                    "summary": backtest_metrics,
                     "aiParameters": {
                         "model": str(pair_config.get("model", "hybrid")),
+                        "freqaimodel": freqaimodel,
+                        "backtestWindow": (
+                            model_backtest_report.get("backtest_window")
+                            if model_backtest_report else "full_range"
+                        ),
+                        "modelReused": (
+                            model_backtest_report.get("model_reused")
+                            if model_backtest_report else None
+                        ),
+                        "modelTraining": (
+                            model_backtest_report.get("model_training")
+                            if model_backtest_report else None
+                        ),
+                        "strategyParameters": strategy_parameters,
+                        "backtestReport": (
+                            {
+                                key: value
+                                for key, value in model_backtest_report.items()
+                                if not key.startswith("_")
+                            }
+                            if model_backtest_report else None
+                        ),
                         "timeframe": timeframe,
                         "features": list(pair_config.get("featureSet", [])),
                         "riskBudget": str(pair_config.get("riskBudget", settings.risk_fraction)),

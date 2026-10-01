@@ -1,5 +1,6 @@
 import json
 from decimal import Decimal
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
@@ -459,6 +460,56 @@ def test_hyperopt_start_warns_and_clears_old_cache_before_refresh(monkeypatch):
     payload = response.json()
     assert calls == [('EUR/USD', 'M5')]
     assert 'clearing previous cached historical data' in payload['warning'].lower()
+
+
+def test_ai_research_cache_clear_is_scoped_and_preserves_reports(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    candle_cache = Path('user_data/data/oanda/candles.json')
+    candle_cache.parent.mkdir(parents=True)
+    candle_cache.write_text(json.dumps({
+        'version': 1,
+        'ranges': {
+            'CAD_JPY|5m|start|end': {'instrument': 'CAD_JPY', 'timeframe': '5m'},
+            'GBP_USD|5m|start|end': {'instrument': 'GBP_USD', 'timeframe': '5m'},
+        },
+    }), encoding='utf-8')
+    data_dir = Path('user_data/data/oanda')
+    target_candles = data_dir / 'CAD_JPY-M5.feather'
+    other_candles = data_dir / 'GBP_USD-M5.feather'
+    target_candles.write_bytes(b'cached candles')
+    other_candles.write_bytes(b'other pair candles')
+
+    model_dir = Path('user_data/hyperopt_results')
+    model_dir.mkdir(parents=True)
+    model_artifacts = [
+        model_dir / 'CAD_JPY_1h_default_LightGBMRegressor.txt',
+        model_dir / 'CAD_JPY_1h_default_LightGBMRegressor.model.json',
+        model_dir / 'CAD_JPY_1h_default_LightGBMRegressor.predictions.json',
+    ]
+    for artifact in model_artifacts:
+        artifact.write_text('cached model', encoding='utf-8')
+    report = model_dir / 'CAD_JPY_1h_LightGBMRegressor.json'
+    report.write_text('hyperopt report', encoding='utf-8')
+    other_model = model_dir / 'GBP_USD_1h_default_LightGBMRegressor.txt'
+    other_model.write_text('other pair model', encoding='utf-8')
+
+    response = client.post(
+        '/api/v1/ai/research-cache/clear',
+        json={'pair': 'CAD/JPY', 'timeframe': 'M5'},
+        headers={'X-User-Role': 'operator', 'X-CSRF-Token': 'ai-research-cache-clear'},
+    )
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload['candleItemsRemoved'] == 2
+    assert payload['modelFilesRemoved'] == 3
+    assert not target_candles.exists()
+    assert other_candles.exists()
+    assert all(not artifact.exists() for artifact in model_artifacts)
+    assert report.exists()
+    assert other_model.exists()
+    remaining_ranges = json.loads(candle_cache.read_text(encoding='utf-8'))['ranges']
+    assert list(remaining_ranges) == ['GBP_USD|5m|start|end']
 
 
 def test_order_submit_requires_operator_role_and_csrf_token():

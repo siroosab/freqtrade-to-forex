@@ -1,7 +1,7 @@
 import asyncio
 import json
 import sqlite3
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -95,8 +95,10 @@ from freqtrade.forex.cli import (
     build_parser,
     paper_report_to_json,
     report_to_json,
+    run_backtest,
     run_practice,
     run_practice_run,
+    run_hyperopt,
 )
 from freqtrade.forex.models import OandaOrderResult
 from freqtrade.forex.state import OandaAccountState, OandaPosition
@@ -951,6 +953,147 @@ def test_paper_backup_cli_requires_destination() -> None:
     assert args.ledger == "user_data/oanda/paper.sqlite"
 
 
+def test_forex_research_cli_parses_cache_and_ai_options(tmp_path: Path) -> None:
+    args = build_parser().parse_args([
+        "hyperopt", "--pair", "EUR/USD", "--epochs", "12",
+        "--refresh-data", "--model-dir", str(tmp_path),
+    ])
+    assert args.command == "hyperopt"
+    assert args.epochs == 12
+    assert args.refresh_data is True
+    assert args.hyperopt_loss == "ProfitDrawDownHyperOptLoss"
+    assert args.freqaimodel is None
+    assert args.strategy is None
+    assert args.stop_pips == Decimal("10")
+    selected_model = build_parser().parse_args([
+        "hyperopt", "--freqaimodel", "LightGBMRegressor"
+    ])
+    assert selected_model.freqaimodel == "LightGBMRegressor"
+    selected_strategy = build_parser().parse_args([
+        "hyperopt", "--strategy", "ForexEmaStrategy"
+    ])
+    assert selected_strategy.strategy == "ForexEmaStrategy"
+
+    download = build_parser().parse_args(["download-data", "--count", "250"])
+    clear = build_parser().parse_args(["cache-clear", "--pair", "EUR/USD"])
+    assert download.command == "download-data"
+    assert clear.command == "cache-clear"
+    assert clear.pair == "EUR/USD"
+
+
+def test_freqai_cli_config_normalizes_official_config_keys(monkeypatch) -> None:
+    from freqtrade.forex.cli import _resolve_cli_freqai_config
+
+    monkeypatch.setattr("freqtrade.forex.cli.load_forex_config", lambda: {
+        "freqai": {
+            "identifier": "forex-experiment-2",
+            "train_period_days": 30,
+            "backtest_period_days": 7,
+            "feature_parameters": {
+                "label_period_candles": 12,
+                "indicator_periods_candles": [7, 21],
+                "include_shifted_candles": 2,
+                "weight_factor": 0.3,
+                "DI_threshold": 0.8,
+            },
+            "data_split_parameters": {"test_size": 0.25, "random_state": 9},
+            "model_training_parameters": {"n_estimators": 321, "num_leaves": 23},
+        }
+    })
+
+    config = _resolve_cli_freqai_config("1h")
+    assert config["identifier"] == "forex-experiment-2"
+    assert config["train_period_days"] == 30
+    assert config["backtest_period_days"] == 7
+    assert config["feature_parameters"]["label_period_candles"] == 12
+    assert config["feature_parameters"]["include_shifted_candles"] == 2
+    assert config["model_training_parameters"]["n_estimators"] == 321
+    assert config["model_training_parameters"]["weight_factor"] == 0.3
+    assert config["model_training_parameters"]["di_threshold"] == 0.8
+
+
+@pytest.mark.asyncio
+async def test_backtest_cli_uses_freqai_model_and_strategy_report(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    from freqtrade.forex.models import OandaCandle
+
+    candles = [
+        OandaCandle(
+            time=(datetime(2026, 9, 15, 10, tzinfo=UTC) + timedelta(hours=index))
+            .isoformat().replace("+00:00", "Z"),
+            complete=True,
+            open=Decimal("1.10000"),
+            high=Decimal("1.10100"),
+            low=Decimal("1.09900"),
+            close=Decimal("1.10050"),
+            volume=42,
+        )
+        for index in range(30)
+    ]
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args) -> None:
+            return None
+
+        async def get_instruments(self, instruments):
+            return [OandaInstrument("EUR_USD", "EUR/USD", -4, 5, 0, Decimal("1"))]
+
+        async def get_account_summary(self):
+            return SimpleNamespace(balance=Decimal("10000"), currency="USD")
+
+        async def get_candles(self, *args, **kwargs):
+            return candles
+
+        async def get_prices(self, instruments):
+            return [SimpleNamespace(instrument="EUR_USD", spread=Decimal("0.0001"))]
+
+    result = BacktestResult(
+        starting_balance=Decimal("10000"),
+        ending_balance=Decimal("10050"),
+        trades=(),
+    )
+    helper_call: dict[str, object] = {}
+
+    def fake_model_backtest(frame, **kwargs):
+        helper_call.update(kwargs)
+        return tmp_path / "report.json", tmp_path / "weights.txt", {
+            "strategy_parameters": {"freqai_entry_threshold": 0.001},
+            "_backtest_result": result,
+        }
+
+    monkeypatch.setattr("freqtrade.forex.cli.OandaClient", FakeClient)
+    monkeypatch.setattr("freqtrade.forex.cli._run_lightgbm_hyperopt", fake_model_backtest)
+    args = build_parser().parse_args([
+        "backtest", "--pair", "EUR/USD", "--timeframe", "1h", "--count", "30",
+        "--strategy", "ForexEmaStrategy", "--freqaimodel", "LightGBMRegressor",
+        "--model-dir", str(tmp_path),
+    ])
+
+    assert await run_backtest(OandaSettings("token", "account"), args) == 0
+    captured = capsys.readouterr().out
+    assert "Backtest Summary" in captured
+    assert "Wins / Draws / Losses" in captured
+    assert "Net profit (USD)" in captured
+    output = json.loads(captured[captured.index("{\n"):])
+    assert output["strategy"] == "ForexEmaStrategy"
+    assert output["freqaimodel"] == "LightGBMRegressor"
+    assert output["backtest_window"] == "out_of_sample"
+    assert output["ai_parameters"]["freqai_entry_threshold"] == 0.001
+    assert output["summary"]["account_currency"] == "USD"
+    assert Decimal(output["summary"]["net_pl"]) == Decimal("50")
+    assert output["summary"]["wins"] == 0
+    assert output["summary"]["profit_factor"] is None
+    assert helper_call["optimize_strategy"] is False
+    assert helper_call["strategy_class"] == "ForexEmaStrategy"
+
+
 def test_practice_run_recorder_persists_multiple_sessions(tmp_path) -> None:
     recorder = PracticeRunRecorder(tmp_path / "practice-runs.jsonl")
     recorder.append(
@@ -1315,6 +1458,431 @@ async def test_historical_provider_rejects_reversed_range() -> None:
             start="2026-09-15T10:10:00Z",
             end="2026-09-15T10:00:00Z",
         )
+
+
+@pytest.mark.asyncio
+async def test_latest_candle_cache_is_reused_refreshed_and_cleared(tmp_path: Path) -> None:
+    from freqtrade.forex.models import OandaCandle
+
+    candles = [
+        OandaCandle(
+            time=(datetime(2026, 9, 15, 10, tzinfo=UTC) + timedelta(minutes=5 * index))
+            .isoformat().replace("+00:00", "Z"),
+            complete=True,
+            open=Decimal("1.10000"),
+            high=Decimal("1.10100"),
+            low=Decimal("1.09900"),
+            close=Decimal("1.10050"),
+            volume=42,
+        )
+        for index in range(30)
+    ]
+    client = AsyncMock()
+    client.get_candles.return_value = candles
+    provider = OandaMarketDataProvider(client, OandaSettings("token", "account"))
+    store = HistoricalCandleStore(tmp_path / "candles.json")
+
+    first = await provider.fetch_latest("EUR/USD", "5m", count=30, store=store)
+    cached = await provider.fetch_latest("EUR/USD", "5m", count=30, store=store)
+    refreshed = await provider.fetch_latest(
+        "EUR/USD", "5m", count=30, store=store, refresh=True
+    )
+
+    assert first.equals(cached)
+    assert cached.equals(refreshed)
+    assert client.get_candles.await_count == 2
+    assert store.clear(instrument="EUR_USD", timeframe="5m") == 1
+    assert store.load_latest("EUR_USD", "5m", count=30) is None
+
+
+@pytest.mark.asyncio
+async def test_native_cli_hyperopt_saves_ai_model_and_caches_download(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    from freqtrade.forex.models import OandaCandle
+
+    candles = [
+        OandaCandle(
+            time=(datetime(2026, 9, 15, 10, tzinfo=UTC) + timedelta(minutes=5 * index))
+            .isoformat().replace("+00:00", "Z"),
+            complete=True,
+            open=Decimal("1.10000"),
+            high=Decimal("1.10100"),
+            low=Decimal("1.09900"),
+            close=Decimal("1.10050"),
+            volume=42,
+        )
+        for index in range(40)
+    ]
+
+    class FakeClient:
+        candle_requests = 0
+
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args) -> None:
+            return None
+
+        async def get_instruments(self, instruments):
+            return [OandaInstrument("EUR_USD", "EUR/USD", -4, 5, 0, Decimal("1"))]
+
+        async def get_account_summary(self):
+            return SimpleNamespace(balance=Decimal("10000"), currency="USD")
+
+        async def get_candles(self, *args, **kwargs):
+            type(self).candle_requests += 1
+            return candles
+
+        async def get_prices(self, instruments):
+            return [SimpleNamespace(instrument="EUR_USD", spread=Decimal("0.0001"))]
+
+    validation_result = SimpleNamespace(
+        ending_balance=Decimal("10100"), net_pl=Decimal("100"),
+        max_drawdown=Decimal("20"), trades=(), win_rate=Decimal("0.6"),
+    )
+    candidate = SimpleNamespace(
+        entry_threshold=Decimal("0.25"), max_spread_pct=Decimal("0.8"),
+        validation_result=validation_result, objective=Decimal("80"),
+    )
+    hyperopt_result = SimpleNamespace(
+        best=candidate, candidates=(candidate,), candidates_tested=1,
+    )
+    optimization_args: dict[str, object] = {}
+
+    def fake_hyperopt(frame, instrument, **kwargs):
+        optimization_args.update(kwargs)
+        kwargs["on_candidate"](1, 1, candidate)
+        return hyperopt_result
+
+    monkeypatch.setattr("freqtrade.forex.cli.OandaClient", FakeClient)
+    monkeypatch.setattr("freqtrade.forex.cli.run_ai_hyperopt", fake_hyperopt)
+    args = build_parser().parse_args([
+        "hyperopt", "--count", "40", "--epochs", "1",
+        "--freqaimodel", "ForexAIStrategyBaseline",
+        "--data-cache", str(tmp_path / "candles.json"),
+        "--model-dir", str(tmp_path / "models"),
+    ])
+
+    assert await run_hyperopt(OandaSettings("token", "account"), args) == 0
+    captured = capsys.readouterr().out
+    assert "Epoch 1/1 | objective=80 | best=80 | entry=0.25 | max_spread=0.8" in captured
+    output = json.loads(captured[captured.index("{\n"):])
+    model_path = Path(output["model_path"])
+    model = json.loads(model_path.read_text(encoding="utf-8"))
+    from freqtrade.forex.cli import _load_ai_model
+
+    assert model["parameters"] == {"entry_threshold": "0.25", "max_spread_pct": "0.8"}
+    assert _load_ai_model(model_path, "EUR_USD", "5m") == model["parameters"]
+    assert optimization_args["max_attempts"] == 1
+    assert optimization_args["quote_to_account_rate"] == Decimal("1")
+    assert HistoricalCandleStore(tmp_path / "candles.json").load_latest(
+        "EUR_USD", "5m", count=40
+    ) is not None
+    assert FakeClient.candle_requests == 1
+
+
+@pytest.mark.asyncio
+async def test_native_cli_selects_strategy_class_for_hyperopt(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    from freqtrade.forex.models import OandaCandle
+
+    candles = [
+        OandaCandle(
+            time=(datetime(2026, 9, 15, 10, tzinfo=UTC) + timedelta(hours=index))
+            .isoformat().replace("+00:00", "Z"),
+            complete=True,
+            open=Decimal("1.10000"),
+            high=Decimal("1.10100"),
+            low=Decimal("1.09900"),
+            close=Decimal("1.10050"),
+            volume=42,
+        )
+        for index in range(40)
+    ]
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args) -> None:
+            return None
+
+        async def get_instruments(self, instruments):
+            return [OandaInstrument("EUR_USD", "EUR/USD", -4, 5, 0, Decimal("1"))]
+
+        async def get_account_summary(self):
+            return SimpleNamespace(balance=Decimal("10000"), currency="USD")
+
+        async def get_candles(self, *args, **kwargs):
+            return candles
+
+        async def get_prices(self, instruments):
+            return [SimpleNamespace(instrument="EUR_USD", spread=Decimal("0.0001"))]
+
+    selected: dict[str, object] = {}
+    candidate = {
+        "parameters": {"fast_period_opt": 5, "slow_period_opt": 12},
+        "objective": "12.50",
+        "trainNetPl": "10.00",
+        "validationNetPl": "12.50",
+        "validationDrawdown": "2.00",
+        "validationTrades": 3,
+    }
+
+    def fake_strategy_hyperopt(frame, informative, instrument, **kwargs):
+        selected.update(kwargs)
+        kwargs["on_candidate"](1, 1, candidate)
+        return [candidate]
+
+    monkeypatch.setattr("freqtrade.forex.cli.OandaClient", FakeClient)
+    monkeypatch.setattr(
+        "freqtrade.forex.ai_hyperopt.run_strategy_hyperopt", fake_strategy_hyperopt
+    )
+    args = build_parser().parse_args([
+        "hyperopt", "--pair", "EUR/USD", "--timeframe", "1h",
+        "--count", "40", "--epochs", "1", "--strategy", "ForexEmaStrategy",
+        "--data-cache", str(tmp_path / "candles.json"),
+        "--model-dir", str(tmp_path / "reports"),
+    ])
+
+    assert await run_hyperopt(OandaSettings("token", "account"), args) == 0
+    output = capsys.readouterr().out
+    assert "Epoch 1/1 | objective=12.50" in output
+    assert "FINAL STRATEGY HYPEROPT RESULTS" in output
+    assert selected["strategy_class"] == "ForexEmaStrategy"
+    report_path = tmp_path / "reports" / "EUR_USD_1h_ForexEmaStrategy_hyperopt.json"
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["strategy"] == "ForexEmaStrategy"
+    assert report["best"]["parameters"] == {
+        "fast_period_opt": 5, "slow_period_opt": 12
+    }
+
+
+@pytest.mark.parametrize("model_name", ("LightGBMRegressor", "LightGBMClassifier"))
+def test_lightgbm_freqaimodel_hyperopt_saves_weights_and_epoch_report(
+    tmp_path, capsys, model_name: str
+) -> None:
+    from freqtrade.forex.cli import _run_lightgbm_hyperopt
+
+    candles = pd.DataFrame({
+        "date": pd.date_range("2026-09-01", periods=120, freq="5min", tz="UTC"),
+        "open": [1.1 + index * 0.00001 for index in range(120)],
+        "high": [1.101 + index * 0.00001 for index in range(120)],
+        "low": [1.099 + index * 0.00001 for index in range(120)],
+        "close": [1.1 + index * 0.00001 + (index % 3) * 0.0001 for index in range(120)],
+        "volume": [100 + index for index in range(120)],
+    })
+
+    report_path, weights_path, report = _run_lightgbm_hyperopt(
+        candles,
+        instrument=OandaInstrument("EUR_USD", "EUR/USD", -4, 5, 0, Decimal("1")),
+        pair="EUR/USD",
+        timeframe="5m",
+        model_name=model_name,
+        epochs=1,
+        model_dir=tmp_path,
+        starting_balance=Decimal("10000"),
+        risk_fraction=Decimal("0.01"),
+        spread=Decimal("0.0001"),
+        slippage=Decimal("0"),
+        financing_rate_per_day=Decimal("0"),
+        quote_to_account_rate=Decimal("1"),
+        stop_pips=Decimal("10"),
+        hyperopt_loss="ProfitDrawDownHyperOptLoss",
+    )
+
+    assert report_path.is_file()
+    assert weights_path.is_file()
+    assert report["freqaimodel"] == model_name
+    assert len(report["candidates"]) == 1
+    assert report["strategy_parameters"] == {
+        "entry_threshold": report["best"]["entry_threshold"],
+        "max_spread_pct": report["best"]["max_spread_pct"],
+    }
+    assert report["model_training"]["validation"]
+    first_output = capsys.readouterr().out
+    assert "AI TRAINING COMPLETE" in first_output
+    assert "STRATEGY HYPEROPT" in first_output
+    assert "Entry threshold" in first_output
+
+    _, _, latest_hyperopt_report = _run_lightgbm_hyperopt(
+        candles,
+        instrument=OandaInstrument("EUR_USD", "EUR/USD", -4, 5, 0, Decimal("1")),
+        pair="EUR/USD",
+        timeframe="5m",
+        model_name=model_name,
+        epochs=1,
+        model_dir=tmp_path,
+        starting_balance=Decimal("10000"),
+        risk_fraction=Decimal("0.01"),
+        spread=Decimal("0.0001"),
+        slippage=Decimal("0"),
+        financing_rate_per_day=Decimal("0"),
+        quote_to_account_rate=Decimal("1"),
+        stop_pips=Decimal("10"),
+        hyperopt_loss="ProfitDrawDownHyperOptLoss",
+    )
+    assert "reusing cached" in capsys.readouterr().out
+
+
+def test_freqaimodel_trains_and_hyperopts_selected_strategy(tmp_path: Path, monkeypatch, capsys) -> None:
+    from freqtrade.forex.cli import _run_lightgbm_hyperopt
+
+    strategy_directory = tmp_path / "strategies"
+    strategy_directory.mkdir()
+    (strategy_directory / "PredictionThresholdStrategy.py").write_text(
+        """from freqtrade.strategy import IStrategy, DecimalParameter
+
+class PredictionThresholdStrategy(IStrategy):
+    can_short = True
+    entry_limit = DecimalParameter(0.00001, 0.001, default=0.0001, decimals=5, space='buy')
+
+    def feature_engineering_expand_all(self, dataframe, period, metadata, **kwargs):
+        dataframe[f"%-return-{period}"] = dataframe['close'].pct_change(period).fillna(0)
+        return dataframe
+
+    def set_freqai_targets(self, dataframe, metadata, **kwargs):
+        period = self.freqai_info['feature_parameters']['label_period_candles']
+        dataframe['&-s_close'] = dataframe['close'].shift(-period) / dataframe['close'] - 1
+        return dataframe
+
+    def populate_indicators(self, dataframe, metadata):
+        return self.freqai.start(dataframe, metadata, self)
+
+    def populate_entry_trend(self, dataframe, metadata):
+        dataframe['enter_long'] = (dataframe['do_predict'] == 1) & (dataframe['&-s_close'] > self.entry_limit.value)
+        dataframe['enter_short'] = (dataframe['do_predict'] == 1) & (dataframe['&-s_close'] < -self.entry_limit.value)
+        return dataframe
+
+    def populate_exit_trend(self, dataframe, metadata):
+        dataframe['exit_long'] = (dataframe['do_predict'] == 1) & (dataframe['&-s_close'] < 0)
+        dataframe['exit_short'] = (dataframe['do_predict'] == 1) & (dataframe['&-s_close'] > 0)
+        return dataframe
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("FOREX_STRATEGIES_DIR", str(strategy_directory))
+    dates = pd.date_range("2026-09-01", periods=240, freq="5min", tz="UTC")
+    close = [1.1 + index * 0.00001 + (index % 7) * 0.00003 for index in range(len(dates))]
+    candles = pd.DataFrame({
+        "date": dates,
+        "open": close,
+        "high": [value + 0.0002 for value in close],
+        "low": [value - 0.0002 for value in close],
+        "close": close,
+        "volume": [100 + index for index in range(len(dates))],
+    })
+    freqai_config = {
+        "enabled": True,
+        "identifier": "cli-integrated-test",
+        "train_period_days": None,
+        "backtest_period_days": None,
+        "data_split_parameters": {"test_size": 0.2},
+        "model_training_parameters": {"n_estimators": 20, "num_leaves": 7},
+        "feature_parameters": {
+            "include_timeframes": ["5m"],
+            "include_corr_pairlist": [],
+            "indicator_periods_candles": [3, 5],
+            "include_shifted_candles": 1,
+            "label_period_candles": 2,
+            "DI_threshold": 0.0,
+            "weight_factor": 0.0,
+            "principal_component_analysis": False,
+        },
+    }
+
+    report_path, weights_path, report = _run_lightgbm_hyperopt(
+        candles,
+        instrument=OandaInstrument("EUR_USD", "EUR/USD", -4, 5, 0, Decimal("1")),
+        pair="EUR/USD",
+        timeframe="5m",
+        model_name="LightGBMRegressor",
+        epochs=2,
+        model_dir=tmp_path / "models",
+        starting_balance=Decimal("10000"),
+        risk_fraction=Decimal("0.01"),
+        spread=Decimal("0.0001"),
+        slippage=Decimal("0"),
+        financing_rate_per_day=Decimal("0"),
+        quote_to_account_rate=Decimal("1"),
+        stop_pips=Decimal("10"),
+        hyperopt_loss="ProfitDrawDownHyperOptLoss",
+        strategy_class="PredictionThresholdStrategy",
+        freqai_config=freqai_config,
+    )
+
+    assert report_path.is_file()
+    assert weights_path.is_file()
+    assert report["strategy"] == "PredictionThresholdStrategy"
+    assert report["identifier"] == "cli-integrated-test"
+    assert report["target_column"] == "&-s_close"
+    assert report["model_training_parameters"]["n_estimators"] == 20
+    assert report["model_training_parameters"]["num_leaves"] == 7
+    assert report["training_context"]["data_split_parameters"]["test_size"] == 0.2
+    assert report["predictions_file"].endswith(".predictions.json")
+    assert "entry_limit" in report["strategy_parameters"]
+    assert len(report["candidates"]) == 2
+    captured = capsys.readouterr().out
+    assert "AI TRAINING COMPLETE" in captured
+    assert "STRATEGY HYPEROPT" in captured
+    assert "params={'entry_limit':" in captured
+
+    _, _, latest_hyperopt_report = _run_lightgbm_hyperopt(
+        candles,
+        instrument=OandaInstrument("EUR_USD", "EUR/USD", -4, 5, 0, Decimal("1")),
+        pair="EUR/USD",
+        timeframe="5m",
+        model_name="LightGBMRegressor",
+        epochs=2,
+        model_dir=tmp_path / "models",
+        starting_balance=Decimal("10000"),
+        risk_fraction=Decimal("0.01"),
+        spread=Decimal("0.0001"),
+        slippage=Decimal("0"),
+        financing_rate_per_day=Decimal("0"),
+        quote_to_account_rate=Decimal("1"),
+        stop_pips=Decimal("10"),
+        hyperopt_loss="ProfitDrawDownHyperOptLoss",
+        strategy_class="PredictionThresholdStrategy",
+        freqai_config=freqai_config,
+    )
+    cached_output = capsys.readouterr().out
+    assert "reusing cached LightGBMRegressor" in cached_output
+    assert "reusing cached" in cached_output.lower()
+
+    backtest_path, backtest_weights, backtest_report = _run_lightgbm_hyperopt(
+        candles,
+        instrument=OandaInstrument("EUR_USD", "EUR/USD", -4, 5, 0, Decimal("1")),
+        pair="EUR/USD",
+        timeframe="5m",
+        model_name="LightGBMRegressor",
+        epochs=1,
+        model_dir=tmp_path / "models",
+        starting_balance=Decimal("10000"),
+        risk_fraction=Decimal("0.01"),
+        spread=Decimal("0.0001"),
+        slippage=Decimal("0"),
+        financing_rate_per_day=Decimal("0"),
+        quote_to_account_rate=Decimal("1"),
+        stop_pips=Decimal("10"),
+        hyperopt_loss="ProfitDrawDownHyperOptLoss",
+        strategy_class="PredictionThresholdStrategy",
+        freqai_config=freqai_config,
+        optimize_strategy=False,
+    )
+    assert backtest_path.is_file()
+    assert backtest_weights == weights_path
+    assert backtest_report["backtest_window"] == "out_of_sample"
+    assert backtest_report["strategy_parameters"] == latest_hyperopt_report["strategy_parameters"]
+    assert "_backtest_result" in backtest_report
 
 
 @pytest.mark.asyncio

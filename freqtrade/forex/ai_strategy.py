@@ -12,7 +12,7 @@ import pandas as pd
 
 from freqtrade.forex.features import ForexFeaturePipeline
 from freqtrade.forex.strategy_loop import Signal
-from freqtrade.strategy import IStrategy
+from freqtrade.strategy import DecimalParameter, IStrategy
 
 
 class ForexAIStrategyBaseline(IStrategy):
@@ -25,6 +25,10 @@ class ForexAIStrategyBaseline(IStrategy):
     minimal_roi = {"0": 10.0}
     stoploss = -0.12
     process_only_new_candles = True
+    freqai_entry_threshold = DecimalParameter(
+        0.00001, 0.01, default=0.0005, decimals=5, space="buy"
+    )
+    freqai_hyperopt_parameters = ("freqai_entry_threshold",)
 
     def __init__(self, config: dict | None = None) -> None:
         super().__init__(config or {})
@@ -46,6 +50,32 @@ class ForexAIStrategyBaseline(IStrategy):
             raise ValueError("AI indicator windows must be at least 2")
         if self.max_spread_pct <= 0:
             raise ValueError("forex_ai_max_spread_pct must be positive")
+
+    def feature_engineering_expand_all(
+        self, dataframe: pd.DataFrame, period: int, metadata: dict, **kwargs
+    ) -> pd.DataFrame:
+        close = pd.to_numeric(dataframe["close"], errors="coerce")
+        dataframe[f"%-return-{period}"] = close.pct_change(period).fillna(0.0)
+        return dataframe
+
+    def feature_engineering_standard(
+        self, dataframe: pd.DataFrame, metadata: dict, **kwargs
+    ) -> pd.DataFrame:
+        dataframe["%-session-hour"] = pd.to_datetime(
+            dataframe["date"], utc=True
+        ).dt.hour / 23.0
+        return dataframe
+
+    def set_freqai_targets(
+        self, dataframe: pd.DataFrame, metadata: dict, **kwargs
+    ) -> pd.DataFrame:
+        label_period = int(
+            self.freqai_info["feature_parameters"]["label_period_candles"]
+        )
+        dataframe["&-s_close"] = (
+            dataframe["close"].shift(-label_period) / dataframe["close"] - 1.0
+        )
+        return dataframe
 
     def populate_indicators(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:
         result = dataframe.copy()
@@ -74,10 +104,24 @@ class ForexAIStrategyBaseline(IStrategy):
         trend = close.pct_change().fillna(0.0).rolling(window=3, min_periods=1).mean() if "trend" in self.feature_set else 0.0
         risk_component = (result["spread_pct"] * 100.0).clip(lower=0.0) if "spread" in self.feature_set else 0.0
         result["signal_strength"] = (trend * 100.0 + risk_component).where(result["spread_pct"] <= self.max_spread_pct, 0.0).fillna(0.0)
+        if self.config.get("freqai", {}).get("enabled", False):
+            result = self.freqai.start(result, metadata, self)
         return result
 
     def populate_entry_trend(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:
         result = dataframe.copy()
+        if "&-s_close" in result:
+            trusted = result.get("do_predict", 0) == 1
+            prediction = result["&-s_close"]
+            if pd.api.types.is_numeric_dtype(prediction):
+                prediction = pd.to_numeric(prediction, errors="coerce")
+                threshold = float(self.freqai_entry_threshold.value)
+                result["enter_long"] = ((prediction > threshold) & trusted).fillna(False)
+                result["enter_short"] = ((prediction < -threshold) & trusted).fillna(False)
+            else:
+                result["enter_long"] = (prediction == "long") & trusted
+                result["enter_short"] = (prediction == "short") & trusted
+            return result
         ready = ForexFeaturePipeline((), warmup_candles=self.startup_candle_count).ready_mask(result)
         signal_strength = pd.to_numeric(result.get("signal_strength", 0), errors="coerce").fillna(0.0)
         result["enter_long"] = ((signal_strength > self.entry_threshold) & ready).fillna(False)
@@ -86,6 +130,17 @@ class ForexAIStrategyBaseline(IStrategy):
 
     def populate_exit_trend(self, dataframe: pd.DataFrame, metadata: dict) -> pd.DataFrame:
         result = dataframe.copy()
+        if "&-s_close" in result:
+            trusted = result.get("do_predict", 0) == 1
+            prediction = result["&-s_close"]
+            if pd.api.types.is_numeric_dtype(prediction):
+                prediction = pd.to_numeric(prediction, errors="coerce")
+                result["exit_long"] = ((prediction < 0) & trusted).fillna(False)
+                result["exit_short"] = ((prediction > 0) & trusted).fillna(False)
+            else:
+                result["exit_long"] = (prediction != "long") & trusted
+                result["exit_short"] = (prediction != "short") & trusted
+            return result
         ready = ForexFeaturePipeline((), warmup_candles=self.startup_candle_count).ready_mask(result)
         signal_strength = pd.to_numeric(result.get("signal_strength", 0), errors="coerce").fillna(0.0)
         result["exit_long"] = ((signal_strength < self.exit_threshold) & ready).fillna(False)

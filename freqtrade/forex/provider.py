@@ -112,13 +112,14 @@ class OandaMarketDataProvider:
         start: str,
         end: str,
         store: HistoricalCandleStore | None = None,
+        refresh: bool = False,
     ) -> pd.DataFrame:
         start_dt = datetime.fromisoformat(start.replace("Z", "+00:00")).astimezone(UTC)
         end_dt = datetime.fromisoformat(end.replace("Z", "+00:00")).astimezone(UTC)
         if start_dt >= end_dt:
             raise ValueError("historical start must be before end")
         instrument = self.to_oanda_instrument(pair)
-        if store is not None:
+        if store is not None and not refresh:
             cached = store.load(instrument, timeframe, start=start, end=end)
             if cached is not None:
                 return self.candles_to_dataframe(cached)
@@ -140,6 +141,36 @@ class OandaMarketDataProvider:
                 timeframe,
                 start=start,
                 end=end,
+                candles=candles,
+                normalized=normalized_candle_payload(candles),
+            )
+        return self.candles_to_dataframe(candles)
+
+    async def fetch_latest(
+        self,
+        pair: str,
+        timeframe: str,
+        *,
+        count: int = 500,
+        store: HistoricalCandleStore | None = None,
+        refresh: bool = False,
+    ) -> pd.DataFrame:
+        if count < 1:
+            raise ValueError("count must be at least 1")
+        instrument = self.to_oanda_instrument(pair)
+        if store is not None and not refresh:
+            cached = store.load_latest(instrument, timeframe, count=count)
+            if cached is not None:
+                return self.candles_to_dataframe(cached)
+        candles = await self.client.get_candles(
+            instrument, self.to_oanda_granularity(timeframe), count=count
+        )
+        candles = self.filter_incomplete_candles(self.deduplicate_candles(candles))
+        if store is not None:
+            store.save_latest(
+                instrument,
+                timeframe,
+                count=count,
                 candles=candles,
                 normalized=normalized_candle_payload(candles),
             )

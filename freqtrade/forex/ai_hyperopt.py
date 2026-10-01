@@ -120,15 +120,28 @@ def run_strategy_hyperopt(
     starting_balance: Decimal,
     risk_fraction: Decimal,
     spread: Decimal,
+    stop_pips: Decimal = Decimal("0.5"),
+    slippage: Decimal = Decimal("0"),
+    financing_rate_per_day: Decimal = Decimal("0"),
+    quote_to_account_rate: Decimal = Decimal("1"),
     max_attempts: int,
     hyperopt_loss: str,
     on_attempt: Callable[[int, int], None] | None = None,
+    on_candidate: Callable[[int, int, dict[str, object]], None] | None = None,
+    freqai_config: dict[str, object] | None = None,
+    freqai_predictions: dict[int, dict[str, object]] | None = None,
+    freqai_target_column: str | None = None,
     should_stop: Callable[[], bool] | None = None,
 ) -> list[dict[str, object]]:
     """Sample declared Freqtrade parameter spaces and score each on held-out candles."""
     if len(candles) < 40:
         raise ValueError("strategy hyperopt requires at least 40 candles")
-    strategy = load_strategy(strategy_class, timeframe, pair)
+    strategy = load_strategy(
+        strategy_class,
+        timeframe,
+        pair,
+        config_overrides={"freqai": freqai_config} if freqai_config is not None else None,
+    )
     class_attributes: dict[str, object] = {}
     for strategy_type in reversed(type(strategy).__mro__):
         class_attributes.update(vars(strategy_type))
@@ -137,15 +150,36 @@ def run_strategy_hyperopt(
         for name, value in class_attributes.items()
         if isinstance(value, BaseParameter) and value.optimize
     }
+    freqai_parameter_names = getattr(strategy, "freqai_hyperopt_parameters", None)
+    if freqai_parameter_names is not None:
+        selected_names = set(freqai_parameter_names)
+        if freqai_predictions is not None:
+            parameters = {
+                name: parameter
+                for name, parameter in parameters.items()
+                if name in selected_names
+            }
+        else:
+            parameters = {
+                name: parameter
+                for name, parameter in parameters.items()
+                if name not in selected_names
+            }
     if not parameters:
         raise ValueError(f"{strategy_class} has no optimizable Freqtrade parameters")
     informative_timeframes = strategy_informative_timeframes(strategy, pair)
     missing_timeframes = set(informative_timeframes) - set(informative_candles)
     if missing_timeframes:
         raise ValueError(f"Missing informative candles for: {', '.join(sorted(missing_timeframes))}")
-    split_index = max(20, min(len(candles) - 20, len(candles) // 2))
-    train = candles.iloc[:split_index]
-    validation = candles.iloc[split_index:]
+    if freqai_predictions is not None:
+        if freqai_config is None or freqai_target_column is None:
+            raise ValueError("cached FreqAI predictions require their config and target column")
+        train = candles.iloc[:0]
+        validation = candles
+    else:
+        split_index = max(20, min(len(candles) - 20, len(candles) // 2))
+        train = candles.iloc[:split_index]
+        validation = candles.iloc[split_index:]
     rng = random.Random()
     rows: list[dict[str, object]] = []
 
@@ -168,28 +202,42 @@ def run_strategy_hyperopt(
         values = {name: sample(parameter) for name, parameter in parameters.items()}
 
         def evaluate(data: pd.DataFrame) -> BacktestResult:
-            candidate_strategy = load_strategy(strategy_class, timeframe, pair)
+            candidate_strategy = load_strategy(
+                strategy_class,
+                timeframe,
+                pair,
+                config_overrides={
+                    "freqai": freqai_config
+                } if freqai_config is not None else None,
+            )
             for name, value in values.items():
                 parameter = deepcopy(parameters[name])
                 parameter.value = value
                 setattr(candidate_strategy, name, parameter)
+            if freqai_predictions is not None:
+                from freqtrade.forex.strategy_execution import CachedFreqAIPredictions
+
+                candidate_strategy.freqai_info = freqai_config
+                candidate_strategy.freqai = CachedFreqAIPredictions(freqai_predictions)
+            if data.empty:
+                return BacktestResult(starting_balance, starting_balance, ())
             adapter = FreqtradeStrategyAdapter(candidate_strategy, pair, informative_candles)
             return ForexBacktester(
                 adapter,
                 instrument,
                 starting_balance=starting_balance,
                 risk_fraction=risk_fraction,
-                stop_pips=Decimal("0.5"),
+                stop_pips=stop_pips,
                 spread=spread,
-                slippage=Decimal("0"),
-                financing_rate_per_day=Decimal("0"),
-                quote_to_account_rate=Decimal("1"),
+                slippage=slippage,
+                financing_rate_per_day=financing_rate_per_day,
+                quote_to_account_rate=quote_to_account_rate,
             ).run(data)
 
         train_result = evaluate(train)
         validation_result = evaluate(validation)
         objective = compute_hyperopt_objective(validation_result, hyperopt_loss)
-        rows.append({
+        row = {
             "parameters": values,
             "objective": format(objective, ".2f"),
             "trainNetPl": format(train_result.net_pl, ".2f"),
@@ -198,7 +246,10 @@ def run_strategy_hyperopt(
             "validationTrades": len(validation_result.trades),
             "coverage": 2,
             "trainTrades": len(train_result.trades),
-        })
+        }
+        rows.append(row)
+        if on_candidate is not None:
+            on_candidate(attempt, total_attempts, row)
         if on_attempt is not None:
             on_attempt(attempt, total_attempts)
     rows.sort(key=lambda row: Decimal(str(row["objective"])), reverse=True)
@@ -302,6 +353,9 @@ def run_ai_hyperopt(
     starting_balance: Decimal,
     risk_fraction: Decimal,
     spread: Decimal,
+    slippage: Decimal = Decimal("0"),
+    financing_rate_per_day: Decimal = Decimal("0"),
+    quote_to_account_rate: Decimal = Decimal("1"),
     volatility_window: int = 5,
     atr_window: int = 14,
     entry_thresholds: tuple[Decimal, ...] = tuple(Decimal(index) / Decimal("20") for index in range(1, 31)),
@@ -309,6 +363,7 @@ def run_ai_hyperopt(
     max_attempts: int | None = None,
     hyperopt_loss: str = DEFAULT_HYPEROPT_LOSS,
     on_attempt: Callable[[int, int], None] | None = None,
+    on_candidate: Callable[[int, int, AiHyperoptCandidate], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
 ) -> AiHyperoptResult:
     if len(candles) < 20:
@@ -321,8 +376,16 @@ def run_ai_hyperopt(
     candidates: list[AiHyperoptCandidate] = []
 
     search_space = list(product(entry_thresholds, max_spreads))
-    if max_attempts is not None:
-        search_space = search_space[: max(1, min(max_attempts, len(search_space)))]
+    if max_attempts is not None and max_attempts < len(search_space):
+        attempt_count = max(1, max_attempts)
+        if attempt_count == 1:
+            search_space = [search_space[len(search_space) // 2]]
+        else:
+            last_index = len(search_space) - 1
+            search_space = [
+                search_space[round(index * last_index / (attempt_count - 1))]
+                for index in range(attempt_count)
+            ]
     total_attempts = len(search_space)
     for entry_threshold, max_spread_pct in search_space:
         if should_stop is not None and should_stop():
@@ -339,14 +402,19 @@ def run_ai_hyperopt(
             risk_fraction=risk_fraction,
             stop_pips=Decimal("0.5"),
             spread=spread,
-            slippage=Decimal("0"),
-            financing_rate_per_day=Decimal("0"),
-            quote_to_account_rate=Decimal("1"),
+            slippage=slippage,
+            financing_rate_per_day=financing_rate_per_day,
+            quote_to_account_rate=quote_to_account_rate,
         )
         train_result = ForexBacktester(strategy, instrument, **backtester).run(train)
         validation_result = ForexBacktester(strategy, instrument, **backtester).run(validation)
         objective = compute_hyperopt_objective(validation_result, hyperopt_loss)
-        candidates.append(AiHyperoptCandidate(entry_threshold, max_spread_pct, train_result, validation_result, objective))
+        candidate = AiHyperoptCandidate(
+            entry_threshold, max_spread_pct, train_result, validation_result, objective
+        )
+        candidates.append(candidate)
+        if on_candidate is not None:
+            on_candidate(len(candidates), total_attempts, candidate)
         if on_attempt is not None:
             on_attempt(len(candidates), total_attempts)
 

@@ -57,6 +57,8 @@ def build_forex_ai_dataset(
     *,
     pair: str,
     timeframe: str,
+    strategy_features: pd.DataFrame | None = None,
+    target_column: str | None = None,
     history_mode: str = "candles",
     history_value: int | None = None,
     label_period: int = 2,
@@ -77,11 +79,28 @@ def build_forex_ai_dataset(
     if train_fraction + validation_fraction >= Decimal("1"):
         raise ValueError("train and validation fractions must leave OOS data")
 
-    dataset = ForexFreqAIAdapter(
-        label_period=label_period,
-        indicator_periods=indicator_periods,
-        include_shifted_candles=include_shifted_candles,
-    ).build_dataset(candles)
+    if strategy_features is None:
+        dataset = ForexFreqAIAdapter(
+            label_period=label_period,
+            indicator_periods=indicator_periods,
+            include_shifted_candles=include_shifted_candles,
+        ).build_dataset(candles)
+    else:
+        if target_column is None or target_column not in strategy_features:
+            raise ValueError("strategy AI dataset requires its declared target column")
+        feature_columns = [
+            column
+            for column in strategy_features.columns
+            if isinstance(column, str) and column.startswith("%")
+        ]
+        if not feature_columns:
+            raise ValueError("FreqAI strategy must define at least one %-prefixed feature")
+        if "date" not in strategy_features:
+            raise ValueError("strategy AI features must preserve the date column")
+        dataset = strategy_features[["date", *feature_columns]].copy()
+        target = strategy_features[target_column]
+        numeric_target = pd.to_numeric(target, errors="coerce")
+        dataset["label"] = numeric_target if numeric_target.notna().any() else target
     dataset = dataset.dropna(subset=["label"]).reset_index(drop=True)
     if len(dataset) < 10:
         raise ValueError("AI dataset requires at least 10 labeled candles")

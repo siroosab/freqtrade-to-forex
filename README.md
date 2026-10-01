@@ -248,15 +248,50 @@ sudo loginctl enable-linger "$USER"
 
 ## تنظیمات و امنیت
 
-- اطلاعات حساب را فقط از صفحه `/setup` و روی اتصال امن HTTPS وارد کنید.
-- پورت `8090` را مستقیماً روی اینترنت عمومی باز نگذارید؛ برای production از
   reverse proxy مانند Nginx و HTTPS استفاده کنید.
-- فایل‌های داخل `user_data` و credentialها را commit نکنید.
-- برای بررسی سلامت API، آدرس زیر را باز کنید:
 
 ```text
 http://SERVER_IP:8090/health
 ```
+
+## CLI دانلود داده، Hyperopt و بک‌تست
+
+فرمان‌های زیر از endpointهای فقط‌خواندنی OANDA برای دریافت داده استفاده
+می‌کنند. اعتبارنامه را در `user_data/config.json` یا متغیرهای محیطی
+`OANDA_TOKEN` و `OANDA_ACCOUNT_ID` تنظیم کنید. در Windows، همین فرمان‌ها را
+داخل PowerShell فعال‌شده با `.venv` اجرا کنید.
+
+```bash
+# دانلود مستقل؛ داده در کش محلی ذخیره می‌شود
+python -m freqtrade.forex download-data --pair EUR/USD --timeframe 1h --count 5000
+
+# آموزش/بازیابی LightGBM، سپس Hyperopt پارامترهای ForexEmaStrategy
+python -m freqtrade.forex hyperopt --pair EUR/USD --timeframe 1h --count 5000 --epochs 30 --strategy ForexEmaStrategy --freqaimodel LightGBMRegressor
+
+# بک‌تست OOS با همان مدل و پارامترهای Hyperopt
+python -m freqtrade.forex backtest --pair EUR/USD --timeframe 1h --count 5000 --strategy ForexEmaStrategy --freqaimodel LightGBMRegressor
+
+# اجبار به دانلود تازه هنگام بک‌تست یا پاک‌کردن کش
+python -m freqtrade.forex backtest --pair EUR/USD --timeframe 1h --count 5000 --strategy ForexEmaStrategy --freqaimodel LightGBMRegressor --refresh-data
+python -m freqtrade.forex cache-clear --pair EUR/USD --timeframe 1h
+```
+
+Hyperopt ابتدا مدل را با featureها و targetهای strategy آموزش می‌دهد، یا
+در صورت تطبیق `identifier`، داده، feature schema و تنظیمات مدل از cache
+می‌خواند؛ سپس پارامترهای قابل‌بهینه‌سازی strategy را روی predictionهای
+validation بررسی می‌کند. بک‌تست همان مدل/prediction cache و پارامترهای گزارش
+Hyperopt را reuse می‌کند و نتیجه را فقط برای بازهٔ out-of-sample می‌سنجد.
+گزارش Hyperopt، وزن مدل، prediction cache و گزارش بک‌تست در
+`user_data/hyperopt_results/` ذخیره می‌شوند.
+
+خلاصهٔ جدول‌مانند بک‌تست شامل تعداد معاملات، wins/draws/losses، win rate،
+سود خالص و میانگین هر معامله به ارز حساب، gross profit/loss، profit factor،
+حداکثر drawdown، هزینه‌ها و متوسط مدت معامله است؛ JSON کامل معاملات و منحنی
+equity همچنان پس از جدول چاپ می‌شود. در `user_data/config.json`، بخش
+`freqai` برای `identifier`، train/backtest window، featureها، target horizon،
+split و `model_training_parameters` قابل تنظیم است. CLI برای ترکیب با یک
+strategy، وجود featureهای `%`، targetهای `&`، فراخوانی `self.freqai.start()`
+و مصرف target در منطق ورود/خروج را لازم می‌داند.
 
 ## اجرای تست‌ها
 

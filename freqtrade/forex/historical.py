@@ -31,6 +31,17 @@ class HistoricalCandleStore:
             return None
         return [OandaCandle.from_payload(item) for item in record["raw"]]
 
+    def load_latest(
+        self, instrument: str, timeframe: str, *, count: int
+    ) -> list[OandaCandle] | None:
+        if not self.path.exists():
+            return None
+        payload = json.loads(self.path.read_text(encoding="utf-8"))
+        record = payload.get("ranges", {}).get(self._latest_key(instrument, timeframe, count))
+        if record is None:
+            return None
+        return [OandaCandle.from_payload(item) for item in record["raw"]]
+
     def save(
         self,
         instrument: str,
@@ -57,9 +68,53 @@ class HistoricalCandleStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
+    def save_latest(
+        self,
+        instrument: str,
+        timeframe: str,
+        *,
+        count: int,
+        candles: list[OandaCandle],
+        normalized: list[dict[str, Any]],
+    ) -> None:
+        payload: dict[str, Any] = {"version": 1, "ranges": {}}
+        if self.path.exists():
+            payload = json.loads(self.path.read_text(encoding="utf-8"))
+        payload.setdefault("version", 1)
+        payload.setdefault("ranges", {})
+        payload["ranges"][self._latest_key(instrument, timeframe, count)] = {
+            "instrument": instrument.upper(),
+            "timeframe": timeframe,
+            "count": count,
+            "raw": [self._raw_payload(candle) for candle in candles],
+            "normalized": normalized,
+        }
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    def clear(self, *, instrument: str | None = None, timeframe: str | None = None) -> int:
+        if not self.path.exists():
+            return 0
+        payload = json.loads(self.path.read_text(encoding="utf-8"))
+        ranges = payload.get("ranges", {})
+        matching = {
+            key: record
+            for key, record in ranges.items()
+            if (instrument is None or record.get("instrument", "").upper() == instrument.upper())
+            and (timeframe is None or record.get("timeframe") == timeframe)
+        }
+        for key in matching:
+            del ranges[key]
+        self.path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        return len(matching)
+
     @staticmethod
     def _key(instrument: str, timeframe: str, start: str, end: str) -> str:
         return f"{instrument.upper()}|{timeframe}|{start}|{end}"
+
+    @staticmethod
+    def _latest_key(instrument: str, timeframe: str, count: int) -> str:
+        return f"{instrument.upper()}|{timeframe}|latest:{count}"
 
     @staticmethod
     def _raw_payload(candle: OandaCandle) -> dict[str, Any]:

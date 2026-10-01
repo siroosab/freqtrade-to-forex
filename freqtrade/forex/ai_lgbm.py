@@ -163,20 +163,23 @@ class LightGBMFutureReturnModel:
         learning_rate: float = 0.05,
         weight_factor: float = 0.0,
         di_threshold: float = 0.0,
+        model_parameters: dict[str, Any] | None = None,
     ) -> None:
         self.seed = seed
         self.estimators = estimators
         self.learning_rate = learning_rate
         self.weight_factor = weight_factor
         self.di_threshold = di_threshold
-        self.model = LGBMRegressor(
-            n_estimators=estimators,
-            learning_rate=learning_rate,
-            num_leaves=15,
-            max_depth=5,
-            random_state=seed,
-            verbosity=-1,
-        )
+        model_options: dict[str, Any] = {
+            "n_estimators": estimators,
+            "learning_rate": learning_rate,
+            "num_leaves": 15,
+            "max_depth": 5,
+            "random_state": seed,
+            "verbosity": -1,
+        }
+        model_options.update(model_parameters or {})
+        self.model = LGBMRegressor(**model_options)
         self.feature_columns: tuple[str, ...] = ()
 
     def fit_and_evaluate(
@@ -249,20 +252,24 @@ class LightGBMDirectionClassifier:
         neutral_band: float = 0.0001,
         weight_factor: float = 0.0,
         di_threshold: float = 0.0,
+        learning_rate: float = 0.05,
+        model_parameters: dict[str, Any] | None = None,
     ) -> None:
         if neutral_band < 0:
             raise ValueError("neutral_band must be non-negative")
         self.neutral_band = neutral_band
         self.weight_factor = weight_factor
         self.di_threshold = di_threshold
-        self.model = LGBMClassifier(
-            n_estimators=estimators,
-            learning_rate=0.05,
-            num_leaves=15,
-            max_depth=5,
-            random_state=seed,
-            verbosity=-1,
-        )
+        model_options: dict[str, Any] = {
+            "n_estimators": estimators,
+            "learning_rate": learning_rate,
+            "num_leaves": 15,
+            "max_depth": 5,
+            "random_state": seed,
+            "verbosity": -1,
+        }
+        model_options.update(model_parameters or {})
+        self.model = LGBMClassifier(**model_options)
 
     def fit_and_evaluate(
         self,
@@ -271,7 +278,9 @@ class LightGBMDirectionClassifier:
         *,
         model_version: str = "lightgbm-direction-v1",
     ) -> LightGBMClassifierResult:
-        labels = self._labels(dataset["label"])
+        target = dataset["label"]
+        numeric_target = pd.api.types.is_numeric_dtype(target)
+        labels = self._labels(target) if numeric_target else target.astype(str)
         train_end = manifest.train_rows
         validation_end = train_end + manifest.validation_rows
         features = list(manifest.feature_columns)
@@ -300,7 +309,11 @@ class LightGBMDirectionClassifier:
             training_data_hash=manifest.training_data_hash,
             validation_metrics=validation_metrics,
             out_of_sample_metrics=oos_metrics,
-            class_labels=("short", "flat", "long"),
+            class_labels=(
+                ("short", "flat", "long")
+                if numeric_target
+                else tuple(str(label) for label in self.model.classes_)
+            ),
             accepted=accepted,
             rejection_reasons=reasons,
             di_filtered_validation_rows=validation_filtered_rows,

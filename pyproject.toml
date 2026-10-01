@@ -136,6 +136,7 @@ Documentation = "https://freqtrade.io"
 
 [project.scripts]
 freqtrade = "freqtrade.main:main"
+forex = "freqtrade.forex.cli:main"
 
 [tool.setuptools]
 include-package-data = true
