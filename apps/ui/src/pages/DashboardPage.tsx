@@ -4,6 +4,7 @@ import { ForexChart } from '../components/ForexChart'
 import { ChartDataControls } from '../components/ChartDataControls'
 import { chartCandleCount } from '../components/chartOptions'
 import { closeManualPosition, createManualClientOrderId, getAccountSummary, getBrokerPendingOrders, getBrokerPositions, getMarketQuote, getMarketSummary, getOrdersChart, getRiskSummary, modifyManualPosition, modifyPendingOrder, submitLimitOrder, submitMarketOrder, type BrokerPendingOrder, type BrokerTrade } from '../api/mockApi'
+import { convertTrailingStopPipsToDistance, validateTrailingStopInput } from '../utils/trailingStopLoss'
 import { useForexSocket } from '../hooks/useForexSocket'
 import { useUiStore } from '../store/useUiStore'
 
@@ -18,6 +19,7 @@ export function DashboardPage() {
   const [modifyPendingTarget, setModifyPendingTarget] = useState<BrokerPendingOrder | null>(null)
   const [modifyStopLoss, setModifyStopLoss] = useState('')
   const [modifyTakeProfit, setModifyTakeProfit] = useState('')
+  const [modifyTrailingStopPips, setModifyTrailingStopPips] = useState('')
   const [modifyPendingPrice, setModifyPendingPrice] = useState('')
   const [modifyPendingUnits, setModifyPendingUnits] = useState('')
   const [isModifying, setIsModifying] = useState(false)
@@ -39,6 +41,12 @@ export function DashboardPage() {
   const accountQuery = useQuery({ queryKey: ['account'], queryFn: getAccountSummary })
   const marketQuery = useQuery({ queryKey: ['market'], queryFn: getMarketSummary })
   const quoteQuery = useQuery({ queryKey: ['market-quote', instrument], queryFn: () => getMarketQuote(instrument), refetchInterval: 2500, retry: false })
+  const modifyPositionQuoteQuery = useQuery({
+    queryKey: ['manual-modify-quote', modifyPositionTarget?.symbol],
+    queryFn: () => getMarketQuote(modifyPositionTarget!.symbol),
+    enabled: Boolean(modifyPositionTarget),
+    retry: false,
+  })
   const positionsQuery = useQuery({ queryKey: ['broker-positions'], queryFn: getBrokerPositions, refetchInterval: 3000 })
   const pendingOrdersQuery = useQuery({ queryKey: ['broker-pending-orders'], queryFn: getBrokerPendingOrders, refetchInterval: 3000, retry: false })
   const riskQuery = useQuery({ queryKey: ['risk'], queryFn: getRiskSummary })
@@ -78,6 +86,21 @@ export function DashboardPage() {
   const pricePrecision = brokerQuote?.displayPrecision ?? (instrument.endsWith('/JPY') ? 3 : 5)
   const activeEntryPrice = orderType === 'limit' ? Number(limitPrice) : entryPrice
   const pipSize = Number(brokerQuote?.pipSize ?? (instrument.endsWith('/JPY') ? 0.01 : 0.0001))
+  const modifyPipSize = Number(modifyPositionQuoteQuery.data?.pipSize)
+  const modifyPricePrecision = modifyPositionQuoteQuery.data?.displayPrecision ?? pricePrecision
+  const modifyProtectionValidation = modifyPositionTarget
+    ? validateTrailingStopInput(
+        modifyStopLoss,
+        modifyTrailingStopPips,
+        modifyPipSize,
+        modifyPricePrecision,
+      )
+    : null
+  const modifyTrailingStopLossDistance = convertTrailingStopPipsToDistance(
+    modifyTrailingStopPips,
+    modifyPipSize,
+    modifyPricePrecision,
+  )
   const protectionPrice = (distance: number, kind: 'stop' | 'target') => {
     if (protectionMode === 'price') {
       return Number.isFinite(distance) && distance > 0 ? distance.toFixed(pricePrecision) : ''
@@ -209,13 +232,21 @@ export function DashboardPage() {
 
   const handleModificationSubmit = async () => {
     if (userRole === 'viewer') return
+    if (modifyProtectionValidation) {
+      setModifyError(modifyProtectionValidation)
+      return
+    }
     setIsModifying(true)
     setModifyError(null)
     try {
       if (modifyPositionTarget) {
         await modifyManualPosition(
           modifyPositionTarget.id,
-          { stopLoss: modifyStopLoss, takeProfit: modifyTakeProfit },
+          {
+            stopLoss: modifyStopLoss,
+            takeProfit: modifyTakeProfit,
+            trailingStopLossDistance: modifyTrailingStopLossDistance,
+          },
           userRole,
         )
         await queryClient.invalidateQueries({ queryKey: ['broker-positions'] })
@@ -427,7 +458,7 @@ export function DashboardPage() {
                       <td>{position.stopLoss ?? '—'}</td>
                       <td>{position.takeProfit ?? '—'}</td>
                       <td className={Number(position.pnl) < 0 ? 'negative' : 'positive'}>{Number(position.pnl) > 0 ? '+' : ''}{position.pnl}</td>
-                      <td>{positionView === 'open' && position.manual && userRole !== 'viewer' ? <div className="trade-actions"><button className="modify-position-button" type="button" onClick={() => { setModifyError(null); setModifyStopLoss(position.stopLoss ?? ''); setModifyTakeProfit(position.takeProfit ?? ''); setModifyPositionTarget(position) }}>Modify</button><button className="close-position-button" type="button" onClick={() => { setCloseError(null); setCloseTarget(position) }}>Close</button></div> : positionView === 'closed' ? <span className="muted-cell">Closed</span> : '—'}</td>
+                      <td>{positionView === 'open' && position.manual && userRole !== 'viewer' ? <div className="trade-actions"><button className="modify-position-button" type="button" onClick={() => { setModifyError(null); setModifyStopLoss(position.stopLoss ?? ''); setModifyTakeProfit(position.takeProfit ?? ''); setModifyTrailingStopPips(''); setModifyPositionTarget(position) }}>Modify</button><button className="close-position-button" type="button" onClick={() => { setCloseError(null); setCloseTarget(position) }}>Close</button></div> : positionView === 'closed' ? <span className="muted-cell">Closed</span> : '—'}</td>
                     </tr>
                   ))}
                   {!positionsQuery.isLoading && visiblePositions.length === 0 && <tr><td className="empty-cell" colSpan={10}>{positionsQuery.isError ? 'Broker positions could not be loaded.' : `No ${positionView} broker trades.`}</td></tr>}
@@ -860,9 +891,10 @@ export function DashboardPage() {
             {modifyPositionTarget ? (
               <>
                 <h3>Modify {modifyPositionTarget.symbol} protection</h3>
-                <label className="modal-field"><span>Stop loss price</span><input type="number" min="0" step={10 ** -pricePrecision} value={modifyStopLoss} onChange={(event) => setModifyStopLoss(event.target.value)} /></label>
-                <label className="modal-field"><span>Take profit price</span><input type="number" min="0" step={10 ** -pricePrecision} value={modifyTakeProfit} onChange={(event) => setModifyTakeProfit(event.target.value)} /></label>
-                <p>Blank values leave that protection unchanged. Values are sent to OANDA, not stored as a local-only change.</p>
+                <label className="modal-field"><span>Stop loss price</span><input type="number" min="0" step={10 ** -modifyPricePrecision} value={modifyStopLoss} onChange={(event) => setModifyStopLoss(event.target.value)} /></label>
+                <label className="modal-field"><span>Trailing stop loss (pips)</span><input type="number" min="0.1" step="0.1" value={modifyTrailingStopPips} onChange={(event) => setModifyTrailingStopPips(event.target.value)} /><small className="calculated-price">OANDA distance: {modifyTrailingStopLossDistance ?? '—'} {modifyPositionQuoteQuery.data?.quoteCurrency ?? ''} ({modifyPipSize > 0 ? `1 pip = ${modifyPipSize}` : 'waiting for live instrument pip size'})</small></label>
+                <label className="modal-field"><span>Take profit price</span><input type="number" min="0" step={10 ** -modifyPricePrecision} value={modifyTakeProfit} onChange={(event) => setModifyTakeProfit(event.target.value)} /></label>
+                <p>A trailing stop replaces any fixed stop loss. Other blank values leave that protection unchanged. Changes are sent to OANDA, not stored locally.</p>
               </>
             ) : modifyPendingTarget ? (
               <>
@@ -872,10 +904,10 @@ export function DashboardPage() {
                 <p>This updates the broker's pending order price and signed units.</p>
               </>
             ) : null}
-            {modifyError && <p className="inline-error">{modifyError}</p>}
+            {(modifyError || modifyProtectionValidation) && <p className="inline-error">{modifyError ?? modifyProtectionValidation}</p>}
             <div className="modal-actions">
               <button className="secondary-action" disabled={isModifying} onClick={() => { setModifyPositionTarget(null); setModifyPendingTarget(null) }}>Cancel</button>
-              <button className="primary-action" disabled={isModifying} onClick={handleModificationSubmit}>{isModifying ? 'Updating…' : 'Apply broker changes'}</button>
+              <button className="primary-action" disabled={isModifying || Boolean(modifyProtectionValidation)} onClick={handleModificationSubmit}>{isModifying ? 'Updating…' : 'Apply broker changes'}</button>
             </div>
           </div>
         </div>

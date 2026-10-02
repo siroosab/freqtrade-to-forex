@@ -687,8 +687,22 @@ def test_modify_endpoint_updates_manual_trade_protection_only(monkeypatch):
                 {'id': 'strategy-1', 'clientExtensions': {'id': 'strategy-entry-1'}},
             ]
 
-        async def modify_trade_orders(self, trade_id, *, stop_loss_price=None, take_profit_price=None):
-            modified.append((trade_id, stop_loss_price, take_profit_price))
+        async def modify_trade_orders(
+            self,
+            trade_id,
+            *,
+            stop_loss_price=None,
+            take_profit_price=None,
+            trailing_stop_loss_distance=None,
+        ):
+            modified.append(
+                (
+                    trade_id,
+                    stop_loss_price,
+                    take_profit_price,
+                    trailing_stop_loss_distance,
+                )
+            )
             return {'lastTransactionID': 'modify-tx'}
 
     monkeypatch.setattr('freqtrade.forex.api.OandaClient', FakeClient)
@@ -706,6 +720,28 @@ def test_modify_endpoint_updates_manual_trade_protection_only(monkeypatch):
         json={'stopLoss': '1.0900', 'takeProfit': '1.1100'},
         headers=headers,
     )
+    trailing = client.post(
+        '/api/v1/positions/manual-1/modify',
+        json={'trailingStopLossDistance': '0.0015', 'takeProfit': '1.1100'},
+        headers=headers,
+    )
+    conflict = client.post(
+        '/api/v1/positions/manual-1/modify',
+        json={
+            'stopLoss': '1.0900',
+            'trailingStopLossDistance': '0.0015',
+        },
+        headers=headers,
+    )
+    invalid_distance = client.post(
+        '/api/v1/positions/manual-1/modify',
+        json={'trailingStopLossDistance': '0'},
+        headers=headers,
+    )
+    unauthorized = client.post(
+        '/api/v1/positions/manual-1/modify',
+        json={'trailingStopLossDistance': '0.0015'},
+    )
     strategy = client.post(
         '/api/v1/positions/strategy-1/modify',
         json={'stopLoss': '1.0900', 'takeProfit': '1.1100'},
@@ -714,8 +750,37 @@ def test_modify_endpoint_updates_manual_trade_protection_only(monkeypatch):
 
     assert manual.status_code == 200, manual.text
     assert manual.json()['transactionId'] == 'modify-tx'
+    assert trailing.status_code == 200, trailing.text
+    assert conflict.status_code == 400
+    assert 'cannot be set simultaneously' in conflict.json()['detail']
+    assert invalid_distance.status_code == 400
+    assert unauthorized.status_code == 403
     assert strategy.status_code == 403
-    assert modified == [('manual-1', '1.0900', '1.1100')]
+    assert modified == [
+        ('manual-1', '1.0900', '1.1100', None),
+        ('manual-1', None, '1.1100', '0.0015'),
+    ]
+    live_settings = type(
+        'Settings',
+        (),
+        {
+            'token': 'token',
+            'account_id': 'account',
+            'environment': type('Env', (), {'value': 'live'})(),
+        },
+    )()
+    monkeypatch.setattr(
+        'freqtrade.forex.api.OandaSettings.from_environment',
+        lambda: live_settings,
+    )
+    live_environment = client.post(
+        '/api/v1/positions/manual-1/modify',
+        json={'trailingStopLossDistance': '0.0015'},
+        headers=headers,
+    )
+    assert live_environment.status_code == 403
+    assert 'Practice environment' in live_environment.json()['detail']
+    assert len(modified) == 2
 
 
 def test_pending_orders_are_broker_sourced_and_manual_modification_keeps_side(monkeypatch):

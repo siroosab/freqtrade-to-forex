@@ -4917,7 +4917,7 @@ async def test_oanda_client_creates_and_modifies_limit_orders_and_trade_protecti
             return httpx.Response(
                 200, json={"orders": [{"id": "limit-1", "type": "LIMIT"}]}
             )
-        if request.url.path.endswith("/trades/trade-1/orders"):
+        if "/trades/" in request.url.path and request.url.path.endswith("/orders"):
             return httpx.Response(
                 200,
                 json={
@@ -4960,12 +4960,24 @@ async def test_oanda_client_creates_and_modifies_limit_orders_and_trade_protecti
             protection = await client.modify_trade_orders(
                 "trade-1", stop_loss_price="1.0900", take_profit_price="1.0600"
             )
+            trailing_protection = await client.modify_trade_orders(
+                "trade-2",
+                take_profit_price="1.0600",
+                trailing_stop_loss_distance="0.0015",
+            )
+            with pytest.raises(ValueError, match="cannot be set simultaneously"):
+                await client.modify_trade_orders(
+                    "trade-3",
+                    stop_loss_price="1.0900",
+                    trailing_stop_loss_distance="0.0015",
+                )
 
     assert created.order_id == "limit-1"
     assert pending[0]["type"] == "LIMIT"
     assert modified.transaction_id == "order-modify-tx"
     assert protection["lastTransactionID"] == "trade-modify-tx"
-    assert [request.method for request in requests] == ["GET", "POST", "GET", "PUT", "PUT"]
+    assert trailing_protection["lastTransactionID"] == "trade-modify-tx"
+    assert [request.method for request in requests] == ["GET", "POST", "GET", "PUT", "PUT", "PUT"]
     assert '"type":"LIMIT"' in requests[1].content.decode()
     assert '"units":"-900"' in requests[3].content.decode()
     assert requests[4].url.path.endswith("/trades/trade-1/orders")
@@ -4973,6 +4985,12 @@ async def test_oanda_client_creates_and_modifies_limit_orders_and_trade_protecti
         '{"stopLoss":{"timeInForce":"GTC","price":"1.0900"},'
         '"takeProfit":{"timeInForce":"GTC","price":"1.0600"}}'
     )
+    assert requests[5].url.path.endswith("/trades/trade-2/orders")
+    assert json.loads(requests[5].content) == {
+        "takeProfit": {"timeInForce": "GTC", "price": "1.0600"},
+        "stopLoss": None,
+        "trailingStopLoss": {"distance": "0.0015"},
+    }
 
 
 @pytest.mark.asyncio

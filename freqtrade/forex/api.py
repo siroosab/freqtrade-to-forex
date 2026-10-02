@@ -1830,9 +1830,22 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         validate_write_access(user_role, csrf_token, session_token)
         stop_loss = payload.get("stopLoss")
         take_profit = payload.get("takeProfit")
-        if stop_loss is None and take_profit is None:
+        trailing_stop_loss_distance = payload.get("trailingStopLossDistance")
+        if stop_loss is not None and trailing_stop_loss_distance is not None:
             raise HTTPException(
-                status_code=400, detail="At least one protective price is required"
+                status_code=400,
+                detail=(
+                    "A fixed stop loss and a trailing stop loss cannot be set "
+                    "simultaneously"
+                ),
+            )
+        if (
+            stop_loss is None
+            and take_profit is None
+            and trailing_stop_loss_distance is None
+        ):
+            raise HTTPException(
+                status_code=400, detail="At least one protective order is required"
             )
         for name, value in (("stopLoss", stop_loss), ("takeProfit", take_profit)):
             if value is None:
@@ -1847,6 +1860,20 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 raise HTTPException(
                     status_code=400, detail=f"{name} must be a positive number"
                 )
+        if trailing_stop_loss_distance is not None:
+            try:
+                parsed_distance = Decimal(str(trailing_stop_loss_distance))
+            except (InvalidOperation, TypeError, ValueError) as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail="trailingStopLossDistance must be a number",
+                ) from exc
+            if not parsed_distance.is_finite() or parsed_distance <= 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail="trailingStopLossDistance must be a positive number",
+                )
+            trailing_stop_loss_distance = str(parsed_distance)
         try:
             settings = OandaSettings.from_environment()
             environment_name = str(
@@ -1888,6 +1915,11 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     trade_id,
                     stop_loss_price=str(stop_loss) if stop_loss is not None else None,
                     take_profit_price=str(take_profit) if take_profit is not None else None,
+                    trailing_stop_loss_distance=(
+                        str(trailing_stop_loss_distance)
+                        if trailing_stop_loss_distance is not None
+                        else None
+                    ),
                 )
             record_audit_event(
                 "positions.manual.modify",
@@ -1896,6 +1928,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     "clientOrderId": client_order_id,
                     "stopLoss": stop_loss,
                     "takeProfit": take_profit,
+                    "trailingStopLossDistance": trailing_stop_loss_distance,
                 },
                 username=(resolve_session_user(session_token) or {}).get("username", "anonymous"),
                 role=user_role,

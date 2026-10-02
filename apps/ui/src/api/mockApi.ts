@@ -525,7 +525,7 @@ export async function closeManualPosition(tradeId: string, userRole: 'viewer' | 
 
 export async function modifyManualPosition(
   tradeId: string,
-  prices: { stopLoss: string; takeProfit: string },
+  prices: { stopLoss: string; takeProfit: string; trailingStopLossDistance?: string | null },
   userRole: 'viewer' | 'operator' | 'admin',
 ) {
   const response = await fetch(buildApiUrl(`/api/v1/positions/${encodeURIComponent(tradeId)}/modify`), {
@@ -534,6 +534,7 @@ export async function modifyManualPosition(
     body: JSON.stringify({
       stopLoss: prices.stopLoss || null,
       takeProfit: prices.takeProfit || null,
+      trailingStopLossDistance: prices.trailingStopLossDistance || null,
     }),
   })
   if (!response.ok) {

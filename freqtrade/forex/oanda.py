@@ -331,16 +331,35 @@ class OandaClient:
         *,
         stop_loss_price: str | None = None,
         take_profit_price: str | None = None,
+        trailing_stop_loss_distance: str | None = None,
     ) -> dict[str, Any]:
         if not trade_id:
             raise ValueError("trade_id is required")
-        orders: dict[str, dict[str, str]] = {}
+        if stop_loss_price is not None and trailing_stop_loss_distance is not None:
+            raise ValueError(
+                "A fixed stop loss and a trailing stop loss cannot be set simultaneously"
+            )
+        if trailing_stop_loss_distance is not None:
+            try:
+                distance = Decimal(trailing_stop_loss_distance)
+            except (InvalidOperation, TypeError, ValueError) as exc:
+                raise ValueError(
+                    "trailing_stop_loss_distance must be a positive number"
+                ) from exc
+            if not distance.is_finite() or distance <= 0:
+                raise ValueError(
+                    "trailing_stop_loss_distance must be a positive number"
+                )
+        orders: dict[str, Any] = {}
         if stop_loss_price is not None:
             orders["stopLoss"] = {"timeInForce": "GTC", "price": stop_loss_price}
         if take_profit_price is not None:
             orders["takeProfit"] = {"timeInForce": "GTC", "price": take_profit_price}
+        if trailing_stop_loss_distance is not None:
+            orders["stopLoss"] = None
+            orders["trailingStopLoss"] = {"distance": str(distance)}
         if not orders:
-            raise ValueError("at least one protective order price is required")
+            raise ValueError("at least one protective order is required")
         return await self._request(
             "PUT",
             f"/v3/accounts/{self.account_id}/trades/{trade_id}/orders",
