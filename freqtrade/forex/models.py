@@ -36,6 +36,7 @@ class OandaInstrument:
     minimum_trade_size: Decimal
     base_currency: str | None = None
     quote_currency: str | None = None
+    margin_rate: Decimal | None = None
 
     def __post_init__(self) -> None:
         if self.name:
@@ -70,6 +71,9 @@ class OandaInstrument:
             minimum_trade_size=Decimal(payload["minimumTradeSize"]),
             base_currency=base_currency,
             quote_currency=quote_currency,
+            margin_rate=(
+                Decimal(payload["marginRate"]) if payload.get("marginRate") is not None else None
+            ),
         )
 
     @property
@@ -212,6 +216,9 @@ class OandaPrice:
     bid: Decimal
     ask: Decimal
     tradeable: bool = True
+    bids: tuple[tuple[Decimal, Decimal], ...] = ()
+    asks: tuple[tuple[Decimal, Decimal], ...] = ()
+    units_available: dict[str, dict[str, str]] | None = None
 
     @property
     def spread(self) -> Decimal:
@@ -239,6 +246,17 @@ class OandaPrice:
             bid=Decimal(bid),
             ask=Decimal(ask),
             tradeable=bool(payload.get("tradeable", True)),
+            bids=tuple(
+                (Decimal(level["price"]), Decimal(level["liquidity"]))
+                for level in payload.get("bids", [])
+                if level.get("liquidity") is not None
+            ),
+            asks=tuple(
+                (Decimal(level["price"]), Decimal(level["liquidity"]))
+                for level in payload.get("asks", [])
+                if level.get("liquidity") is not None
+            ),
+            units_available=payload.get("unitsAvailable"),
         )
 
 

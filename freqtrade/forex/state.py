@@ -13,6 +13,7 @@ class OandaAccountState:
     nav: Decimal
     margin_available: Decimal
     unrealized_pl: Decimal
+    margin_rate: Decimal | None = None
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> "OandaAccountState":
@@ -24,6 +25,9 @@ class OandaAccountState:
             nav=Decimal(account["NAV"]),
             margin_available=Decimal(account["marginAvailable"]),
             unrealized_pl=Decimal(account["unrealizedPL"]),
+            margin_rate=(
+                Decimal(account["marginRate"]) if account.get("marginRate") is not None else None
+            ),
         )
 
 

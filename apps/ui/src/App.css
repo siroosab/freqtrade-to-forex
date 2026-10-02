@@ -887,6 +887,139 @@
   background: rgba(251, 113, 133, 0.2);
 }
 
+.trade-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.modify-position-button {
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  border-radius: 4px;
+  padding: 5px 9px;
+  background: rgba(56, 189, 248, 0.1);
+  color: #bae6fd;
+  font-size: 0.72rem;
+}
+
+.dom-panel {
+  padding: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 12px;
+  background: rgba(2, 6, 23, 0.28);
+}
+
+.dom-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: #e2e8f0;
+  font-size: 0.78rem;
+}
+
+.dom-heading span,
+.dom-note {
+  color: #94a3b8;
+  font-size: 0.66rem;
+}
+
+.dom-note {
+  margin: 5px 0 8px;
+}
+
+.dom-table {
+  margin-top: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.dom-table th,
+.dom-table td {
+  padding: 5px 8px;
+  text-align: center;
+  font-size: 0.72rem;
+}
+
+.dom-table td:nth-child(2) button {
+  min-width: 105px;
+  border: 0;
+  background: transparent;
+  color: #f8fafc;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.dom-table td:nth-child(2) button:hover {
+  border-radius: 5px;
+  background: rgba(56, 189, 248, 0.18);
+}
+
+.dom-ask-row td:first-child,
+.dom-ask-row td:nth-child(2) {
+  color: #fda4af;
+}
+
+.dom-bid-row td:nth-child(2),
+.dom-bid-row td:last-child {
+  color: #86efac;
+}
+
+.dom-spread-row td {
+  color: #cbd5e1;
+  background: rgba(148, 163, 184, 0.08);
+}
+
+.live-order-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.live-order-metrics > div {
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid rgba(148, 163, 184, 0.13);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.45);
+}
+
+.live-order-metrics span,
+.live-order-metrics strong,
+.live-order-metrics small {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.live-order-metrics span,
+.live-order-metrics small {
+  color: #94a3b8;
+  font-size: 0.65rem;
+}
+
+.live-order-metrics strong {
+  margin-top: 4px;
+  color: #e2e8f0;
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.modal-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 12px 0;
+  color: #cbd5e1;
+  font-size: 0.76rem;
+}
+
+.modal-field input {
+  width: 100%;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 8px;
+  padding: 10px;
+  background: rgba(2, 6, 23, 0.65);
+  color: #f8fafc;
+}
+
 .sparkline {
   height: 120px;
   margin-top: 10px;
@@ -1934,6 +2067,10 @@
   .field-row,
   .risk-summary {
     grid-template-columns: 1fr;
+  }
+
+  .live-order-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .content-grid {

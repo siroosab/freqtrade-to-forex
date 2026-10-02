@@ -760,7 +760,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
 
     async def broker_trade_rows(client: OandaClient) -> tuple[list[dict], list[dict]]:
         open_trades = await client.get_open_trades()
-        closed_trades = await client.get_closed_trades(count=100)
+        closed_trades = await client.get_closed_trades(count=500)
         instruments = sorted({
             str(trade.get("instrument", ""))
             for trade in [*open_trades, *closed_trades]
@@ -774,6 +774,81 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         return (
             [serialize_broker_trade(trade, quotes, closed=False) for trade in open_trades],
             [serialize_broker_trade(trade, quotes, closed=True) for trade in closed_trades],
+        )
+
+    async def currency_conversion_rate(
+        client: OandaClient,
+        source_currency: str | None,
+        target_currency: str,
+    ) -> tuple[str | None, str | None]:
+        if source_currency == target_currency:
+            return "1", None
+        if not source_currency:
+            return None, "Broker quote has no quote currency"
+
+        direct_pair = f"{source_currency}_{target_currency}"
+        inverse_pair = f"{target_currency}_{source_currency}"
+        conversion_error: str | None = None
+        try:
+            prices = await client.get_prices((direct_pair,))
+            if prices:
+                return str(prices[0].bid), None
+            conversion_error = f"No broker conversion quote for {direct_pair}"
+        except OandaAPIError as exc:
+            conversion_error = str(exc)
+
+        try:
+            prices = await client.get_prices((inverse_pair,))
+            if prices:
+                return str(Decimal(1) / prices[0].ask), None
+        except OandaAPIError as exc:
+            conversion_error = str(exc)
+        return None, conversion_error or (
+            f"No broker conversion quote for {source_currency}/{target_currency}"
+        )
+
+    def find_manual_pending_order(orders: list[dict], order_id: str) -> dict:
+        order = next((item for item in orders if str(item.get("id")) == order_id), None)
+        if order is None:
+            raise HTTPException(status_code=404, detail="Pending broker order not found")
+        extension = order.get("clientExtensions") or {}
+        if not str(extension.get("id", "")).startswith("manual-ui-"):
+            raise HTTPException(
+                status_code=403,
+                detail="Only orders created from the manual ticket can be modified here",
+            )
+        return order
+
+    def parse_pending_order_modification(
+        payload: dict, existing_order: dict
+    ) -> tuple[str | None, int | None]:
+        price = payload.get("price")
+        if price is not None:
+            try:
+                parsed_price = Decimal(str(price))
+            except (InvalidOperation, TypeError, ValueError) as exc:
+                raise HTTPException(
+                    status_code=400, detail="price must be a number"
+                ) from exc
+            if not parsed_price.is_finite() or parsed_price <= 0:
+                raise HTTPException(status_code=400, detail="price must be positive")
+
+        raw_units = payload.get("units")
+        try:
+            units = Decimal(str(raw_units)) if raw_units is not None else None
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=400, detail="units must be a number"
+            ) from exc
+        if units is not None and (
+            not units.is_finite() or units == 0 or units != units.to_integral_value()
+        ):
+            raise HTTPException(status_code=400, detail="units must be a non-zero whole number")
+        if units is not None and Decimal(str(existing_order.get("units", "0"))) < 0:
+            units = -units
+        return (
+            str(price) if price is not None else None,
+            int(units) if units is not None else None,
         )
 
     def report_age_days(completed_at: str) -> int:
@@ -959,6 +1034,12 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     )
                 else:
                     broker_instrument = cached_metadata[1]
+                account = await client.get_account_summary()
+                quote_currency = broker_instrument.quote_currency
+                account_currency = account.currency
+                quote_to_account_rate, conversion_error = await currency_conversion_rate(
+                    client, quote_currency, account_currency
+                )
             return {
                 "pair": normalize_pair(price.instrument),
                 "bid": str(price.bid),
@@ -970,6 +1051,27 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "displayPrecision": broker_instrument.display_precision,
                 "tradeUnitsPrecision": broker_instrument.trade_units_precision,
                 "minimumTradeSize": str(broker_instrument.minimum_trade_size),
+                "baseCurrency": broker_instrument.base_currency,
+                "quoteCurrency": quote_currency,
+                "pipSize": str(broker_instrument.pip_size),
+                "marginRate": (
+                    str(broker_instrument.margin_rate)
+                    if broker_instrument.margin_rate is not None
+                    else None
+                ),
+                "bids": [
+                    {"price": str(level_price), "units": str(liquidity)}
+                    for level_price, liquidity in price.bids
+                ],
+                "asks": [
+                    {"price": str(level_price), "units": str(liquidity)}
+                    for level_price, liquidity in price.asks
+                ],
+                "unitsAvailable": price.units_available,
+                "accountCurrency": account_currency,
+                "marginAvailable": str(account.margin_available),
+                "quoteToAccountRate": quote_to_account_rate,
+                "conversionError": conversion_error,
             }
         except HTTPException:
             raise
@@ -1042,6 +1144,35 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             ]
         return fallback_orders()
 
+    @app.get("/api/v1/orders/pending")
+    async def pending_orders() -> list[dict]:
+        try:
+            settings = OandaSettings.from_environment()
+            async with OandaClient(
+                settings.token, settings.account_id, environment=settings.environment
+            ) as client:
+                broker_orders = await client.get_pending_orders()
+            return [
+                {
+                    "id": str(item.get("id", "")),
+                    "symbol": normalize_pair(str(item.get("instrument", ""))),
+                    "side": "BUY" if Decimal(str(item.get("units", "0"))) > 0 else "SELL",
+                    "volume": str(abs(Decimal(str(item.get("units", "0"))))),
+                    "price": str(item.get("price", "")),
+                    "status": "Pending",
+                    "createdAt": item.get("createTime"),
+                    "risk": "—",
+                    "manual": str(
+                        (item.get("clientExtensions") or {}).get("id", "")
+                    ).startswith("manual-ui-"),
+                }
+                for item in broker_orders
+            ]
+        except (OandaAPIError, ValueError) as exc:
+            raise HTTPException(
+                status_code=503, detail=f"Broker pending orders unavailable: {exc}"
+            ) from exc
+
     @app.get("/api/v1/positions")
     async def broker_positions() -> dict:
         try:
@@ -1049,8 +1180,13 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             async with OandaClient(
                 settings.token, settings.account_id, environment=settings.environment
             ) as client:
+                account = await client.get_account_summary()
                 open_rows, closed_rows = await broker_trade_rows(client)
-            return {"open": open_rows, "closed": closed_rows}
+            return {
+                "open": open_rows,
+                "closed": closed_rows,
+                "accountCurrency": account.currency,
+            }
         except (OandaAPIError, ValueError) as exc:
             raise HTTPException(
                 status_code=503,
@@ -1464,6 +1600,162 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         )
         return order
 
+    @app.post("/api/v1/orders/limit")
+    async def submit_limit_order(
+        payload: dict,
+        user_role: str | None = Header(default=None, alias="X-User-Role"),
+        csrf_token: str | None = Header(default=None, alias="X-CSRF-Token"),
+        session_token: str | None = Header(default=None, alias="X-Session-Token"),
+    ) -> dict:
+        validate_write_access(user_role, csrf_token, session_token)
+        try:
+            settings = OandaSettings.from_environment()
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=503, detail=f"OANDA account unavailable: {exc}"
+            ) from exc
+        if str(getattr(settings.environment, "value", settings.environment)).lower() != "practice":
+            raise HTTPException(
+                status_code=403,
+                detail="Manual dashboard orders are restricted to the OANDA Practice environment",
+            )
+        try:
+            symbol = normalize_pair(str(payload.get("symbol", "EUR/USD")))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        side = str(payload.get("side", "BUY")).upper().strip()
+        if side not in {"BUY", "SELL"}:
+            raise HTTPException(status_code=400, detail="side must be BUY or SELL")
+        try:
+            units = Decimal(str(payload.get("units", payload.get("volume", "0"))))
+            price = Decimal(str(payload.get("price", "")))
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="units and price must be numbers") from exc
+        if not units.is_finite() or units != units.to_integral_value() or units <= 0:
+            raise HTTPException(status_code=400, detail="units must be a positive whole number")
+        if not price.is_finite() or price <= 0:
+            raise HTTPException(status_code=400, detail="price must be a positive number")
+        client_order_id = str(
+            payload.get("clientOrderId")
+            or f"manual-ui-{secrets.token_hex(16)}"
+        )
+        if not client_order_id.startswith("manual-ui-"):
+            raise HTTPException(status_code=400, detail="Manual order ID is invalid")
+        signed_units = int(units) if side == "BUY" else -int(units)
+        try:
+            async with OandaClient(
+                settings.token, settings.account_id, settings.environment
+            ) as client:
+                result = await client.create_limit_order(
+                    symbol.replace("/", "_"),
+                    signed_units,
+                    str(price),
+                    stop_loss_price=(
+                        str(payload["stopLoss"]) if payload.get("stopLoss") else None
+                    ),
+                    take_profit_price=(
+                        str(payload["takeProfit"]) if payload.get("takeProfit") else None
+                    ),
+                    client_order_id=client_order_id,
+                    trade_client_extensions={
+                        "id": client_order_id,
+                        "tag": "manual",
+                        "comment": "Manual dashboard ticket",
+                    },
+                )
+        except OandaAPIError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        record_audit_event(
+            "orders.limit.submit",
+            details={
+                "symbol": symbol,
+                "side": side,
+                "volume": str(units),
+                "price": str(price),
+                "clientOrderId": client_order_id,
+            },
+            username=(resolve_session_user(session_token) or {}).get("username", "anonymous"),
+            role=user_role,
+            allowed=True,
+        )
+        return {
+            "status": "pending",
+            "symbol": symbol,
+            "side": side,
+            "units": signed_units,
+            "volume": str(units),
+            "clientOrderId": client_order_id,
+            "orderId": result.order_id,
+            "transactionId": result.transaction_id,
+            "fillPrice": str(result.fill_price) if result.fill_price is not None else None,
+            "environment": settings.environment.value,
+            "price": str(price),
+        }
+
+    @app.post("/api/v1/orders/{order_id}/modify")
+    async def modify_pending_order(
+        order_id: str,
+        payload: dict,
+        user_role: str | None = Header(default=None, alias="X-User-Role"),
+        csrf_token: str | None = Header(default=None, alias="X-CSRF-Token"),
+        session_token: str | None = Header(default=None, alias="X-Session-Token"),
+    ) -> dict:
+        validate_write_access(user_role, csrf_token, session_token)
+        try:
+            settings = OandaSettings.from_environment()
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=503, detail=f"OANDA account unavailable: {exc}"
+            ) from exc
+        environment_name = str(
+            getattr(settings.environment, "value", settings.environment)
+        ).lower()
+        if environment_name != "practice":
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "Manual dashboard orders can only be modified "
+                    "in the OANDA Practice environment"
+                ),
+            )
+        try:
+            async with OandaClient(
+                settings.token, settings.account_id, settings.environment
+            ) as client:
+                order = find_manual_pending_order(
+                    await client.get_pending_orders(), order_id
+                )
+                price, units = parse_pending_order_modification(payload, order)
+                result = await client.modify_order(
+                    order_id,
+                    price=price,
+                    units=units,
+                )
+        except HTTPException:
+            raise
+        except OandaAPIError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        record_audit_event(
+            "orders.pending.modify",
+            details={
+                "orderId": order_id,
+                "price": price,
+                "units": str(units) if units is not None else None,
+            },
+            username=(resolve_session_user(session_token) or {}).get("username", "anonymous"),
+            role=user_role,
+            allowed=True,
+        )
+        return {
+            "status": "modified",
+            "orderId": result.order_id,
+            "transactionId": result.transaction_id,
+        }
+
     @app.post("/api/v1/positions/{trade_id}/close")
     async def close_manual_position(
         trade_id: str,
@@ -1526,6 +1818,101 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             raise
         except (OandaAPIError, ValueError) as exc:
             raise HTTPException(status_code=502, detail=f"Broker close rejected: {exc}") from exc
+
+    @app.post("/api/v1/positions/{trade_id}/modify")
+    async def modify_manual_position(
+        trade_id: str,
+        payload: dict,
+        user_role: str | None = Header(default=None, alias="X-User-Role"),
+        csrf_token: str | None = Header(default=None, alias="X-CSRF-Token"),
+        session_token: str | None = Header(default=None, alias="X-Session-Token"),
+    ) -> dict:
+        validate_write_access(user_role, csrf_token, session_token)
+        stop_loss = payload.get("stopLoss")
+        take_profit = payload.get("takeProfit")
+        if stop_loss is None and take_profit is None:
+            raise HTTPException(
+                status_code=400, detail="At least one protective price is required"
+            )
+        for name, value in (("stopLoss", stop_loss), ("takeProfit", take_profit)):
+            if value is None:
+                continue
+            try:
+                parsed = Decimal(str(value))
+            except (InvalidOperation, TypeError, ValueError) as exc:
+                raise HTTPException(
+                    status_code=400, detail=f"{name} must be a number"
+                ) from exc
+            if not parsed.is_finite() or parsed <= 0:
+                raise HTTPException(
+                    status_code=400, detail=f"{name} must be a positive number"
+                )
+        try:
+            settings = OandaSettings.from_environment()
+            environment_name = str(
+                getattr(settings.environment, "value", settings.environment)
+            ).lower()
+            if environment_name != "practice":
+                raise HTTPException(
+                    status_code=403,
+                    detail=(
+                        "Manual dashboard positions can only be modified "
+                        "in the OANDA Practice environment"
+                    ),
+                )
+            async with OandaClient(
+                settings.token, settings.account_id, environment=settings.environment
+            ) as client:
+                trade = next(
+                    (
+                        item
+                        for item in await client.get_open_trades()
+                        if str(item.get("id")) == trade_id
+                    ),
+                    None,
+                )
+                if trade is None:
+                    raise HTTPException(status_code=404, detail="Open broker trade not found")
+                extension = (
+                    trade.get("tradeClientExtensions") or trade.get("clientExtensions") or {}
+                )
+                client_order_id = (
+                    str(extension.get("id", "")) if isinstance(extension, dict) else ""
+                )
+                if not client_order_id.startswith("manual-ui-"):
+                    raise HTTPException(
+                        status_code=403,
+                        detail="Only trades opened from the manual ticket can be modified here",
+                    )
+                result = await client.modify_trade_orders(
+                    trade_id,
+                    stop_loss_price=str(stop_loss) if stop_loss is not None else None,
+                    take_profit_price=str(take_profit) if take_profit is not None else None,
+                )
+            record_audit_event(
+                "positions.manual.modify",
+                details={
+                    "tradeId": trade_id,
+                    "clientOrderId": client_order_id,
+                    "stopLoss": stop_loss,
+                    "takeProfit": take_profit,
+                },
+                username=(resolve_session_user(session_token) or {}).get("username", "anonymous"),
+                role=user_role,
+                allowed=True,
+            )
+            return {
+                "status": "modified",
+                "tradeId": trade_id,
+                "transactionId": result.get("lastTransactionID"),
+                "environment": settings.environment.value,
+            }
+        except HTTPException:
+            raise
+        except (OandaAPIError, ValueError) as exc:
+            raise HTTPException(
+                status_code=502, detail=f"Broker modification rejected: {exc}"
+            ) from exc
 
     @app.get("/api/v1/settings")
     async def settings() -> dict:

@@ -65,6 +65,10 @@ def test_market_quote_endpoint_reads_current_broker_price(monkeypatch):
         display_precision = 5
         trade_units_precision = 0
         minimum_trade_size = Decimal('1')
+        pip_size = Decimal('0.0001')
+        margin_rate = Decimal('0.02')
+        base_currency = 'EUR'
+        quote_currency = 'USD'
 
     class FakePrice:
         instrument = 'EUR_USD'
@@ -73,6 +77,17 @@ def test_market_quote_endpoint_reads_current_broker_price(monkeypatch):
         spread = Decimal('0.00012')
         time = '2026-09-28T10:00:00Z'
         tradeable = True
+        bids = ((Decimal('1.09501'), Decimal('100000')),)
+        asks = ((Decimal('1.09513'), Decimal('120000')),)
+        units_available = {'default': {'long': '200000', 'short': '180000'}}
+
+    class FakeConversionPrice:
+        bid = Decimal('0.7800')
+        ask = Decimal('0.7810')
+
+    class FakeAccount:
+        currency = 'GBP'
+        margin_available = Decimal('9000.00')
 
     class FakeClient:
         def __init__(self, token, account_id, environment):
@@ -85,8 +100,13 @@ def test_market_quote_endpoint_reads_current_broker_price(monkeypatch):
             return None
 
         async def get_prices(self, instruments):
-            assert instruments == ('EUR_USD',)
-            return [FakePrice()]
+            if instruments == ('EUR_USD',):
+                return [FakePrice()]
+            assert instruments == ('USD_GBP',)
+            return [FakeConversionPrice()]
+
+        async def get_account_summary(self):
+            return FakeAccount()
 
         async def get_instruments(self, instruments):
             assert instruments == ('EUR_USD',)
@@ -110,6 +130,13 @@ def test_market_quote_endpoint_reads_current_broker_price(monkeypatch):
         'pair': 'EUR/USD', 'bid': '1.09501', 'ask': '1.09513', 'spread': '0.00012',
         'time': '2026-09-28T10:00:00Z', 'tradeable': True, 'environment': 'practice',
         'displayPrecision': 5, 'tradeUnitsPrecision': 0, 'minimumTradeSize': '1',
+        'baseCurrency': 'EUR', 'quoteCurrency': 'USD', 'pipSize': '0.0001',
+        'marginRate': '0.02',
+        'bids': [{'price': '1.09501', 'units': '100000'}],
+        'asks': [{'price': '1.09513', 'units': '120000'}],
+        'unitsAvailable': {'default': {'long': '200000', 'short': '180000'}},
+        'accountCurrency': 'GBP', 'marginAvailable': '9000.00',
+        'quoteToAccountRate': '0.7800', 'conversionError': None,
     }
 
 
@@ -128,6 +155,9 @@ def test_broker_positions_returns_open_and_closed_trade_details(monkeypatch):
 
         async def __aexit__(self, exc_type, exc, traceback):
             return None
+
+        async def get_account_summary(self):
+            return type('Account', (), {'currency': 'GBP'})()
 
         async def get_open_trades(self):
             return [{
@@ -168,6 +198,7 @@ def test_broker_positions_returns_open_and_closed_trade_details(monkeypatch):
     assert payload['closed'][0]['side'] == 'SELL'
     assert payload['closed'][0]['exitPrice'] == '1.0970'
     assert payload['closed'][0]['pnl'] == '-1.50'
+    assert payload['accountCurrency'] == 'GBP'
 
 
 def test_orders_chart_accepts_supported_timeframe_and_requested_count(monkeypatch):
@@ -635,6 +666,161 @@ def test_close_endpoint_closes_manual_trade_only(monkeypatch):
     assert manual.json()['transactionId'] == 'close-tx'
     assert strategy.status_code == 403
     assert closed_ids == ['manual-1']
+
+
+def test_modify_endpoint_updates_manual_trade_protection_only(monkeypatch):
+    modified = []
+
+    class FakeClient:
+        def __init__(self, token, account_id, environment):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+        async def get_open_trades(self):
+            return [
+                {'id': 'manual-1', 'tradeClientExtensions': {'id': 'manual-ui-1'}},
+                {'id': 'strategy-1', 'clientExtensions': {'id': 'strategy-entry-1'}},
+            ]
+
+        async def modify_trade_orders(self, trade_id, *, stop_loss_price=None, take_profit_price=None):
+            modified.append((trade_id, stop_loss_price, take_profit_price))
+            return {'lastTransactionID': 'modify-tx'}
+
+    monkeypatch.setattr('freqtrade.forex.api.OandaClient', FakeClient)
+    settings = type(
+        'Settings', (), {
+            'token': 'token', 'account_id': 'account',
+            'environment': type('Env', (), {'value': 'practice'})(),
+        }
+    )()
+    monkeypatch.setattr('freqtrade.forex.api.OandaSettings.from_environment', lambda: settings)
+    headers = {'X-User-Role': 'operator', 'X-CSRF-Token': 'test-token'}
+
+    manual = client.post(
+        '/api/v1/positions/manual-1/modify',
+        json={'stopLoss': '1.0900', 'takeProfit': '1.1100'},
+        headers=headers,
+    )
+    strategy = client.post(
+        '/api/v1/positions/strategy-1/modify',
+        json={'stopLoss': '1.0900', 'takeProfit': '1.1100'},
+        headers=headers,
+    )
+
+    assert manual.status_code == 200, manual.text
+    assert manual.json()['transactionId'] == 'modify-tx'
+    assert strategy.status_code == 403
+    assert modified == [('manual-1', '1.0900', '1.1100')]
+
+
+def test_pending_orders_are_broker_sourced_and_manual_modification_keeps_side(monkeypatch):
+    modified = []
+
+    class FakeClient:
+        def __init__(self, token, account_id, environment):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+        async def get_pending_orders(self):
+            return [
+                {
+                    'id': 'pending-1', 'instrument': 'EUR_USD', 'units': '-1200',
+                    'price': '1.0800', 'createTime': '2026-09-28T10:00:00Z',
+                    'clientExtensions': {'id': 'manual-ui-1'},
+                },
+                {
+                    'id': 'pending-strategy', 'instrument': 'GBP_USD', 'units': '500',
+                    'price': '1.2500', 'clientExtensions': {'id': 'strategy-order-1'},
+                },
+            ]
+
+        async def modify_order(self, order_id, *, price=None, units=None):
+            modified.append((order_id, price, units))
+            return type('Result', (), {'order_id': order_id, 'transaction_id': 'modify-order-tx'})()
+
+    monkeypatch.setattr('freqtrade.forex.api.OandaClient', FakeClient)
+    settings = type(
+        'Settings', (), {
+            'token': 'token', 'account_id': 'account',
+            'environment': type('Env', (), {'value': 'practice'})(),
+        }
+    )()
+    monkeypatch.setattr('freqtrade.forex.api.OandaSettings.from_environment', lambda: settings)
+    headers = {'X-User-Role': 'operator', 'X-CSRF-Token': 'test-token'}
+
+    response = client.get('/api/v1/orders/pending')
+    changed = client.post(
+        '/api/v1/orders/pending-1/modify',
+        json={'price': '1.0750', 'units': '900'},
+        headers=headers,
+    )
+    denied = client.post(
+        '/api/v1/orders/pending-strategy/modify',
+        json={'price': '1.0750', 'units': '900'},
+        headers=headers,
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()[0]['side'] == 'SELL'
+    assert response.json()[0]['manual'] is True
+    assert changed.status_code == 200, changed.text
+    assert denied.status_code == 403
+    assert modified == [('pending-1', '1.0750', -900)]
+
+
+def test_limit_order_endpoint_creates_manual_practice_order(monkeypatch):
+    submitted = []
+
+    class FakeClient:
+        def __init__(self, token, account_id, environment):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+        async def create_limit_order(self, instrument, units, price, **kwargs):
+            submitted.append((instrument, units, price, kwargs))
+            return type(
+                'Result', (),
+                {'order_id': 'limit-1', 'transaction_id': 'limit-tx', 'fill_price': None},
+            )()
+
+    monkeypatch.setattr('freqtrade.forex.api.OandaClient', FakeClient)
+    settings = type(
+        'Settings', (), {
+            'token': 'token', 'account_id': 'account',
+            'environment': type('Env', (), {'value': 'practice'})(),
+        }
+    )()
+    monkeypatch.setattr('freqtrade.forex.api.OandaSettings.from_environment', lambda: settings)
+
+    response = client.post(
+        '/api/v1/orders/limit',
+        json={
+            'symbol': 'EUR/USD', 'side': 'SELL', 'units': 1200,
+            'price': '1.0800', 'stopLoss': '1.0900', 'takeProfit': '1.0600',
+            'clientOrderId': 'manual-ui-limit-1',
+        },
+        headers={'X-User-Role': 'operator', 'X-CSRF-Token': 'test-token'},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()['status'] == 'pending'
+    assert submitted[0][0:3] == ('EUR_USD', -1200, '1.0800')
+    assert submitted[0][3]['client_order_id'] == 'manual-ui-limit-1'
 
 
 def test_login_returns_session_and_session_validation_works():

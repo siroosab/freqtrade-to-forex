@@ -11,9 +11,11 @@ import type {
 import type { ForexChartData } from '../components/ForexChart'
 
 export type RiskConfig = { pair: string; units: string; riskBudget: string; riskBudgetMode: 'percent' | 'absolute'; leverage: string; maxExposure: string; maxExposureMode: 'percent' | 'absolute'; side: string; stopLoss: string | null; stopLossMode: 'percent' | 'price'; takeProfit: string | null; takeProfitMode: 'percent' | 'price'; averageEntry: string | null; averageEntryMode: 'percent' | 'price'; maxAdds: string; source: string }
-export type LiveQuote = { pair: string; bid: string; ask: string; spread: string; time: string; tradeable: boolean; environment: string; displayPrecision: number; tradeUnitsPrecision: number; minimumTradeSize: string }
+export type LiquidityLevel = { price: string; units: string }
+export type LiveQuote = { pair: string; bid: string; ask: string; spread: string; time: string; tradeable: boolean; environment: string; displayPrecision: number; tradeUnitsPrecision: number; minimumTradeSize: string; baseCurrency?: string | null; quoteCurrency?: string | null; pipSize?: string; marginRate?: string | null; bids?: LiquidityLevel[]; asks?: LiquidityLevel[]; unitsAvailable?: Record<string, Record<string, string>> | null; accountCurrency?: string; marginAvailable?: string; quoteToAccountRate?: string | null; conversionError?: string | null }
 export type BrokerTrade = { id: string; symbol: string; side: 'BUY' | 'SELL'; units: string; entryPrice: string; currentPrice: string | null; exitPrice: string | null; stopLoss: string | null; takeProfit: string | null; pnl: string; openedAt: string | null; closedAt: string | null; status: 'open' | 'closed'; manual: boolean; source: string; clientOrderId: string | null }
-export type BrokerPositions = { open: BrokerTrade[]; closed: BrokerTrade[] }
+export type BrokerPositions = { open: BrokerTrade[]; closed: BrokerTrade[]; accountCurrency?: string }
+export type BrokerPendingOrder = { id: string; symbol: string; side: 'BUY' | 'SELL'; volume: string; price: string; status: string; createdAt: string | null; risk: string; manual: boolean }
 
 const browserOrigin = typeof window !== 'undefined' ? window.location.origin : 'http://127.0.0.1:8090'
 const browserWebSocketOrigin = typeof window !== 'undefined'
@@ -502,6 +504,12 @@ export async function getBrokerPositions(): Promise<BrokerPositions> {
   return response.json() as Promise<BrokerPositions>
 }
 
+export async function getBrokerPendingOrders(): Promise<BrokerPendingOrder[]> {
+  const response = await fetch(buildApiUrl('/api/v1/orders/pending'))
+  if (!response.ok) throw new Error('Broker pending orders unavailable')
+  return response.json() as Promise<BrokerPendingOrder[]>
+}
+
 export async function closeManualPosition(tradeId: string, userRole: 'viewer' | 'operator' | 'admin') {
   const response = await fetch(buildApiUrl(`/api/v1/positions/${encodeURIComponent(tradeId)}/close`), {
     method: 'POST',
@@ -513,6 +521,45 @@ export async function closeManualPosition(tradeId: string, userRole: 'viewer' | 
     throw new Error(detail)
   }
   return response.json() as Promise<{ status: string; tradeId: string; transactionId?: string; fillPrice?: string; environment?: string }>
+}
+
+export async function modifyManualPosition(
+  tradeId: string,
+  prices: { stopLoss: string; takeProfit: string },
+  userRole: 'viewer' | 'operator' | 'admin',
+) {
+  const response = await fetch(buildApiUrl(`/api/v1/positions/${encodeURIComponent(tradeId)}/modify`), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-User-Role': userRole, 'X-CSRF-Token': 'manual-modify' },
+    body: JSON.stringify({
+      stopLoss: prices.stopLoss || null,
+      takeProfit: prices.takeProfit || null,
+    }),
+  })
+  if (!response.ok) {
+    let detail = 'Position modification rejected by broker'
+    try { detail = ((await response.json()) as { detail?: string }).detail ?? detail } catch { /* keep default detail */ }
+    throw new Error(detail)
+  }
+  return response.json() as Promise<{ status: string; tradeId: string; transactionId?: string }>
+}
+
+export async function modifyPendingOrder(
+  orderId: string,
+  details: { price: string; units: string },
+  userRole: 'viewer' | 'operator' | 'admin',
+) {
+  const response = await fetch(buildApiUrl(`/api/v1/orders/${encodeURIComponent(orderId)}/modify`), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-User-Role': userRole, 'X-CSRF-Token': 'pending-order-modify' },
+    body: JSON.stringify(details),
+  })
+  if (!response.ok) {
+    let detail = 'Pending order modification rejected by broker'
+    try { detail = ((await response.json()) as { detail?: string }).detail ?? detail } catch { /* keep default detail */ }
+    throw new Error(detail)
+  }
+  return response.json() as Promise<{ status: string; orderId: string; transactionId?: string }>
 }
 
 export async function getOrders(): Promise<Order[]> {
@@ -968,6 +1015,38 @@ export async function submitMarketOrder(
   }
 
   return response.json() as Promise<{ status: string; symbol: string; side: string; volume: string; orderId?: string; transactionId?: string; fillPrice?: string | null; environment?: string; executionMode?: string; reason?: string | null; cancelReason?: string | null }>
+}
+
+export async function submitLimitOrder(
+  order: {
+    symbol: string
+    side: 'BUY' | 'SELL'
+    units: number | string
+    price: string
+    stopLoss?: string
+    takeProfit?: string
+    clientOrderId?: string
+  },
+  userRole: 'viewer' | 'operator' | 'admin' = 'operator',
+) {
+  const response = await fetch(buildApiUrl('/api/v1/orders/limit'), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-User-Role': userRole,
+      'X-CSRF-Token': 'manual-limit-order',
+    },
+    body: JSON.stringify({
+      ...order,
+      clientOrderId: order.clientOrderId ?? createManualClientOrderId(),
+    }),
+  })
+  if (!response.ok) {
+    let detail = 'Limit order submission rejected by backend'
+    try { detail = ((await response.json()) as { detail?: string }).detail ?? detail } catch { /* keep default detail */ }
+    throw new Error(detail)
+  }
+  return response.json() as Promise<{ status: string; symbol: string; side: string; volume: string; orderId?: string; transactionId?: string; price?: string; environment?: string }>
 }
 
 export { fallbackData }

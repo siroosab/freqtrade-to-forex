@@ -4563,6 +4563,7 @@ async def test_oanda_client_reads_instruments_prices_and_candles() -> None:
                             "displayPrecision": 5,
                             "tradeUnitsPrecision": 0,
                             "minimumTradeSize": "1",
+                            "marginRate": "0.02",
                         }
                     ]
                 },
@@ -4575,8 +4576,17 @@ async def test_oanda_client_reads_instruments_prices_and_candles() -> None:
                         {
                             "instrument": "EUR_USD",
                             "time": "2026-09-15T10:00:00.000000000Z",
-                            "bids": [{"price": "1.10000"}],
-                            "asks": [{"price": "1.10012"}],
+                            "bids": [
+                                {"price": "1.10000", "liquidity": "100000"},
+                                {"price": "1.09990", "liquidity": "150000"},
+                            ],
+                            "asks": [
+                                {"price": "1.10012", "liquidity": "120000"},
+                                {"price": "1.10020", "liquidity": "180000"},
+                            ],
+                            "unitsAvailable": {
+                                "default": {"long": "200000", "short": "190000"}
+                            },
                         }
                     ]
                 },
@@ -4612,7 +4622,13 @@ async def test_oanda_client_reads_instruments_prices_and_candles() -> None:
             candles = await client.get_candles("EUR_USD", "M5", count=1)
 
     assert instruments[0].pip_size == Decimal("0.0001")
+    assert instruments[0].margin_rate == Decimal("0.02")
     assert prices[0].spread == Decimal("0.00012")
+    assert prices[0].bids[0] == (Decimal("1.10000"), Decimal("100000"))
+    assert prices[0].asks[1] == (Decimal("1.10020"), Decimal("180000"))
+    assert prices[0].units_available == {
+        "default": {"long": "200000", "short": "190000"}
+    }
     assert candles[0].close == Decimal("1.10050")
     assert requests[0].headers["Authorization"] == "Bearer test-token"
     assert requests[2].url.params["granularity"] == "M5"
@@ -4875,6 +4891,88 @@ async def test_oanda_client_reads_open_closed_trades_and_closes_trade() -> None:
     assert requests[2].method == "PUT"
     assert requests[2].url.path.endswith("/trades/trade-1/close")
     assert requests[2].read() == b'{"units":"ALL"}'
+
+
+@pytest.mark.asyncio
+async def test_oanda_client_creates_and_modifies_limit_orders_and_trade_protection() -> None:
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.method == "GET" and request.url.path.endswith("/instruments"):
+            return httpx.Response(
+                200,
+                json={
+                    "instruments": [{
+                        "name": "EUR_USD",
+                        "displayName": "EUR/USD",
+                        "pipLocation": -4,
+                        "displayPrecision": 5,
+                        "tradeUnitsPrecision": 0,
+                        "minimumTradeSize": "1",
+                    }]
+                },
+            )
+        if request.method == "GET":
+            return httpx.Response(
+                200, json={"orders": [{"id": "limit-1", "type": "LIMIT"}]}
+            )
+        if request.url.path.endswith("/trades/trade-1/orders"):
+            return httpx.Response(
+                200,
+                json={
+                    "stopLossOrderTransaction": {"id": "sl-tx"},
+                    "takeProfitOrderTransaction": {"id": "tp-tx"},
+                    "lastTransactionID": "trade-modify-tx",
+                },
+            )
+        if request.method == "PUT":
+            return httpx.Response(
+                200,
+                json={
+                    "orderCreateTransaction": {"id": "limit-1", "units": "900"},
+                    "lastTransactionID": "order-modify-tx",
+                },
+            )
+        return httpx.Response(
+            201,
+            json={
+                "orderCreateTransaction": {"id": "limit-1", "units": "-1200"},
+                "lastTransactionID": "limit-create-tx",
+            },
+        )
+
+    async with httpx.AsyncClient(
+        base_url=OandaEnvironment.PRACTICE.rest_url,
+        transport=httpx.MockTransport(handler),
+    ) as http_client:
+        async with OandaClient("ignored", "account", http_client=http_client) as client:
+            created = await client.create_limit_order(
+                "EUR_USD",
+                -1200,
+                "1.0800",
+                stop_loss_price="1.0900",
+                take_profit_price="1.0600",
+                client_order_id="manual-ui-limit-1",
+            )
+            pending = await client.get_pending_orders()
+            modified = await client.modify_order("limit-1", price="1.0750", units=-900)
+            protection = await client.modify_trade_orders(
+                "trade-1", stop_loss_price="1.0900", take_profit_price="1.0600"
+            )
+
+    assert created.order_id == "limit-1"
+    assert pending[0]["type"] == "LIMIT"
+    assert modified.transaction_id == "order-modify-tx"
+    assert protection["lastTransactionID"] == "trade-modify-tx"
+    assert [request.method for request in requests] == ["GET", "POST", "GET", "PUT", "PUT"]
+    assert '"type":"LIMIT"' in requests[1].content.decode()
+    assert '"units":"-900"' in requests[3].content.decode()
+    assert requests[4].url.path.endswith("/trades/trade-1/orders")
+    assert requests[4].content.decode() == (
+        '{"stopLoss":{"timeInForce":"GTC","price":"1.0900"},'
+        '"takeProfit":{"timeInForce":"GTC","price":"1.0600"}}'
+    )
 
 
 @pytest.mark.asyncio

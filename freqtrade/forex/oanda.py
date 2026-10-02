@@ -312,11 +312,39 @@ class OandaClient:
         )
         return payload.get("trades", [])
 
+    async def get_pending_orders(self) -> list[dict[str, Any]]:
+        payload = await self._request(
+            "GET", f"/v3/accounts/{self.account_id}/pendingOrders"
+        )
+        return payload.get("orders", [])
+
     async def close_trade(self, trade_id: str) -> dict[str, Any]:
         return await self._request(
             "PUT",
             f"/v3/accounts/{self.account_id}/trades/{trade_id}/close",
             json={"units": "ALL"},
+        )
+
+    async def modify_trade_orders(
+        self,
+        trade_id: str,
+        *,
+        stop_loss_price: str | None = None,
+        take_profit_price: str | None = None,
+    ) -> dict[str, Any]:
+        if not trade_id:
+            raise ValueError("trade_id is required")
+        orders: dict[str, dict[str, str]] = {}
+        if stop_loss_price is not None:
+            orders["stopLoss"] = {"timeInForce": "GTC", "price": stop_loss_price}
+        if take_profit_price is not None:
+            orders["takeProfit"] = {"timeInForce": "GTC", "price": take_profit_price}
+        if not orders:
+            raise ValueError("at least one protective order price is required")
+        return await self._request(
+            "PUT",
+            f"/v3/accounts/{self.account_id}/trades/{trade_id}/orders",
+            json=orders,
         )
 
     async def iter_transactions(
@@ -422,6 +450,71 @@ class OandaClient:
             "TAKE_PROFIT", instrument, units, price, client_order_id=client_order_id
         )
 
+    async def create_limit_order(
+        self,
+        instrument: str,
+        units: int,
+        price: str,
+        *,
+        stop_loss_price: str | None = None,
+        take_profit_price: str | None = None,
+        client_order_id: str | None = None,
+        trade_client_extensions: dict[str, str] | None = None,
+    ) -> OandaOrderResult:
+        if units == 0:
+            raise ValueError("OANDA order units cannot be zero")
+        try:
+            limit_price = Decimal(price)
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise ValueError("OANDA limit price must be a valid decimal number") from exc
+        if not limit_price.is_finite() or limit_price <= 0:
+            raise ValueError("OANDA limit price must be positive")
+        instruments = await self.get_instruments((instrument,))
+        if not instruments:
+            raise ValueError(f"Instrument {instrument} is not available on this OANDA account")
+        validator = BrokerOrderValidator(
+            instruments[0],
+            minimum_stop_distance=Decimal("0"),
+        )
+        validator.validate_units(abs(units))
+        validator.validate_price(limit_price, "limit price")
+        order_side = "long" if units > 0 else "short"
+        try:
+            if stop_loss_price is not None:
+                validator.validate_stop(
+                    side=order_side,
+                    entry_price=limit_price,
+                    stop_price=Decimal(stop_loss_price),
+                )
+            if take_profit_price is not None:
+                validator.validate_take_profit(
+                    side=order_side,
+                    entry_price=limit_price,
+                    take_profit_price=Decimal(take_profit_price),
+                )
+        except InvalidOperation as exc:
+            raise ValueError("Protective order prices must be valid decimal numbers") from exc
+        order: dict[str, Any] = {
+            "type": "LIMIT",
+            "instrument": instrument,
+            "units": str(units),
+            "price": price,
+            "timeInForce": "GTC",
+            "positionFill": "DEFAULT",
+        }
+        if stop_loss_price is not None:
+            order["stopLossOnFill"] = {"timeInForce": "GTC", "price": stop_loss_price}
+        if take_profit_price is not None:
+            order["takeProfitOnFill"] = {"timeInForce": "GTC", "price": take_profit_price}
+        if client_order_id is not None:
+            order["clientExtensions"] = {"id": client_order_id}
+        if trade_client_extensions is not None:
+            order["tradeClientExtensions"] = trade_client_extensions
+        payload = await self._request(
+            "POST", f"/v3/accounts/{self.account_id}/orders", json={"order": order}
+        )
+        return OandaOrderResult.from_payload(payload)
+
     async def _create_pending_order(
         self,
         order_type: str,
@@ -453,6 +546,7 @@ class OandaClient:
         order_id: str,
         *,
         price: str | None = None,
+        units: int | None = None,
         stop_loss_price: str | None = None,
         take_profit_price: str | None = None,
     ) -> OandaOrderActionResult:
@@ -461,6 +555,10 @@ class OandaClient:
         order: dict[str, Any] = {}
         if price is not None:
             order["price"] = price
+        if units is not None:
+            if units == 0:
+                raise ValueError("OANDA order units cannot be zero")
+            order["units"] = str(units)
         if stop_loss_price is not None:
             order["stopLossOnFill"] = {"timeInForce": "GTC", "price": stop_loss_price}
         if take_profit_price is not None:

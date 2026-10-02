@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { ForexChart } from '../components/ForexChart'
 import { ChartDataControls } from '../components/ChartDataControls'
 import { chartCandleCount } from '../components/chartOptions'
-import { closeManualPosition, createManualClientOrderId, getAccountSummary, getBrokerPositions, getMarketQuote, getMarketSummary, getOrdersChart, getRiskSummary, submitMarketOrder, type BrokerTrade } from '../api/mockApi'
+import { closeManualPosition, createManualClientOrderId, getAccountSummary, getBrokerPendingOrders, getBrokerPositions, getMarketQuote, getMarketSummary, getOrdersChart, getRiskSummary, modifyManualPosition, modifyPendingOrder, submitLimitOrder, submitMarketOrder, type BrokerPendingOrder, type BrokerTrade } from '../api/mockApi'
 import { useForexSocket } from '../hooks/useForexSocket'
 import { useUiStore } from '../store/useUiStore'
 
@@ -14,21 +14,33 @@ export function DashboardPage() {
   const [closeTarget, setCloseTarget] = useState<BrokerTrade | null>(null)
   const [isClosing, setIsClosing] = useState(false)
   const [closeError, setCloseError] = useState<string | null>(null)
+  const [modifyPositionTarget, setModifyPositionTarget] = useState<BrokerTrade | null>(null)
+  const [modifyPendingTarget, setModifyPendingTarget] = useState<BrokerPendingOrder | null>(null)
+  const [modifyStopLoss, setModifyStopLoss] = useState('')
+  const [modifyTakeProfit, setModifyTakeProfit] = useState('')
+  const [modifyPendingPrice, setModifyPendingPrice] = useState('')
+  const [modifyPendingUnits, setModifyPendingUnits] = useState('')
+  const [isModifying, setIsModifying] = useState(false)
+  const [modifyError, setModifyError] = useState<string | null>(null)
   const [positionView, setPositionView] = useState<'open' | 'closed'>('open')
   const selectedInstruments = useUiStore((state) => state.selectedInstruments)
   const [instrument, setInstrument] = useState(selectedInstruments[0] ?? 'EUR/USD')
   const [side, setSide] = useState<'BUY' | 'SELL'>('BUY')
   const [units, setUnits] = useState(1200)
+  const [orderType, setOrderType] = useState<'market' | 'limit'>('market')
+  const [limitPrice, setLimitPrice] = useState('')
   const [riskPercent, setRiskPercent] = useState(0.75)
-  const [stopLossPercent, setStopLossPercent] = useState(0.55)
-  const [takeProfitPercent, setTakeProfitPercent] = useState(1)
+  const [protectionMode, setProtectionMode] = useState<'pips' | 'percent' | 'price'>('pips')
+  const [stopLossDistance, setStopLossDistance] = useState(15)
+  const [takeProfitDistance, setTakeProfitDistance] = useState(25)
   const [orderStatus, setOrderStatus] = useState<{ status: string; orderId?: string; transactionId?: string; fillPrice?: string | null; environment?: string; reason?: string | null; cancelReason?: string | null } | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
 
   const accountQuery = useQuery({ queryKey: ['account'], queryFn: getAccountSummary })
   const marketQuery = useQuery({ queryKey: ['market'], queryFn: getMarketSummary })
-  const quoteQuery = useQuery({ queryKey: ['market-quote', instrument], queryFn: () => getMarketQuote(instrument), refetchInterval: 1500, retry: false })
+  const quoteQuery = useQuery({ queryKey: ['market-quote', instrument], queryFn: () => getMarketQuote(instrument), refetchInterval: 2500, retry: false })
   const positionsQuery = useQuery({ queryKey: ['broker-positions'], queryFn: getBrokerPositions, refetchInterval: 3000 })
+  const pendingOrdersQuery = useQuery({ queryKey: ['broker-pending-orders'], queryFn: getBrokerPendingOrders, refetchInterval: 3000, retry: false })
   const riskQuery = useQuery({ queryKey: ['risk'], queryFn: getRiskSummary })
   const [chartTimeframe, setChartTimeframe] = useState('H1')
   const [chartCountMultiplier, setChartCountMultiplier] = useState(1)
@@ -64,26 +76,58 @@ export function DashboardPage() {
 
   const entryPrice = brokerQuote ? Number(side === 'BUY' ? brokerQuote.ask : brokerQuote.bid) : Number.NaN
   const pricePrecision = brokerQuote?.displayPrecision ?? (instrument.endsWith('/JPY') ? 3 : 5)
-  const protectionPrice = (percent: number, kind: 'stop' | 'target') => {
-    if (!Number.isFinite(entryPrice) || entryPrice <= 0 || !Number.isFinite(percent) || percent <= 0) return ''
+  const activeEntryPrice = orderType === 'limit' ? Number(limitPrice) : entryPrice
+  const pipSize = Number(brokerQuote?.pipSize ?? (instrument.endsWith('/JPY') ? 0.01 : 0.0001))
+  const protectionPrice = (distance: number, kind: 'stop' | 'target') => {
+    if (protectionMode === 'price') {
+      return Number.isFinite(distance) && distance > 0 ? distance.toFixed(pricePrecision) : ''
+    }
+    if (!Number.isFinite(activeEntryPrice) || activeEntryPrice <= 0 || !Number.isFinite(distance) || distance <= 0) return ''
     const movesWithPosition = (kind === 'target') === (side === 'BUY')
-    const multiplier = 1 + (movesWithPosition ? 1 : -1) * percent / 100
-    return (entryPrice * multiplier).toFixed(pricePrecision)
+    const offset = protectionMode === 'pips'
+      ? distance * pipSize
+      : activeEntryPrice * distance / 100
+    return (activeEntryPrice + (movesWithPosition ? offset : -offset)).toFixed(pricePrecision)
   }
-  const stopLossPrice = protectionPrice(stopLossPercent, 'stop')
-  const takeProfitPrice = protectionPrice(takeProfitPercent, 'target')
+  const stopLossPrice = protectionPrice(stopLossDistance, 'stop')
+  const takeProfitPrice = protectionPrice(takeProfitDistance, 'target')
+  const orderUnitsAvailable = Number(brokerQuote?.unitsAvailable?.default?.[side === 'BUY' ? 'long' : 'short'])
+  const quoteToAccountRate = Number(brokerQuote?.quoteToAccountRate)
+  const accountCurrency = brokerQuote?.accountCurrency ?? brokerQuote?.quoteCurrency ?? '—'
+  const conversionAvailable = Number.isFinite(quoteToAccountRate) && quoteToAccountRate > 0
+  const tradeValue = Number.isFinite(activeEntryPrice)
+    ? units * activeEntryPrice * (conversionAvailable ? quoteToAccountRate : 1)
+    : Number.NaN
+  const marginRate = Number(brokerQuote?.marginRate)
+  const estimatedMargin = conversionAvailable && Number.isFinite(tradeValue) && Number.isFinite(marginRate)
+    ? tradeValue * marginRate
+    : Number.NaN
+  const estimatedTakeProfit = Number.isFinite(activeEntryPrice) && takeProfitPrice && conversionAvailable
+    ? Math.abs(Number(takeProfitPrice) - activeEntryPrice) * units * quoteToAccountRate
+    : Number.NaN
+  const pipValue = Number.isFinite(pipSize) && conversionAvailable
+    ? pipSize * units * quoteToAccountRate
+    : Number.NaN
+  const tradeValueCurrency = conversionAvailable
+    ? accountCurrency
+    : brokerQuote?.quoteCurrency ?? '—'
   const minimumTradeSize = Number(brokerQuote?.minimumTradeSize ?? '1')
   const validUnits = Number.isInteger(units) && units >= minimumTradeSize
+  const validLimitPrice = orderType !== 'limit' || (Number.isFinite(activeEntryPrice) && activeEntryPrice > 0)
   const validProtectionPrices = Boolean(stopLossPrice && takeProfitPrice)
     && (side === 'BUY'
-      ? Number(stopLossPrice) < entryPrice && Number(takeProfitPrice) > entryPrice
-      : Number(stopLossPrice) > entryPrice && Number(takeProfitPrice) < entryPrice)
+      ? Number(stopLossPrice) < activeEntryPrice && Number(takeProfitPrice) > activeEntryPrice
+      : Number(stopLossPrice) > activeEntryPrice && Number(takeProfitPrice) < activeEntryPrice)
   const orderValidationMessage = brokerQuote && !validUnits
     ? `Units must be a whole number of at least ${minimumTradeSize}.`
-    : brokerQuote && !validProtectionPrices
+    : brokerQuote && Number.isFinite(orderUnitsAvailable) && units > orderUnitsAvailable
+      ? `Units exceed the broker's live available amount (${orderUnitsAvailable.toLocaleString()}).`
+      : brokerQuote && !validLimitPrice
+        ? 'Enter a valid limit price.'
+        : brokerQuote && !validProtectionPrices
       ? 'Stop loss and take profit must be valid prices on opposite sides of the entry.'
       : null
-  const canSubmitOrder = userRole !== 'viewer' && !isSubmitting && brokerQuote?.tradeable === true && Number.isFinite(entryPrice) && validUnits && validProtectionPrices
+  const canSubmitOrder = userRole !== 'viewer' && !isSubmitting && brokerQuote?.tradeable === true && Number.isFinite(activeEntryPrice) && activeEntryPrice > 0 && validUnits && validLimitPrice && validProtectionPrices
 
   const handleOrderSubmit = async () => {
     if (!canSubmitOrder) {
@@ -92,25 +136,27 @@ export function DashboardPage() {
 
     setIsSubmitting(true)
     try {
-      const result = await submitMarketOrder(
-        {
-          symbol: instrument,
-          side,
-          volume: units,
-          units,
-          stopLoss: stopLossPrice,
-          takeProfit: takeProfitPrice,
-          riskPercent,
-          clientOrderId: createManualClientOrderId(),
-        },
-        userRole,
-      )
+      const order = {
+        symbol: instrument,
+        side,
+        volume: units,
+        units,
+        stopLoss: stopLossPrice,
+        takeProfit: takeProfitPrice,
+        riskPercent,
+        clientOrderId: createManualClientOrderId(),
+      }
+      const result = orderType === 'limit'
+        ? await submitLimitOrder({ ...order, price: limitPrice || activeEntryPrice.toFixed(pricePrecision) }, userRole)
+        : await submitMarketOrder(order, userRole)
+      const fillPrice = 'fillPrice' in result ? result.fillPrice : null
+      const reason = 'reason' in result ? result.reason ?? result.cancelReason ?? null : null
       const nextOrder = {
         id: result.orderId ?? `ui-order-${Date.now()}`,
         symbol: result.symbol,
         side: result.side === 'SELL' ? 'SELL' : 'BUY',
         volume: result.volume ?? String(units),
-        status: result.status === 'filled' ? 'Filled' : result.status === 'cancelled' ? 'Cancelled' : ['queued', 'accepted'].includes(result.status) ? 'Pending' : 'Rejected',
+        status: result.status === 'filled' ? 'Filled' : result.status === 'cancelled' ? 'Cancelled' : ['queued', 'accepted', 'pending'].includes(result.status) ? 'Pending' : 'Rejected',
         createdAt: new Date().toISOString(),
         risk: `${riskPercent}%`,
       } as const
@@ -118,14 +164,15 @@ export function DashboardPage() {
         status: result.status,
         orderId: result.orderId,
         transactionId: result.transactionId,
-        fillPrice: result.fillPrice,
+        fillPrice,
         environment: result.environment,
-        reason: result.reason ?? result.cancelReason ?? null,
-        cancelReason: result.cancelReason ?? result.reason ?? null,
+        reason,
+        cancelReason: reason,
       })
       const feed = useUiStore.getState().ordersFeed ?? []
       setOrdersFeed([nextOrder, ...feed].slice(0, 10))
       await queryClient.invalidateQueries({ queryKey: ['broker-positions'] })
+      await queryClient.invalidateQueries({ queryKey: ['broker-pending-orders'] })
       await queryClient.invalidateQueries({ queryKey: ['orders'] })
       setConfirmOpen(false)
     } catch (error) {
@@ -157,6 +204,35 @@ export function DashboardPage() {
       setCloseError(error instanceof Error ? error.message : 'Position close rejected by broker')
     } finally {
       setIsClosing(false)
+    }
+  }
+
+  const handleModificationSubmit = async () => {
+    if (userRole === 'viewer') return
+    setIsModifying(true)
+    setModifyError(null)
+    try {
+      if (modifyPositionTarget) {
+        await modifyManualPosition(
+          modifyPositionTarget.id,
+          { stopLoss: modifyStopLoss, takeProfit: modifyTakeProfit },
+          userRole,
+        )
+        await queryClient.invalidateQueries({ queryKey: ['broker-positions'] })
+        setModifyPositionTarget(null)
+      } else if (modifyPendingTarget) {
+        await modifyPendingOrder(
+          modifyPendingTarget.id,
+          { price: modifyPendingPrice, units: modifyPendingUnits },
+          userRole,
+        )
+        await queryClient.invalidateQueries({ queryKey: ['broker-pending-orders'] })
+        setModifyPendingTarget(null)
+      }
+    } catch (error) {
+      setModifyError(error instanceof Error ? error.message : 'Broker modification rejected')
+    } finally {
+      setIsModifying(false)
     }
   }
 
@@ -336,7 +412,7 @@ export function DashboardPage() {
                 <thead>
                   <tr>
                     <th>Source</th><th>Symbol</th><th>Side</th><th>Units</th><th>Entry</th>
-                    <th>{positionView === 'open' ? 'Current' : 'Exit'}</th><th>Stop</th><th>TP</th><th>P/L</th><th>Action</th>
+                    <th>{positionView === 'open' ? 'Current' : 'Exit'}</th><th>Stop</th><th>TP</th><th>P/L {positionsQuery.data?.accountCurrency ? `(${positionsQuery.data.accountCurrency})` : ''}</th><th>Action</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -351,10 +427,33 @@ export function DashboardPage() {
                       <td>{position.stopLoss ?? '—'}</td>
                       <td>{position.takeProfit ?? '—'}</td>
                       <td className={Number(position.pnl) < 0 ? 'negative' : 'positive'}>{Number(position.pnl) > 0 ? '+' : ''}{position.pnl}</td>
-                      <td>{positionView === 'open' && position.manual && userRole !== 'viewer' ? <button className="close-position-button" type="button" onClick={() => { setCloseError(null); setCloseTarget(position) }}>Close</button> : positionView === 'closed' ? <span className="muted-cell">Closed</span> : '—'}</td>
+                      <td>{positionView === 'open' && position.manual && userRole !== 'viewer' ? <div className="trade-actions"><button className="modify-position-button" type="button" onClick={() => { setModifyError(null); setModifyStopLoss(position.stopLoss ?? ''); setModifyTakeProfit(position.takeProfit ?? ''); setModifyPositionTarget(position) }}>Modify</button><button className="close-position-button" type="button" onClick={() => { setCloseError(null); setCloseTarget(position) }}>Close</button></div> : positionView === 'closed' ? <span className="muted-cell">Closed</span> : '—'}</td>
                     </tr>
                   ))}
                   {!positionsQuery.isLoading && visiblePositions.length === 0 && <tr><td className="empty-cell" colSpan={10}>{positionsQuery.isError ? 'Broker positions could not be loaded.' : `No ${positionView} broker trades.`}</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="panel">
+            <div className="panel-header compact">
+              <div><p className="eyebrow">Broker orders</p><h3>Pending orders</h3></div>
+              <span className="muted-cell">Live OANDA data</span>
+            </div>
+            {pendingOrdersQuery.isError && <p className="inline-error">Broker pending orders could not be loaded.</p>}
+            <div className="position-table-scroll">
+              <table className="positions-table">
+                <thead><tr><th>ID</th><th>Symbol</th><th>Side</th><th>Units</th><th>Price</th><th>Action</th></tr></thead>
+                <tbody>
+                  {(pendingOrdersQuery.data ?? []).map((order) => (
+                    <tr key={order.id}>
+                      <td>{order.id}</td><td>{order.symbol}</td><td className={order.side === 'BUY' ? 'long' : 'short'}>{order.side}</td>
+                      <td>{Number(order.volume).toLocaleString()}</td><td>{order.price}</td>
+                      <td>{order.manual && userRole !== 'viewer' ? <button className="modify-position-button" type="button" onClick={() => { setModifyError(null); setModifyPendingPrice(order.price); setModifyPendingUnits(order.volume); setModifyPendingTarget(order) }}>Modify</button> : <span className="muted-cell">Broker-managed</span>}</td>
+                    </tr>
+                  ))}
+                  {!pendingOrdersQuery.isLoading && !pendingOrdersQuery.isError && (pendingOrdersQuery.data?.length ?? 0) === 0 && <tr><td className="empty-cell" colSpan={6}>No broker pending orders.</td></tr>}
                 </tbody>
               </table>
             </div>
@@ -535,7 +634,7 @@ export function DashboardPage() {
             <div className="field-row">
               <label>
                 <span>Instrument</span>
-                <select value={activeInstrument} onChange={(event) => setInstrument(event.target.value)}>
+                <select value={activeInstrument} onChange={(event) => { setInstrument(event.target.value); setLimitPrice('') }}>
                   {instrumentOptions.map((pair) => (
                     <option key={pair} value={pair}>{pair}</option>
                   ))}
@@ -546,6 +645,13 @@ export function DashboardPage() {
                 <select value={side} onChange={(event) => setSide(event.target.value as 'BUY' | 'SELL')}>
                   <option value="BUY">BUY</option>
                   <option value="SELL">SELL</option>
+                </select>
+              </label>
+              <label>
+                <span>Order type</span>
+                <select value={orderType} onChange={(event) => setOrderType(event.target.value as 'market' | 'limit')}>
+                  <option value="market">Market</option>
+                  <option value="limit">Limit</option>
                 </select>
               </label>
             </div>
@@ -559,19 +665,80 @@ export function DashboardPage() {
                 <span>Risk %</span>
                 <input type="number" step="0.01" value={riskPercent} onChange={(event) => setRiskPercent(Number(event.target.value) || 0)} />
               </label>
+              {orderType === 'limit' && (
+                <label>
+                  <span>Limit price</span>
+                  <input type="number" min="0" step={10 ** -pricePrecision} value={limitPrice || (Number.isFinite(entryPrice) ? entryPrice.toFixed(pricePrecision) : '')} onChange={(event) => setLimitPrice(event.target.value)} />
+                </label>
+              )}
             </div>
 
             <div className="field-row">
               <label>
-                <span>Stop loss distance (%)</span>
-                <input type="number" min="0.01" step="0.01" value={stopLossPercent} onChange={(event) => setStopLossPercent(Number(event.target.value) || 0)} />
+                <span>Protection input</span>
+                <select value={protectionMode} onChange={(event) => setProtectionMode(event.target.value as 'pips' | 'percent' | 'price')}>
+                  <option value="pips">Pips</option>
+                  <option value="price">Price</option>
+                  <option value="percent">Percent</option>
+                </select>
+                <small className="calculated-price">1 pip = {pipSize.toFixed(pricePrecision)} {instrument.split('/')[1] ?? ''}</small>
+              </label>
+              <label>
+                <span>Stop loss {protectionMode === 'pips' ? '(pips)' : protectionMode === 'percent' ? '(%)' : '(price)'}</span>
+                <input type="number" min="0" step={protectionMode === 'price' ? 10 ** -pricePrecision : protectionMode === 'pips' ? '1' : '0.01'} value={stopLossDistance} onChange={(event) => setStopLossDistance(Number(event.target.value) || 0)} />
                 <small className="calculated-price">Broker stop: {stopLossPrice || '—'}</small>
               </label>
               <label>
-                <span>Take profit distance (%)</span>
-                <input type="number" min="0.01" step="0.01" value={takeProfitPercent} onChange={(event) => setTakeProfitPercent(Number(event.target.value) || 0)} />
+                <span>Take profit {protectionMode === 'pips' ? '(pips)' : protectionMode === 'percent' ? '(%)' : '(price)'}</span>
+                <input type="number" min="0" step={protectionMode === 'price' ? 10 ** -pricePrecision : protectionMode === 'pips' ? '1' : '0.01'} value={takeProfitDistance} onChange={(event) => setTakeProfitDistance(Number(event.target.value) || 0)} />
                 <small className="calculated-price">Broker target: {takeProfitPrice || '—'}</small>
               </label>
+            </div>
+
+            <div className="dom-panel">
+              <div className="dom-heading">
+                <strong>Depth of Market</strong>
+                <span>{brokerQuote?.bids?.length || brokerQuote?.asks?.length ? 'OANDA liquidity levels' : 'Top quote only'}</span>
+              </div>
+              <p className="dom-note">{brokerQuote?.bids?.length || brokerQuote?.asks?.length ? 'Broker-provided price/liquidity levels; not a centralized FX order book. Select a row to create a limit order at that price.' : 'No depth was returned by the broker. Suggested fallback: selectable top Bid/Ask only; volume is unavailable.'}</p>
+              <div className="position-table-scroll">
+                <table className="positions-table dom-table">
+                  <thead><tr><th>Buy units</th><th>Price</th><th>Sell units</th></tr></thead>
+                  <tbody>
+                    {(brokerQuote?.asks?.length
+                      ? [...brokerQuote.asks].sort((a, b) => Number(b.price) - Number(a.price)).slice(0, 5)
+                      : brokerQuote ? [{ price: brokerQuote.ask, units: '—' }] : []
+                    ).map((level, index) => (
+                      <tr key={`ask-${index}`} className="dom-ask-row">
+                        <td>{Number.isFinite(Number(level.units)) ? Number(level.units).toLocaleString() : level.units}</td>
+                        <td><button type="button" onClick={() => { setSide('BUY'); setOrderType('limit'); setLimitPrice(level.price) }}>{Number(level.price).toFixed(pricePrecision)}</button></td>
+                        <td>—</td>
+                      </tr>
+                    ))}
+                    <tr className="dom-spread-row"><td colSpan={3}>Spread {displayQuote ? Number(displayQuote.spread).toFixed(pricePrecision) : '—'}</td></tr>
+                    {(brokerQuote?.bids?.length
+                      ? [...brokerQuote.bids].sort((a, b) => Number(b.price) - Number(a.price)).slice(0, 5)
+                      : brokerQuote ? [{ price: brokerQuote.bid, units: '—' }] : []
+                    ).map((level, index) => (
+                      <tr key={`bid-${index}`} className="dom-bid-row">
+                        <td>—</td>
+                        <td><button type="button" onClick={() => { setSide('SELL'); setOrderType('limit'); setLimitPrice(level.price) }}>{Number(level.price).toFixed(pricePrecision)}</button></td>
+                        <td>{Number.isFinite(Number(level.units)) ? Number(level.units).toLocaleString() : level.units}</td>
+                      </tr>
+                    ))}
+                    {!brokerQuote && <tr><td colSpan={3} className="empty-cell">Waiting for live broker levels…</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="live-order-metrics">
+              <div><span>Units available</span><strong>{Number.isFinite(orderUnitsAvailable) ? orderUnitsAvailable.toLocaleString() : '—'}</strong></div>
+              <div><span>Value / pip</span><strong>{Number.isFinite(pipValue) ? `${pipValue.toFixed(2)} ${accountCurrency}` : '—'}</strong></div>
+              <div><span>Take profit estimate</span><strong>{Number.isFinite(estimatedTakeProfit) ? `${estimatedTakeProfit.toFixed(2)} ${accountCurrency}` : '—'}</strong><small>At selected target</small></div>
+              <div><span>Trade value</span><strong>{Number.isFinite(tradeValue) ? `${tradeValue.toFixed(2)} ${tradeValueCurrency}` : '—'}</strong></div>
+              <div><span>Margin required (est.)</span><strong>{Number.isFinite(estimatedMargin) ? `${estimatedMargin.toFixed(2)} ${accountCurrency}` : '—'}</strong><small>{brokerQuote?.marginRate ? `Margin rate ${Number(brokerQuote.marginRate) * 100}%` : 'Broker margin rate unavailable'}</small></div>
+              <div><span>Margin available</span><strong>{brokerQuote?.marginAvailable ? `${Number(brokerQuote.marginAvailable).toLocaleString(undefined, { maximumFractionDigits: 2 })} ${accountCurrency}` : '—'}</strong><small>{brokerQuote?.conversionError ? 'Conversion quote unavailable' : 'Live broker account'}</small></div>
             </div>
 
             <div className="field-row compact-row">
@@ -594,7 +761,7 @@ export function DashboardPage() {
                 onClick={() => setConfirmOpen(true)}
                 style={{ opacity: canSubmitOrder ? 1 : 0.5 }}
               >
-                {isSubmitting ? 'Submitting...' : 'Submit order'}
+                {isSubmitting ? 'Submitting...' : orderType === 'limit' ? 'Submit limit order' : 'Submit market order'}
               </button>
               <button className="secondary-action" type="button" onClick={() => setOrderStatus(null)}>Reset</button>
             </div>
@@ -657,14 +824,14 @@ export function DashboardPage() {
             <p className="eyebrow">Write action requires confirmation</p>
             <h3>Confirm Practice order</h3>
             <p>
-              Submit a {side} order for <strong>{activeInstrument}</strong> at market. Entry reference {entryPrice.toFixed(pricePrecision)}, stop {stopLossPrice} ({stopLossPercent}%), target {takeProfitPrice} ({takeProfitPercent}%).
+              Submit a {side} {orderType} order for <strong>{activeInstrument}</strong> at {activeEntryPrice.toFixed(pricePrecision)}, stop {stopLossPrice}, target {takeProfitPrice}.
             </p>
             <div className="modal-actions">
               <button className="secondary-action" onClick={() => setConfirmOpen(false)}>
                 Cancel
               </button>
               <button className="primary-action" disabled={!canSubmitOrder} onClick={handleOrderSubmit}>
-                Confirm Practice order
+                Confirm Practice {orderType} order
               </button>
             </div>
           </div>
@@ -681,6 +848,34 @@ export function DashboardPage() {
             <div className="modal-actions">
               <button className="secondary-action" disabled={isClosing} onClick={() => setCloseTarget(null)}>Cancel</button>
               <button className="danger-action" disabled={isClosing} onClick={handlePositionClose}>{isClosing ? 'Closing…' : 'Confirm close'}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {(modifyPositionTarget || modifyPendingTarget) && (
+        <div className="modal-backdrop" onClick={() => { if (!isModifying) { setModifyPositionTarget(null); setModifyPendingTarget(null) } }}>
+          <div className="confirm-modal" onClick={(event) => event.stopPropagation()}>
+            <p className="eyebrow">Broker modification</p>
+            {modifyPositionTarget ? (
+              <>
+                <h3>Modify {modifyPositionTarget.symbol} protection</h3>
+                <label className="modal-field"><span>Stop loss price</span><input type="number" min="0" step={10 ** -pricePrecision} value={modifyStopLoss} onChange={(event) => setModifyStopLoss(event.target.value)} /></label>
+                <label className="modal-field"><span>Take profit price</span><input type="number" min="0" step={10 ** -pricePrecision} value={modifyTakeProfit} onChange={(event) => setModifyTakeProfit(event.target.value)} /></label>
+                <p>Blank values leave that protection unchanged. Values are sent to OANDA, not stored as a local-only change.</p>
+              </>
+            ) : modifyPendingTarget ? (
+              <>
+                <h3>Modify pending {modifyPendingTarget.symbol} order</h3>
+                <label className="modal-field"><span>Limit price</span><input type="number" min="0" step={10 ** -pricePrecision} value={modifyPendingPrice} onChange={(event) => setModifyPendingPrice(event.target.value)} /></label>
+                <label className="modal-field"><span>Units</span><input type="number" min="1" step="1" value={modifyPendingUnits} onChange={(event) => setModifyPendingUnits(event.target.value)} /></label>
+                <p>This updates the broker's pending order price and signed units.</p>
+              </>
+            ) : null}
+            {modifyError && <p className="inline-error">{modifyError}</p>}
+            <div className="modal-actions">
+              <button className="secondary-action" disabled={isModifying} onClick={() => { setModifyPositionTarget(null); setModifyPendingTarget(null) }}>Cancel</button>
+              <button className="primary-action" disabled={isModifying} onClick={handleModificationSubmit}>{isModifying ? 'Updating…' : 'Apply broker changes'}</button>
             </div>
           </div>
         </div>
