@@ -4,11 +4,42 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from freqtrade.forex.api import app, create_app, format_hyperopt_report
+from freqtrade.forex.api import (
+    app,
+    create_app,
+    format_hyperopt_report,
+    freqai_history_config,
+    minimum_freqai_history,
+)
 from freqtrade.forex.models import OandaInstrument
 
 
 client = TestClient(app)
+
+
+def test_freqai_minimum_history_uses_seven_days_and_feature_warmup():
+    default_freqai = {
+        'trainPeriodDays': 30,
+        'backtestPeriodDays': 7,
+        'featureParameters': {
+            'labelPeriodCandles': 2,
+            'indicatorPeriodsCandles': [5, 14],
+            'includeShiftedCandles': 0,
+        },
+    }
+
+    assert minimum_freqai_history(default_freqai, 'H1') == 168
+    assert minimum_freqai_history(default_freqai, 'M5') == 2016
+    assert minimum_freqai_history(
+        {**default_freqai, 'featureParameters': {'indicatorPeriodsCandles': [500]}},
+        'H1',
+    ) == 542
+    assert freqai_history_config(default_freqai, 'H1', 168) == {
+        **default_freqai,
+        'trainPeriodDays': 5,
+        'backtestPeriodDays': 2,
+    }
+    assert freqai_history_config(default_freqai, 'H1', 888) == default_freqai
 
 
 def test_account_summary_endpoint_exists():

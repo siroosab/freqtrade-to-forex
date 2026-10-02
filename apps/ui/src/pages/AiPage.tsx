@@ -9,6 +9,7 @@ const TIMEFRAME_SECONDS: Record<string, number> = {
   M1: 60, M5: 300, M15: 900, M30: 1800, H1: 3600, H2: 7200,
   H4: 14400, H6: 21600, H8: 28800, H12: 43200, D1: 86400, W1: 604800, MN1: 2592000,
 }
+const MINIMUM_FREQAI_HISTORY_DAYS = 7
 const MAX_RESEARCH_CANDLES = 50000
 const MAX_BASELINE_CANDLES = 10000
 
@@ -134,14 +135,12 @@ export function AiPage() {
     .filter((value) => Number.isFinite(value) && value > 0)
   const minimumModelHistory = selectedFreqaiModel === 'ForexAIStrategyBaseline'
     ? 30
-    : Math.ceil(
-      ((Number(freqaiForm.trainPeriodDays) || 30)
-        + (Number(freqaiForm.backtestPeriodDays) || 7))
-        * 86400 / selectedSeconds,
+    : Math.max(
+      Math.ceil((MINIMUM_FREQAI_HISTORY_DAYS * 86400) / selectedSeconds),
+      40 + (Number(freqaiForm.labelPeriodCandles) || 2)
+        + (configuredPeriods.length ? Math.max(...configuredPeriods) : 14)
+        + (Number(freqaiForm.includeShiftedCandles) || 0),
     )
-      + 40 + (Number(freqaiForm.labelPeriodCandles) || 2)
-      + (configuredPeriods.length ? Math.max(...configuredPeriods) : 14)
-      + (Number(freqaiForm.includeShiftedCandles) || 0)
   useEffect(() => {
     if (!schedulerQuery.data) return
     setSchedulerPairs((current) => {
@@ -415,6 +414,15 @@ export function AiPage() {
               <span>{selectedPair}</span><span>{selectedTimeframe}</span>
               <span>{selectedStrategyClass}</span><span>{selectedFreqaiModel}</span>
             </div>
+            <div className="settings-grid">
+              <label className="field-block"><span>Pair</span><select value={selectedPair} onChange={(event) => setSelectedPair(event.target.value)}>{(availablePairs.length ? availablePairs : ['EUR/USD', 'GBP/USD', 'USD/JPY']).map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
+              <label className="field-block"><span>Strategy timeframe</span><select value={selectedTimeframe} onChange={(event) => setSelectedTimeframe(event.target.value as AiConfig['timeframe'])}>{['M1', 'M5', 'M15', 'M30', 'H1', 'H2', 'H4', 'H6', 'H8', 'H12', 'D1', 'W1', 'MN1'].map((item) => <option key={item}>{item}</option>)}</select></label>
+              <label className="field-block"><span>FreqAI model</span><select value={selectedFreqaiModel} onChange={(event) => setSelectedFreqaiModel(event.target.value as AiFreqaiModel)}>{FREQAI_MODELS.map((model) => <option key={model} value={model}>{model}</option>)}</select></label>
+              <label className="field-block"><span>Strategy class</span><select value={selectedStrategyClass} onChange={(event) => setSelectedStrategyClass(event.target.value)} disabled={strategiesQuery.isLoading || !strategiesQuery.data?.length}>{strategiesQuery.data?.map((strategy) => <option key={strategy.name} value={strategy.name}>{strategy.name}</option>)}</select></label>
+              <label className="field-block"><span>History unit</span><select value={historyMode} onChange={(event) => setHistoryMode(event.target.value as 'candles' | 'days')}><option value="candles">Candles</option><option value="days">Days</option></select></label>
+              <label className="field-block"><span>History value</span><input type="number" min="1" max={historyMode === 'candles' ? maximumResearchCandles : Math.max(1, Math.floor(maximumResearchCandles * selectedSeconds / 86400))} value={historyValue} onChange={(event) => setHistoryValue(Number(event.target.value) || 1)} /></label>
+            </div>
+            <p className="ai-history-hint">Maximum for {selectedFreqaiModel}: {maximumResearchCandles.toLocaleString()} candles.{selectedFreqaiModel !== 'ForexAIStrategyBaseline' && ` Minimum: ${minimumModelHistory.toLocaleString()} candles for ${selectedTimeframe} (at least 7 days, including model warm-up); smaller requests are raised automatically.`}</p>
             {cacheClearContext === 'backtest' && cacheClearMutation.data && <p className="ai-job-message" aria-live="polite">Cleared {cacheClearMutation.data.candleItemsRemoved} candle cache item(s) and {cacheClearMutation.data.modelFilesRemoved} cached AI model file(s) for {cacheClearMutation.data.pair}. Hyperopt reports were kept.</p>}
             {cacheClearContext === 'backtest' && cacheClearMutation.error && <p className="ai-error-message" aria-live="polite">Cache clear failed: {cacheClearMutation.error.message}</p>}
             {backtestMessage && <p className="ai-job-message" aria-live="polite">{backtestMessage}</p>}
@@ -500,13 +508,11 @@ export function AiPage() {
               <label className="field-block"><span>Pair</span><select value={selectedPair} onChange={(event) => setSelectedPair(event.target.value)}>{(availablePairs.length ? availablePairs : ['EUR/USD', 'GBP/USD', 'USD/JPY']).map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
               <label className="field-block"><span>Strategy timeframe</span><select value={selectedTimeframe} onChange={(event) => setSelectedTimeframe(event.target.value as AiConfig['timeframe'])}>{['M1', 'M5', 'M15', 'M30', 'H1', 'H2', 'H4', 'H6', 'H8', 'H12', 'D1', 'W1', 'MN1'].map((item) => <option key={item}>{item}</option>)}</select></label>
               <label className="field-block"><span>History unit</span><select value={historyMode} onChange={(event) => setHistoryMode(event.target.value as 'candles' | 'days')}><option value="candles">Candles</option><option value="days">Days</option></select></label>
-              <label className="field-block"><span>History value</span><input type="number" min="1" max={historyMode === 'candles' ? MAX_RESEARCH_CANDLES : 365} value={historyValue} onChange={(event) => setHistoryValue(Number(event.target.value) || 1)} /></label>
-                            <label className="field-block"><span>History value</span><input type="number" min="1" max={historyMode === 'candles' ? maximumResearchCandles : Math.max(1, Math.floor(maximumResearchCandles * selectedSeconds / 86400))} value={historyValue} onChange={(event) => setHistoryValue(Number(event.target.value) || 1)} /></label>
+              <label className="field-block"><span>History value</span><input type="number" min="1" max={historyMode === 'candles' ? maximumResearchCandles : Math.max(1, Math.floor(maximumResearchCandles * selectedSeconds / 86400))} value={historyValue} onChange={(event) => setHistoryValue(Number(event.target.value) || 1)} /></label>
               <label className="field-block"><span>Attempts</span><input type="number" min="1" max="900" value={attempts} onChange={(event) => setAttempts(Number(event.target.value) || 24)} /></label>
               <label className="field-block"><span>Hyperopt loss</span><select value={hyperoptLoss} onChange={(event) => setHyperoptLoss(event.target.value)} disabled={hyperoptLossFunctionsQuery.isLoading}><option value="">{hyperoptLossFunctionsQuery.isLoading ? 'Loading loss functions…' : 'Select loss function'}</option>{hyperoptLossFunctionsQuery.data?.options.map((loss) => <option key={loss} value={loss}>{loss}</option>)}</select></label>
             </div>
-            {selectedFreqaiModel !== 'ForexAIStrategyBaseline' && <p className="ai-history-hint">Minimum for this FreqAI setup: {minimumModelHistory.toLocaleString()} candles. Smaller requests are raised automatically; the API limit is {MAX_RESEARCH_CANDLES.toLocaleString()}.</p>}
-                        <p className="ai-history-hint">Maximum for {selectedFreqaiModel}: {maximumResearchCandles.toLocaleString()} candles.{selectedFreqaiModel !== 'ForexAIStrategyBaseline' && ` Minimum for this FreqAI setup: ${minimumModelHistory.toLocaleString()} candles; smaller requests are raised automatically.`}</p>
+            <p className="ai-history-hint">Maximum for {selectedFreqaiModel}: {maximumResearchCandles.toLocaleString()} candles.{selectedFreqaiModel !== 'ForexAIStrategyBaseline' && ` Minimum: ${minimumModelHistory.toLocaleString()} candles for ${selectedTimeframe} (at least 7 days, including model warm-up); smaller requests are raised automatically.`}</p>
                         {schedulerQuery.data && <div className="bullet-list"><div><span>Status</span><strong>{schedulerQuery.data.enabled ? 'enabled' : 'disabled'}{schedulerQuery.data.running ? ' • running' : ''}</strong></div><div><span>FreqAI model</span><strong>{schedulerQuery.data.freqaimodel ?? schedulerFreqaiModel}</strong></div><div><span>Scheduled scopes</span><strong>{schedulerPairs.map((pair) => `${pair} (${schedulerScopes[pair]?.strategyClass ?? 'unselected'} · ${schedulerScopes[pair]?.timeframe ?? '-'})`).join(' • ') || 'none'}</strong></div>{Object.entries(schedulerQuery.data.nextRuns ?? {}).map(([pair, scheduledAt]) => <div key={pair}><span>Next {pair}</span><strong>{new Date(scheduledAt).toLocaleString()}</strong></div>)}{schedulerQuery.data.lastError && <div><span>Last scheduler error</span><strong>{schedulerQuery.data.lastError}</strong></div>}</div>}
             <label className="field-block ai-model-select"><span>FreqAI model</span><select value={selectedFreqaiModel} onChange={(event) => setSelectedFreqaiModel(event.target.value as AiFreqaiModel)}>{FREQAI_MODELS.map((model) => <option key={model} value={model}>{model}</option>)}</select></label>
             <label className="field-block" style={{ marginTop: '12px' }}><span>Strategy class</span><select value={selectedStrategyClass} onChange={(event) => setSelectedStrategyClass(event.target.value)} disabled={strategiesQuery.isLoading || !strategiesQuery.data?.length}>{strategiesQuery.data?.map((strategy) => <option key={strategy.name} value={strategy.name}>{strategy.name}</option>)}</select></label>

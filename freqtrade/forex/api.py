@@ -39,6 +39,51 @@ from freqtrade.forex.strategy_execution import (
 )
 from freqtrade.timeframe import timeframe_to_minutes, timeframe_to_seconds
 
+MINIMUM_FREQAI_HISTORY_DAYS = 7
+
+
+def minimum_freqai_history(freqai_config: dict[str, object], timeframe: str) -> int:
+    feature_source = freqai_config.get("featureParameters", {})
+    feature_source = feature_source if isinstance(feature_source, dict) else {}
+    try:
+        seconds = timeframe_to_seconds(freqtrade_timeframe(timeframe))
+        label_period = int(feature_source.get("labelPeriodCandles", 2))
+        periods = [int(value) for value in feature_source.get("indicatorPeriodsCandles", [5, 14])]
+        shifted = int(feature_source.get("includeShiftedCandles", 0))
+    except (TypeError, ValueError, KeyError) as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid FreqAI history settings: {exc}") from exc
+    seven_day_candles = (MINIMUM_FREQAI_HISTORY_DAYS * 86400 + seconds - 1) // seconds
+    warmup_candles = 40 + label_period + max(periods, default=14) + shifted
+    return max(seven_day_candles, warmup_candles)
+
+
+def freqai_history_config(
+    freqai_config: dict[str, object], timeframe: str, history_candles: int
+) -> dict[str, object]:
+    config = dict(freqai_config)
+    seconds = timeframe_to_seconds(freqtrade_timeframe(timeframe))
+    train_days = int(config.get("trainPeriodDays", 30))
+    validation_days = int(config.get("backtestPeriodDays", 7))
+    configured_candles = (train_days + validation_days) * 86400 // seconds
+    if history_candles >= configured_candles:
+        return config
+
+    candles_per_day = max(1, 86400 // seconds)
+    available_days = max(2, history_candles // candles_per_day)
+    minimum_validation_days = (40 + candles_per_day - 1) // candles_per_day
+    validation_days = min(
+        available_days - 1,
+        max(
+            minimum_validation_days,
+            (available_days * validation_days + train_days + validation_days - 1)
+            // (train_days + validation_days),
+        ),
+    )
+    train_days = min(train_days, available_days - validation_days)
+    config["trainPeriodDays"] = train_days
+    config["backtestPeriodDays"] = validation_days
+    return config
+
 
 def _render_ui_index(ui_index: Path) -> str:
     if not ui_index.exists():
@@ -517,20 +562,6 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         requested_candles = (value * 86400 + timeframe_seconds - 1) // timeframe_seconds
         return mode, min(requested_candles, max_candles)
 
-    def minimum_freqai_history(freqai_config: dict[str, object], timeframe: str) -> int:
-        feature_source = freqai_config.get("featureParameters", {})
-        feature_source = feature_source if isinstance(feature_source, dict) else {}
-        try:
-            seconds = timeframe_to_seconds(freqtrade_timeframe(timeframe))
-            train_days = int(freqai_config.get("trainPeriodDays", 30))
-            validation_days = int(freqai_config.get("backtestPeriodDays", 7))
-            label_period = int(feature_source.get("labelPeriodCandles", 2))
-            periods = [int(value) for value in feature_source.get("indicatorPeriodsCandles", [5, 14])]
-            shifted = int(feature_source.get("includeShiftedCandles", 0))
-        except (TypeError, ValueError, KeyError) as exc:
-            raise HTTPException(status_code=400, detail=f"Invalid FreqAI history settings: {exc}") from exc
-        warmup = max(periods, default=14) + shifted
-        return ((train_days + validation_days) * 86400 + seconds - 1) // seconds + 40 + label_period + warmup
     AI_REVIEW_STATE: dict[str, object] = {
         "status": "pending",
         "strategyName": "FX Trend Pulse",
@@ -2307,16 +2338,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             if steps < minimum_candles:
                 history_mode = "candles"
                 steps = minimum_candles
-        if freqaimodel != "ForexAIStrategyBaseline":
-            minimum_candles = minimum_freqai_history(freqai_config, timeframe)
-            if minimum_candles > 50000:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Configured FreqAI window needs {minimum_candles} candles; reduce its training windows or increase the timeframe.",
-                )
-            if steps < minimum_candles:
-                history_mode = "candles"
-                steps = minimum_candles
+            freqai_config = freqai_history_config(freqai_config, timeframe, steps)
         history_value = steps
         attempts = max(1, min(int(payload.get("attempts", 24)), 900))
         from freqtrade.forex.ai_hyperopt import DEFAULT_HYPEROPT_LOSS, HYPEROPT_LOSS_FUNCTIONS
@@ -3055,6 +3077,12 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             timeframe,
             max_candles=50000 if freqaimodel != "ForexAIStrategyBaseline" else 10000,
         )
+        if freqaimodel != "ForexAIStrategyBaseline":
+            minimum_candles = minimum_freqai_history(freqai_config, timeframe)
+            if steps < minimum_candles:
+                history_mode = "candles"
+                steps = minimum_candles
+            freqai_config = freqai_history_config(freqai_config, timeframe, steps)
         BACKTEST_HISTORY[:] = [
             item for item in BACKTEST_HISTORY
             if not (
