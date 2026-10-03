@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import logging
 import re
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -2096,6 +2097,10 @@ def paper_report_to_json(ledger: PaperLedger) -> str:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
     args = build_parser().parse_args(argv)
     if args.command == "setup":
         return run_setup(args)
