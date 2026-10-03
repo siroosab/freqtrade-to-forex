@@ -10,7 +10,7 @@ import type {
 } from '../types'
 import type { ForexChartData } from '../components/ForexChart'
 
-export type RiskConfig = { pair: string; units: string; riskBudget: string; riskBudgetMode: 'percent' | 'absolute'; leverage: string; maxExposure: string; maxExposureMode: 'percent' | 'absolute'; side: string; stopLoss: string | null; stopLossMode: 'percent' | 'price' | 'pips'; takeProfit: string | null; takeProfitMode: 'percent' | 'price' | 'pips'; averageEntry: string | null; averageEntryMode: 'percent' | 'price' | 'pips'; maxAdds: string; source: string }
+export type RiskConfig = { pair: string; units: string; riskBudget: string; riskBudgetMode: 'percent' | 'absolute'; leverage: string; maxExposure: string; maxExposureMode: 'percent' | 'absolute'; side: 'LONG' | 'SHORT' | 'BOTH' | 'NONE'; stopLoss: string | null; stopLossMode: 'percent' | 'price' | 'pips'; takeProfit: string | null; takeProfitMode: 'percent' | 'price' | 'pips'; averageEntry: string | null; averageEntryMode: 'percent' | 'price' | 'pips'; maxAdds: string; source: string }
 export type LiquidityLevel = { price: string; units: string }
 export type LiveQuote = { pair: string; bid: string; ask: string; spread: string; time: string; tradeable: boolean; environment: string; displayPrecision: number; tradeUnitsPrecision: number; minimumTradeSize: string; baseCurrency?: string | null; quoteCurrency?: string | null; pipSize?: string; marginRate?: string | null; bids?: LiquidityLevel[]; asks?: LiquidityLevel[]; unitsAvailable?: Record<string, Record<string, string>> | null; accountCurrency?: string; marginAvailable?: string; quoteToAccountRate?: string | null; conversionError?: string | null }
 export type BrokerTrade = { id: string; symbol: string; side: 'BUY' | 'SELL'; units: string; entryPrice: string; currentPrice: string | null; exitPrice: string | null; stopLoss: string | null; takeProfit: string | null; pnl: string; openedAt: string | null; closedAt: string | null; status: 'open' | 'closed'; manual: boolean; source: string; clientOrderId: string | null }
@@ -109,6 +109,59 @@ export async function getAiModelComparison(pair = 'EUR/USD', timeframe = 'M5') {
   const response = await fetch(buildApiUrl(`/api/v1/ai/model-comparison?pair=${encodeURIComponent(pair)}&timeframe=${timeframe}&count=120`))
   if (!response.ok) throw new Error('Model comparison unavailable')
   return response.json() as Promise<{ pair: string; timeframe: string; comparison: { dataHash: string; featureSchemaHash: string; dataset: { pair: string; timeframe: string; trainRows: number; validationRows: number; oosRows: number; indicatorPeriods: number[]; includeShiftedCandles: number; trainPeriodDays: number | null; backtestPeriodDays: number | null; weightFactor: number; diThreshold: number }; regressor: { model: string; modelVersion: string; oosMae: string; oosRmse: string; directionalAccuracy: string; accepted: boolean; rejectionReasons: string[]; diFilteredOosRows: number }; classifier: { model: string; modelVersion: string; accuracy: number; f1Macro: number; accepted: boolean; rejectionReasons: string[]; classes: string[]; diFilteredOosRows: number }; baseline: { model: string; oosSamples: number; nonFlatSignals: number } } }>
+}
+
+export type AutoExecutionResult = {
+  pair: string
+  timeframe: string
+  signal?: 'long' | 'short' | 'flat' | string
+  candleTime?: string
+  status: string
+  reason?: string
+  orderId?: string
+  transactionId?: string
+  fillPrice?: string
+  units?: number
+  clientOrderId?: string
+}
+
+export type AutoExecutionStatus = {
+  enabled: boolean
+  environment: string
+  lastCycleAt?: string | null
+  lastError?: string | null
+  results: AutoExecutionResult[]
+}
+
+export async function getAutoExecutionStatus(): Promise<AutoExecutionStatus> {
+  const response = await fetch(buildApiUrl('/api/v1/strategy/auto-execution'))
+  if (!response.ok) throw new Error('Automatic strategy execution status unavailable')
+  return response.json() as Promise<AutoExecutionStatus>
+}
+
+export async function setAutoExecution(
+  enabled: boolean,
+  userRole: 'viewer' | 'operator' | 'admin' = 'operator',
+): Promise<AutoExecutionStatus> {
+  const response = await fetch(buildApiUrl('/api/v1/strategy/auto-execution'), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-User-Role': userRole,
+      'X-CSRF-Token': 'strategy-auto-execution',
+    },
+    body: JSON.stringify({ enabled }),
+  })
+  if (!response.ok) {
+    let detail = 'Automatic strategy execution update rejected'
+    try {
+      detail = ((await response.json()) as { detail?: string }).detail ?? detail
+    } catch {
+      // Keep the explicit status-based error when the body is not JSON.
+    }
+    throw new Error(detail)
+  }
+  return response.json() as Promise<AutoExecutionStatus>
 }
 
 export async function validateAiConfig(config: Partial<AiConfig>, pair = 'EUR/USD') {

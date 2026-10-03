@@ -129,7 +129,7 @@ export function RiskPage() {
   const [executionFeedback, setExecutionFeedback] = useState<{ message: string; error: boolean } | null>(null)
 
   const form = formDrafts[selectedPair] ?? configQuery.data ?? null
-  const update = (key: keyof RiskConfig, value: string | null) => setFormDrafts((current) => {
+  const update = <Key extends keyof RiskConfig,>(key: Key, value: RiskConfig[Key]) => setFormDrafts((current) => {
     const config = current[selectedPair] ?? configQuery.data
     return config ? { ...current, [selectedPair]: { ...config, [key]: value } } : current
   })
@@ -143,6 +143,7 @@ export function RiskPage() {
     : ''
 
   const quote: LiveQuote | undefined = quoteQuery.data
+  const availableUnits = quote?.unitsAvailable?.default
   const precision = quote?.displayPrecision ?? (selectedPair.endsWith('/JPY') ? 3 : 5)
   const pipSize = Number(quote?.pipSize)
   const side = selectedTrade?.side ?? 'BUY'
@@ -306,13 +307,66 @@ export function RiskPage() {
       </section>
 
       <section className="content-grid">
-        <div className="panel"><div className="panel-header compact"><div><p className="eyebrow">Pre-trade</p><h3>Before order controls</h3></div><span className="pill neutral">{form?.source ?? 'default-policy'}</span></div>
-          {form && <div className="settings-grid"><label className="field-block"><span>Units</span><input value={form.units} onChange={(event) => update('units', event.target.value)} /></label><label className="field-block"><span>Risk budget</span><div className="value-mode"><input value={form.riskBudget} onChange={(event) => update('riskBudget', event.target.value)} /><select value={form.riskBudgetMode} onChange={(event) => update('riskBudgetMode', event.target.value)}><option value="percent">%</option><option value="absolute">Amount</option></select></div></label><label className="field-block"><span>Leverage</span><input value={form.leverage} onChange={(event) => update('leverage', event.target.value)} /></label><label className="field-block"><span>Max exposure</span><div className="value-mode"><input value={form.maxExposure} onChange={(event) => update('maxExposure', event.target.value)} /><select value={form.maxExposureMode} onChange={(event) => update('maxExposureMode', event.target.value)}><option value="absolute">Amount</option><option value="percent">%</option></select></div></label><label className="field-block"><span>Side</span><select value={form.side} onChange={(event) => update('side', event.target.value)}><option>LONG</option><option>SHORT</option><option>BOTH</option><option>NONE</option></select></label></div>}
+        <div className="panel">
+          <div className="panel-header compact">
+            <div><p className="eyebrow">Pre-trade</p><h3>Before order controls</h3></div>
+            <div className="chart-controls">
+              <span className="pill neutral">{form?.source ?? 'default-policy'}</span>
+              <button
+                type="button"
+                className="primary-action"
+                onClick={() => {
+                  if (!form) return
+                  setSaveFeedback(null)
+                  saveMutation.mutate(form, {
+                    onSuccess: () => setSaveFeedback('Risk policy saved and connected to automatic execution.'),
+                    onError: () => setSaveFeedback('Risk policy was rejected by the backend.'),
+                  })
+                }}
+                disabled={!form || saveMutation.isPending}
+              >
+                {saveMutation.isPending ? 'Saving…' : 'Save risk policy'}
+              </button>
+            </div>
+          </div>
+          {saveFeedback && <p className="risk-save-feedback" role="status">{saveFeedback}</p>}
+          {form && <>
+            <div className="settings-grid">
+              <label className="field-block">
+                <span>Maximum order units</span>
+                <input
+                  type="number"
+                  min={quote?.minimumTradeSize ?? '1'}
+                  step={quote?.tradeUnitsPrecision ? 'any' : '1'}
+                  value={form.units}
+                  onChange={(event) => update('units', event.target.value)}
+                />
+                <small className="calculated-price">An additional cap; risk sizing and OANDA limits may make the actual order smaller.</small>
+              </label>
+              <label className="field-block"><span>Risk budget</span><div className="value-mode"><input value={form.riskBudget} onChange={(event) => update('riskBudget', event.target.value)} /><select value={form.riskBudgetMode} onChange={(event) => update('riskBudgetMode', event.target.value as RiskConfig['riskBudgetMode'])}><option value="percent">%</option><option value="absolute">Amount</option></select></div></label>
+              <label className="field-block"><span>Max exposure</span><div className="value-mode"><input value={form.maxExposure} onChange={(event) => update('maxExposure', event.target.value)} /><select value={form.maxExposureMode} onChange={(event) => update('maxExposureMode', event.target.value as RiskConfig['maxExposureMode'])}><option value="absolute">Amount</option><option value="percent">%</option></select></div></label>
+              <label className="field-block"><span>Allowed side</span><select value={form.side} onChange={(event) => update('side', event.target.value as RiskConfig['side'])}><option value="NONE">NONE — no new entries</option><option value="LONG">LONG only</option><option value="SHORT">SHORT only</option><option value="BOTH">LONG and SHORT</option></select></label>
+            </div>
+            <p className="risk-helper">
+              OANDA available units refresh from the broker quote. Automatic entries use the lowest of this
+              value, your maximum units, risk budget, exposure limit, and visible market depth.
+            </p>
+            <div className="risk-summary">
+              <div><span>OANDA available · LONG</span><strong>{availableUnits?.long ? Number(availableUnits.long).toLocaleString() : 'Unavailable'}</strong></div>
+              <div><span>OANDA available · SHORT</span><strong>{availableUnits?.short ? Number(availableUnits.short).toLocaleString() : 'Unavailable'}</strong></div>
+              <div><span>Broker margin rate</span><strong>{quote?.marginRate ? `${(Number(quote.marginRate) * 100).toFixed(2)}%` : 'Unavailable'}</strong><small>Set by OANDA for this account and instrument</small></div>
+              <div><span>Margin available</span><strong>{quote?.marginAvailable ? `${Number(quote.marginAvailable).toLocaleString()} ${quote.accountCurrency ?? ''}` : 'Unavailable'}</strong></div>
+            </div>
+            <small className="calculated-price">
+              Available units are indicative and can change before the order reaches OANDA
+              {quote?.time ? ` · quote ${new Date(quote.time).toLocaleTimeString()}` : ''}.
+              Leverage is determined by OANDA; it is not a per-order setting.
+            </small>
+          </>}
         </div>
 
         <div className="panel">
-          <div className="panel-header compact"><div><p className="eyebrow">Post-trade</p><h3>After order controls</h3></div><button className="primary-action" onClick={() => { if (form) { setSaveFeedback(null); saveMutation.mutate(form, { onSuccess: () => setSaveFeedback('Risk policy saved for future use.'), onError: () => setSaveFeedback('Risk policy was rejected by the backend.') }) } }} disabled={!form || saveMutation.isPending}>{saveMutation.isPending ? 'Saving…' : 'Save risk policy'}</button></div>
-          {saveFeedback && <p className="risk-save-feedback" role="status">{saveFeedback}</p>}
+          <div className="panel-header compact"><div><p className="eyebrow">Post-trade</p><h3>After order controls</h3></div></div>
           {form && <>
             <div className="settings-grid">
               <label className="field-block"><span>Stop loss</span><div className="value-mode"><input value={form.stopLoss ?? ''} placeholder="Chart or value" onChange={(event) => update('stopLoss', event.target.value || null)} />{modeOptions(form.stopLossMode, (value) => update('stopLossMode', value))}</div>{renderValues(stopValues)}</label>

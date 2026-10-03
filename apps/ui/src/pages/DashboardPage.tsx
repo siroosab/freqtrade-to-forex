@@ -1,9 +1,9 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useState } from 'react'
 import { ForexChart } from '../components/ForexChart'
 import { ChartDataControls } from '../components/ChartDataControls'
 import { chartCandleCount } from '../components/chartOptions'
-import { closeManualPosition, createManualClientOrderId, getAccountSummary, getBrokerPendingOrders, getBrokerPositions, getMarketQuote, getMarketSummary, getOrdersChart, getRiskSummary, modifyManualPosition, modifyPendingOrder, submitLimitOrder, submitMarketOrder, type BrokerPendingOrder, type BrokerTrade } from '../api/mockApi'
+import { closeManualPosition, createManualClientOrderId, getAccountSummary, getAutoExecutionStatus, getBrokerPendingOrders, getBrokerPositions, getMarketQuote, getMarketSummary, getOrdersChart, getRiskSummary, modifyManualPosition, modifyPendingOrder, setAutoExecution, submitLimitOrder, submitMarketOrder, type BrokerPendingOrder, type BrokerTrade } from '../api/mockApi'
 import { convertTrailingStopPipsToDistance, validateTrailingStopInput } from '../utils/trailingStopLoss'
 import { useForexSocket } from '../hooks/useForexSocket'
 import { useUiStore } from '../store/useUiStore'
@@ -49,6 +49,12 @@ export function DashboardPage() {
   })
   const positionsQuery = useQuery({ queryKey: ['broker-positions'], queryFn: getBrokerPositions, refetchInterval: 3000 })
   const pendingOrdersQuery = useQuery({ queryKey: ['broker-pending-orders'], queryFn: getBrokerPendingOrders, refetchInterval: 3000, retry: false })
+  const autoExecutionQuery = useQuery({
+    queryKey: ['strategy-auto-execution'],
+    queryFn: getAutoExecutionStatus,
+    refetchInterval: 5000,
+    retry: false,
+  })
   const riskQuery = useQuery({ queryKey: ['risk'], queryFn: getRiskSummary })
   const [chartTimeframe, setChartTimeframe] = useState('H1')
   const [chartCountMultiplier, setChartCountMultiplier] = useState(1)
@@ -61,6 +67,27 @@ export function DashboardPage() {
   const liveMarket = useUiStore((state) => state.marketFeed)
   const userRole = useUiStore((state) => state.userRole)
   const setOrdersFeed = useUiStore((state) => state.setOrdersFeed)
+  const autoExecutionMutation = useMutation({
+    mutationFn: (enabled: boolean) => setAutoExecution(enabled, userRole),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['strategy-auto-execution'] })
+    },
+  })
+  const autoExecution = autoExecutionMutation.data ?? autoExecutionQuery.data
+
+  const toggleAutoExecution = () => {
+    const enable = !autoExecution?.enabled
+    if (
+      enable &&
+      autoExecution?.environment === 'live' &&
+      !window.confirm(
+        'Enable automated execution for the confirmed OANDA Live account? Approved strategy signals can submit real market orders.',
+      )
+    ) {
+      return
+    }
+    autoExecutionMutation.mutate(enable)
+  }
 
   const account = liveAccount ?? accountQuery.data
   const market = liveMarket ?? marketQuery.data
@@ -449,7 +476,7 @@ export function DashboardPage() {
                 <tbody>
                   {visiblePositions.map((position) => (
                     <tr key={position.id} className={position.manual ? 'manual-position-row' : undefined}>
-                      <td><span className={position.manual ? 'manual-trade-tag' : 'strategy-trade-tag'}>{position.manual ? 'Manual' : 'Strategy'}</span></td>
+                      <td><span className={position.manual ? 'manual-trade-tag' : 'strategy-trade-tag'}>{position.manual ? 'Manual' : position.source === 'auto' ? 'Auto strategy' : 'Strategy'}</span></td>
                       <td>{position.symbol}</td>
                       <td className={position.side === 'BUY' ? 'long' : 'short'}>{position.side}</td>
                       <td>{Number(position.units).toLocaleString()}</td>
@@ -458,7 +485,7 @@ export function DashboardPage() {
                       <td>{position.stopLoss ?? '—'}</td>
                       <td>{position.takeProfit ?? '—'}</td>
                       <td className={Number(position.pnl) < 0 ? 'negative' : 'positive'}>{Number(position.pnl) > 0 ? '+' : ''}{position.pnl}</td>
-                      <td>{positionView === 'open' && position.manual && userRole !== 'viewer' ? <div className="trade-actions"><button className="modify-position-button" type="button" onClick={() => { setModifyError(null); setModifyStopLoss(position.stopLoss ?? ''); setModifyTakeProfit(position.takeProfit ?? ''); setModifyTrailingStopPips(''); setModifyPositionTarget(position) }}>Modify</button><button className="close-position-button" type="button" onClick={() => { setCloseError(null); setCloseTarget(position) }}>Close</button></div> : positionView === 'closed' ? <span className="muted-cell">Closed</span> : '—'}</td>
+                      <td>{positionView === 'open' && (position.manual || position.source === 'auto') && userRole !== 'viewer' ? <div className="trade-actions">{position.manual && <button className="modify-position-button" type="button" onClick={() => { setModifyError(null); setModifyStopLoss(position.stopLoss ?? ''); setModifyTakeProfit(position.takeProfit ?? ''); setModifyTrailingStopPips(''); setModifyPositionTarget(position) }}>Modify</button>}<button className="close-position-button" type="button" onClick={() => { setCloseError(null); setCloseTarget(position) }}>Close</button></div> : positionView === 'closed' ? <span className="muted-cell">Closed</span> : '—'}</td>
                     </tr>
                   ))}
                   {!positionsQuery.isLoading && visiblePositions.length === 0 && <tr><td className="empty-cell" colSpan={10}>{positionsQuery.isError ? 'Broker positions could not be loaded.' : `No ${positionView} broker trades.`}</td></tr>}
@@ -621,8 +648,65 @@ export function DashboardPage() {
                 <p className="eyebrow">Strategy engine</p>
                 <h3>Signals</h3>
               </div>
+              <span className={`pill ${autoExecution?.enabled ? 'positive' : 'neutral'}`}>
+                {autoExecutionQuery.isError
+                  ? 'Status unavailable'
+                  : autoExecution?.enabled
+                    ? `Auto · ${autoExecution.environment.toUpperCase()}`
+                    : 'Auto off'}
+              </span>
             </div>
 
+            <div className="strategy-auto-controls">
+              <p>
+                Only approved pair strategies are considered. Risk budget, stop loss,
+                allowed side, OANDA tradeability and available depth are checked before entry.
+              </p>
+              <button
+                type="button"
+                className={autoExecution?.enabled ? 'danger-action' : 'primary-action'}
+                disabled={
+                  userRole === 'viewer' ||
+                  autoExecutionMutation.isPending ||
+                  autoExecutionQuery.isLoading ||
+                  autoExecutionQuery.isError
+                }
+                onClick={toggleAutoExecution}
+              >
+                {autoExecutionMutation.isPending
+                  ? 'Updating…'
+                  : autoExecution?.enabled
+                    ? 'Stop automatic execution'
+                    : 'Enable automatic execution'}
+              </button>
+              {autoExecutionQuery.isError && (
+                <small className="inline-error" role="alert">
+                  {autoExecutionQuery.error instanceof Error
+                    ? autoExecutionQuery.error.message
+                    : 'Automatic execution status unavailable'}
+                </small>
+              )}
+              {autoExecutionMutation.isError && (
+                <small className="inline-error" role="alert">
+                  {autoExecutionMutation.error instanceof Error
+                    ? autoExecutionMutation.error.message
+                    : 'Automatic execution update rejected'}
+                </small>
+              )}
+              {autoExecution?.lastError && (
+                <small className="inline-error" role="alert">{autoExecution.lastError}</small>
+              )}
+              {autoExecution?.lastCycleAt && (
+                <small>Last strategy cycle: {new Date(autoExecution.lastCycleAt).toLocaleString()}</small>
+              )}
+              {autoExecution?.results.slice(0, 3).map((result) => (
+                <small key={`${result.pair}-${result.candleTime}-${result.status}`}>
+                  {result.pair} · {result.signal ?? '—'} · {result.status}
+                  {result.units !== undefined ? ` · ${result.units} units` : ''}
+                  {result.reason ? ` · ${result.reason}` : ''}
+                </small>
+              ))}
+            </div>
             <div className="strategy-stack">
               {market?.strategySignals.map((strategy) => (
                 <div key={strategy.name} className="strategy-card">
@@ -653,7 +737,7 @@ export function DashboardPage() {
 
           <div className="order-form">
             <div className="quote-strip">
-              <div className="quote-strip-heading"><strong>{activeInstrument}</strong><span className={brokerQuote?.tradeable ? 'quote-live' : 'quote-delayed'}>{brokerQuote?.tradeable ? 'PRACTICE LIVE' : quoteQuery.isError ? 'QUOTE UNAVAILABLE' : 'WAITING FOR BROKER'}</span></div>
+              <div className="quote-strip-heading"><strong>{activeInstrument}</strong>              <span className={brokerQuote?.tradeable ? 'quote-live' : 'quote-delayed'}>{brokerQuote?.tradeable ? `${brokerQuote.environment.toUpperCase()} CONNECTED` : quoteQuery.isError ? 'QUOTE UNAVAILABLE' : 'WAITING FOR BROKER'}</span></div>
               <div className="quote-values">
                 <div><span>Bid</span><strong>{displayQuote ? Number(displayQuote.bid).toFixed(pricePrecision) : '—'}</strong></div>
                 <div><span>Ask</span><strong>{displayQuote ? Number(displayQuote.ask).toFixed(pricePrecision) : '—'}</strong></div>
@@ -872,7 +956,7 @@ export function DashboardPage() {
       {closeTarget && (
         <div className="modal-backdrop" onClick={() => { if (!isClosing) setCloseTarget(null) }}>
           <div className="confirm-modal" onClick={(event) => event.stopPropagation()}>
-            <p className="eyebrow">Manual position</p>
+            <p className="eyebrow">{closeTarget.source === 'auto' ? 'Automatic strategy position' : 'Manual position'}</p>
             <h3>Close {closeTarget.symbol} {closeTarget.side}?</h3>
             <p>Close all {Number(closeTarget.units).toLocaleString()} units at the broker’s current market price. This cannot be undone.</p>
             {closeError && <p className="inline-error">{closeError}</p>}

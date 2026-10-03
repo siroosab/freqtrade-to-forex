@@ -23,6 +23,7 @@ from fastapi.responses import FileResponse, HTMLResponse, Response
 
 from freqtrade.forex.ai_hyperopt import run_ai_hyperopt_robust
 from freqtrade.forex.ai_strategy import ForexAIStrategyBaseline
+from freqtrade.forex.auto_execution import OandaAutoStrategyExecutor
 from freqtrade.forex.backtest import ForexBacktester
 from freqtrade.forex.config import OandaSettings, load_forex_config, save_forex_config
 from freqtrade.forex.health import OandaHealthCheck
@@ -261,6 +262,20 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         format="%(levelname)s: %(message)s",
     )
     app = FastAPI(title="Forex Dry-Run API", version="0.1.0")
+    app.state.strategy_execution_task = None
+    strategy_execution_state_path = Path(
+        os.environ.get(
+            "OANDA_AUTO_EXECUTION_STATE_PATH",
+            "user_data/oanda/strategy-execution.json",
+        )
+    )
+    risk_config_state_path = Path(
+        os.environ.get(
+            "OANDA_RISK_CONFIG_PATH",
+            str(ledger_path.parent / "risk-config.json"),
+        )
+    )
+    risk_config_state_loaded = False
     ui_index = Path(__file__).resolve().parents[2] / "apps" / "ui" / "dist" / "index.html"
     app.add_middleware(
         CORSMiddleware,
@@ -582,6 +597,31 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             raise HTTPException(status_code=400, detail="Invalid FreqAI training/feature parameter range")
 
     def risk_config_for_pair(pair: str) -> dict[str, object]:
+        nonlocal risk_config_state_loaded
+        if not risk_config_state_loaded:
+            if risk_config_state_path.exists():
+                try:
+                    saved_configs = json.loads(
+                        risk_config_state_path.read_text(encoding="utf-8")
+                    )
+                except (OSError, json.JSONDecodeError) as exc:
+                    logger.exception("Could not read persisted risk configuration")
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Risk configuration is unavailable: {exc}",
+                    ) from exc
+                if not isinstance(saved_configs, dict) or any(
+                    not isinstance(value, dict)
+                    for value in saved_configs.values()
+                ):
+                    raise HTTPException(
+                        status_code=500,
+                        detail="Persisted risk configuration must map pairs to objects",
+                    )
+                for saved_pair, config in saved_configs.items():
+                    normalized_saved_pair = str(saved_pair).replace("_", "/").upper()
+                    RISK_CONFIG_BY_PAIR[normalized_saved_pair] = dict(config)
+            risk_config_state_loaded = True
         normalized = pair.replace("_", "/").upper()
         defaults = {
             "pair": normalized,
@@ -591,7 +631,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             "leverage": "1x",
             "maxExposure": "$10,000",
             "maxExposureMode": "absolute",
-            "side": "LONG",
+            "side": "NONE",
             "stopLoss": None,
             "stopLossMode": "price",
             "takeProfit": None,
@@ -604,6 +644,150 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         if normalized not in RISK_CONFIG_BY_PAIR:
             RISK_CONFIG_BY_PAIR[normalized] = defaults
         return RISK_CONFIG_BY_PAIR[normalized]
+
+    def read_strategy_execution_state() -> dict[str, object]:
+        if not strategy_execution_state_path.exists():
+            return {"enabled": False, "lastProcessed": {}, "results": []}
+        try:
+            payload = json.loads(
+                strategy_execution_state_path.read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.exception("Could not read automatic strategy execution state")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Automatic strategy execution state is unavailable: {exc}",
+            ) from exc
+        if not isinstance(payload, dict):
+            raise HTTPException(
+                status_code=500,
+                detail="Automatic strategy execution state must be a JSON object",
+            )
+        payload.setdefault("enabled", False)
+        payload.setdefault("lastProcessed", {})
+        payload.setdefault("results", [])
+        return payload
+
+    def write_strategy_execution_state(state: dict[str, object]) -> None:
+        strategy_execution_state_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = strategy_execution_state_path.with_suffix(".tmp")
+        temporary_path.write_text(
+            json.dumps(state, indent=2, default=str) + "\n",
+            encoding="utf-8",
+        )
+        temporary_path.replace(strategy_execution_state_path)
+
+    async def auto_execution_cycle() -> list[dict[str, object]]:
+        settings = OandaSettings.from_environment()
+        setup_path, _ = resolve_setup_paths()
+        setup = load_forex_config(setup_path)
+        if not settings.token or not settings.account_id:
+            raise ValueError("Complete and confirm the OANDA account in Setup first")
+        if settings.environment.value not in {"practice", "live"}:
+            raise ValueError("Setup must select the Practice or Live account")
+        instruments = tuple(settings.instruments)
+        risk_configs = {
+            instrument.replace("_", "/").upper(): dict(
+                risk_config_for_pair(instrument.replace("_", "/"))
+            )
+            for instrument in instruments
+        }
+        state = read_strategy_execution_state()
+        last_processed = state.get("lastProcessed", {})
+        if not isinstance(last_processed, dict):
+            last_processed = {}
+
+        def checkpoint() -> None:
+            state["lastProcessed"] = last_processed
+            write_strategy_execution_state(state)
+
+        async with OandaClient(
+            settings.token,
+            settings.account_id,
+            environment=settings.environment,
+        ) as client:
+            executor = OandaAutoStrategyExecutor(
+                client,
+                settings,
+                setup,
+                risk_configs,
+                last_processed=last_processed,
+                checkpoint=checkpoint,
+            )
+            return await executor.run_cycle()
+
+    async def auto_execution_loop() -> None:
+        while True:
+            state = read_strategy_execution_state()
+            if state.get("enabled") is not True:
+                return
+            runtime_state_path = Path("user_data/oanda/runtime-state.json")
+            if runtime_state_path.exists():
+                try:
+                    runtime_state = json.loads(
+                        runtime_state_path.read_text(encoding="utf-8")
+                    )
+                except (OSError, json.JSONDecodeError) as exc:
+                    logger.exception("Could not read runtime execution gate")
+                    state["lastError"] = f"Runtime gate unavailable: {exc}"
+                    write_strategy_execution_state(state)
+                    await asyncio.sleep(5)
+                    continue
+                if runtime_state.get("state") == "stopped":
+                    state["enabled"] = False
+                    state["lastError"] = "Stopped from runtime controls"
+                    write_strategy_execution_state(state)
+                    return
+                if runtime_state.get("state") == "paused":
+                    await asyncio.sleep(1)
+                    continue
+
+            try:
+                results = await auto_execution_cycle()
+                state = read_strategy_execution_state()
+                state["results"] = (results + list(state.get("results", [])))[:50]
+                state["lastError"] = None
+                state["lastCycleAt"] = datetime.now(timezone.utc).isoformat()
+                write_strategy_execution_state(state)
+                for result in results:
+                    if result.get("status") not in {
+                        "filled",
+                        "not_filled",
+                        "closed",
+                        "close_not_filled",
+                    }:
+                        continue
+                    record_audit_event(
+                        "strategy.auto_order",
+                        details=result,
+                        username="system",
+                        role="system",
+                        allowed=result.get("status") in {"filled", "closed"},
+                    )
+                    if result.get("status") == "filled":
+                        ORDER_HISTORY.insert(
+                            0,
+                            {
+                                "id": result.get("orderId"),
+                                "symbol": result.get("pair"),
+                                "side": "BUY" if result.get("signal") == "long" else "SELL",
+                                "volume": str(abs(int(result.get("units", 0)))),
+                                "status": "Filled",
+                                "createdAt": state["lastCycleAt"],
+                                "risk": "strategy policy",
+                                "source": "auto",
+                            },
+                        )
+                        del ORDER_HISTORY[100:]
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.exception("Automatic strategy execution cycle failed")
+                state = read_strategy_execution_state()
+                state["lastError"] = str(exc)
+                state["lastCycleAt"] = datetime.now(timezone.utc).isoformat()
+                write_strategy_execution_state(state)
+            await asyncio.sleep(15)
 
     def reset_pair_research_state(pair: str, strategy_class: str, timeframe: str) -> None:
         normalized = pair.replace("_", "/").upper()
@@ -809,7 +993,13 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         side = "BUY" if units >= 0 else "SELL"
         extension = trade.get("tradeClientExtensions") or trade.get("clientExtensions") or {}
         client_order_id = str(extension.get("id", "")) if isinstance(extension, dict) else ""
-        source = "manual" if client_order_id.startswith("manual-ui-") else "strategy"
+        source = (
+            "manual"
+            if client_order_id.startswith("manual-ui-")
+            else "auto"
+            if client_order_id.startswith("auto-")
+            else "strategy"
+        )
         quote = quotes.get(instrument)
         current_price = None
         if quote is not None and not closed:
@@ -1173,7 +1363,23 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         pair = str(payload.get("pair", "EUR/USD"))
         current = risk_config_for_pair(pair)
         candidate = dict(current)
-        for key in ("units", "riskBudget", "riskBudgetMode", "leverage", "maxExposure", "maxExposureMode", "side", "stopLoss", "stopLossMode", "takeProfit", "takeProfitMode", "averageEntry", "averageEntryMode", "maxAdds"):
+        configurable_fields = (
+            "units",
+            "riskBudget",
+            "riskBudgetMode",
+            "leverage",
+            "maxExposure",
+            "maxExposureMode",
+            "side",
+            "stopLoss",
+            "stopLossMode",
+            "takeProfit",
+            "takeProfitMode",
+            "averageEntry",
+            "averageEntryMode",
+            "maxAdds",
+        )
+        for key in configurable_fields:
             if key in payload:
                 candidate[key] = payload[key]
         if str(candidate["side"]).upper() not in {"LONG", "SHORT", "BOTH", "NONE"}:
@@ -1188,9 +1394,44 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 )
         candidate["pair"] = pair.replace("_", "/").upper()
         candidate["source"] = "operator-config"
-        current.update(candidate)
-        record_audit_event("risk.config.update", details={"pair": candidate["pair"], "source": candidate["source"]}, username=user_role, role=user_role, allowed=True)
-        return dict(current)
+        try:
+            units = Decimal(str(candidate["units"]).replace(",", "").strip())
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=400, detail="units must be a positive number"
+            ) from exc
+        if not units.is_finite() or units <= 0:
+            raise HTTPException(
+                status_code=400, detail="units must be a positive number"
+            )
+        candidate["units"] = str(units)
+        persisted_configs = {
+            **RISK_CONFIG_BY_PAIR,
+            candidate["pair"]: candidate,
+        }
+        try:
+            risk_config_state_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary_path = risk_config_state_path.with_suffix(".tmp")
+            temporary_path.write_text(
+                json.dumps(persisted_configs, indent=2, default=str) + "\n",
+                encoding="utf-8",
+            )
+            temporary_path.replace(risk_config_state_path)
+        except OSError as exc:
+            logger.exception("Could not persist risk configuration")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Risk configuration could not be saved: {exc}",
+            ) from exc
+        RISK_CONFIG_BY_PAIR[candidate["pair"]] = candidate
+        record_audit_event(
+            "risk.config.update",
+            details={"pair": candidate["pair"], "source": candidate["source"]},
+            username=user_role,
+            role=user_role,
+            allowed=True,
+        )
+        return dict(candidate)
 
     @app.get("/api/v1/audit/logs")
     async def audit_logs() -> list[dict]:
@@ -1854,17 +2095,6 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         validate_write_access(user_role, csrf_token, session_token)
         try:
             settings = OandaSettings.from_environment()
-            environment_name = str(
-                getattr(settings.environment, "value", settings.environment)
-            ).lower()
-            if environment_name != "practice":
-                raise HTTPException(
-                    status_code=403,
-                    detail=(
-                        "Manual dashboard positions can only be closed "
-                        "in the OANDA Practice environment"
-                    ),
-                )
             async with OandaClient(
                 settings.token, settings.account_id, environment=settings.environment
             ) as client:
@@ -1878,13 +2108,28 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 extension = (
                     trade.get("tradeClientExtensions") or trade.get("clientExtensions") or {}
                 )
-                client_order_id = (
-                    str(extension.get("id", "")) if isinstance(extension, dict) else ""
+                client_order_id = str(extension.get("id", "")) if isinstance(extension, dict) else ""
+                is_manual = client_order_id.startswith("manual-ui-")
+                is_automated = (
+                    isinstance(extension, dict)
+                    and extension.get("tag") == "auto"
+                    and client_order_id.startswith("auto-")
                 )
-                if not client_order_id.startswith("manual-ui-"):
+                if not is_manual and not is_automated:
                     raise HTTPException(
                         status_code=403,
-                        detail="Only trades opened from the manual ticket can be closed here",
+                        detail="Only dashboard manual trades and automatic strategy trades can be closed here",
+                    )
+                environment_name = settings.environment.value
+                if is_manual and environment_name != "practice":
+                    raise HTTPException(
+                        status_code=403,
+                        detail="Manual dashboard positions can only be closed in the OANDA Practice environment",
+                    )
+                if is_automated and environment_name == "live" and user_role != "admin":
+                    raise HTTPException(
+                        status_code=403,
+                        detail="Closing an automatic Live strategy trade requires admin role",
                     )
                 result = await client.close_trade(trade_id)
             record_audit_event(
@@ -1895,6 +2140,13 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 allowed=True,
             )
             fill = result.get("orderFillTransaction") or {}
+            if not fill:
+                cancel = result.get("orderCancelTransaction") or {}
+                reason = str(cancel.get("reason") or "OANDA did not confirm a close fill")
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Broker did not confirm trade close: {reason}",
+                )
             return {
                 "status": "closed",
                 "tradeId": trade_id,
@@ -2460,6 +2712,155 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         temporary_path.replace(state_path)
         record_audit_event("setup.runtime", details={"action": action, "state": state}, allowed=True)
         return {"state": state, "reloadPending": reload_pending, "message": message}
+
+    @app.get("/api/v1/strategy/auto-execution")
+    async def strategy_auto_execution_status() -> dict:
+        state = read_strategy_execution_state()
+        try:
+            settings = OandaSettings.from_environment()
+            environment = settings.environment.value
+        except ValueError as exc:
+            environment = "unconfigured"
+            state["lastError"] = str(exc)
+        return {
+            "enabled": state.get("enabled") is True,
+            "environment": environment,
+            "lastCycleAt": state.get("lastCycleAt"),
+            "lastError": state.get("lastError"),
+            "results": state.get("results", []),
+        }
+
+    @app.post("/api/v1/strategy/auto-execution")
+    async def control_strategy_auto_execution(
+        payload: dict,
+        user_role: str | None = Header(default=None, alias="X-User-Role"),
+        csrf_token: str | None = Header(default=None, alias="X-CSRF-Token"),
+        session_token: str | None = Header(default=None, alias="X-Session-Token"),
+    ) -> dict:
+        validate_write_access(user_role, csrf_token, session_token)
+        enabled = payload.get("enabled")
+        if not isinstance(enabled, bool):
+            raise HTTPException(status_code=400, detail="enabled must be a boolean")
+        state = read_strategy_execution_state()
+        if enabled:
+            try:
+                settings = OandaSettings.from_environment()
+            except ValueError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
+            if (
+                settings.environment.value not in {"practice", "live"}
+                or settings.execution_mode != settings.environment.value
+                or not settings.token
+                or not settings.account_id
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Select and confirm a Practice or Live account in Setup first",
+                )
+            if settings.environment.value == "live" and user_role != "admin":
+                raise HTTPException(
+                    status_code=403,
+                    detail="Enabling automatic execution for a Live account requires admin role",
+                )
+            setup_path, _ = resolve_setup_paths()
+            setup = load_forex_config(setup_path)
+            configured_pairs = set(settings.instruments)
+            approved = setup.get("pair_approved_revisions", {})
+            strategies = setup.get("pair_strategies", {})
+            timeframes = setup.get("pair_timeframes", {})
+            for instrument in configured_pairs:
+                pair_key = instrument.upper().replace("/", "_")
+                pair = instrument.replace("_", "/").upper()
+                revision = approved.get(pair_key) if isinstance(approved, dict) else None
+                if (
+                    not isinstance(revision, dict)
+                    or revision.get("pair") != pair
+                    or revision.get("strategyClass")
+                    != (strategies.get(pair_key) if isinstance(strategies, dict) else None)
+                    or not revision.get("timeframe")
+                    or freqtrade_timeframe(str(revision.get("timeframe", "")))
+                    != freqtrade_timeframe(
+                        str(timeframes.get(pair_key, ""))
+                        if isinstance(timeframes, dict)
+                        else ""
+                    )
+                ):
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"{pair} needs a current approved strategy revision before auto-execution",
+                    )
+                risk = risk_config_for_pair(pair)
+                if not risk.get("stopLoss"):
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"Configure a stop loss for {pair} in Risk controls before auto-execution",
+                    )
+                if str(risk.get("side", "NONE")).upper() not in {
+                    "LONG",
+                    "SHORT",
+                    "BOTH",
+                    "NONE",
+                }:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"Configure an allowed entry side for {pair} in Risk controls",
+                    )
+                if not risk.get("riskBudget") or not risk.get("maxExposure"):
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"Configure risk budget and maximum exposure for {pair}",
+                    )
+            runtime_state_path = Path("user_data/oanda/runtime-state.json")
+            if runtime_state_path.exists():
+                try:
+                    runtime_state = json.loads(
+                        runtime_state_path.read_text(encoding="utf-8")
+                    )
+                except (OSError, json.JSONDecodeError) as exc:
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Runtime control state is unavailable: {exc}",
+                    ) from exc
+                if runtime_state.get("state") != "running":
+                    raise HTTPException(
+                        status_code=409,
+                        detail="Resume runtime controls before enabling strategy execution",
+                    )
+        state["enabled"] = enabled
+        if not enabled:
+            state["lastError"] = None
+        write_strategy_execution_state(state)
+        current_task = app.state.strategy_execution_task
+        if enabled and (current_task is None or current_task.done()):
+            app.state.strategy_execution_task = asyncio.create_task(
+                auto_execution_loop()
+            )
+        elif not enabled and current_task is not None and not current_task.done():
+            current_task.cancel()
+            try:
+                await current_task
+            except asyncio.CancelledError:
+                pass
+            app.state.strategy_execution_task = None
+        record_audit_event(
+            "strategy.auto_execution",
+            details={
+                "enabled": enabled,
+                "environment": settings.environment.value if enabled else None,
+            },
+            username=(resolve_session_user(session_token) or {}).get(
+                "username", "anonymous"
+            ),
+            role=user_role,
+            allowed=True,
+        )
+        return {
+            "enabled": enabled,
+            "environment": settings.environment.value if enabled else None,
+            "lastCycleAt": state.get("lastCycleAt"),
+            "lastError": state.get("lastError"),
+            "results": state.get("results", []),
+        }
 
     @app.get("/api/v1/setup/files/{file_kind}")
     async def download_setup_file(file_kind: str, strategy_name: str | None = None) -> Response:
@@ -4361,10 +4762,25 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         app.state.average_order_cleanup_task = asyncio.create_task(
             average_order_cleanup_loop()
         )
+        try:
+            strategy_execution_state = read_strategy_execution_state()
+        except HTTPException:
+            logger.exception(
+                "Automatic strategy execution will remain stopped because its state is invalid"
+            )
+        else:
+            if strategy_execution_state.get("enabled") is True:
+                app.state.strategy_execution_task = asyncio.create_task(
+                    auto_execution_loop()
+                )
 
     @app.on_event("shutdown")
     async def stop_hyperopt_scheduler() -> None:
-        for task_name in ("hyperopt_scheduler_task", "average_order_cleanup_task"):
+        for task_name in (
+            "hyperopt_scheduler_task",
+            "average_order_cleanup_task",
+            "strategy_execution_task",
+        ):
             task = getattr(app.state, task_name, None)
             if task is not None:
                 task.cancel()

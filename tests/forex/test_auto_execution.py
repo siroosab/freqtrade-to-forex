@@ -1,0 +1,409 @@
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+
+import pytest
+from fastapi.testclient import TestClient
+
+from freqtrade.forex.api import create_app
+from freqtrade.forex.auto_execution import (
+    AutoExecutionError,
+    OandaAutoStrategyExecutor,
+)
+from freqtrade.forex.config import OandaSettings
+from freqtrade.forex.models import (
+    OandaCandle,
+    OandaEnvironment,
+    OandaInstrument,
+    OandaOrderResult,
+    OandaPrice,
+)
+from freqtrade.forex.state import OandaAccountState
+
+
+class FakeOandaClient:
+    def __init__(self, candles: list[OandaCandle]) -> None:
+        self.candles = candles
+        self.orders: list[tuple[tuple, dict]] = []
+        self.open_trades: list[dict] = []
+        self.close_result: dict = {"orderFillTransaction": {"id": "close-1"}}
+        self.closed_trade_ids: list[str] = []
+
+    async def get_account_summary(self) -> OandaAccountState:
+        return OandaAccountState(
+            account_id="test-account",
+            currency="USD",
+            balance=Decimal(10000),
+            nav=Decimal(10000),
+            margin_available=Decimal(9000),
+            unrealized_pl=Decimal(0),
+        )
+
+    async def get_open_trades(self) -> list[dict]:
+        return self.open_trades
+
+    async def close_trade(self, trade_id: str) -> dict:
+        self.closed_trade_ids.append(trade_id)
+        return self.close_result
+
+    async def get_candles(self, instrument: str, granularity: str, *, count: int):
+        del instrument, granularity, count
+        return self.candles
+
+    async def get_prices(self, instruments: tuple[str, ...]) -> list[OandaPrice]:
+        if instruments != ("EUR_USD",):
+            return []
+        return [
+            OandaPrice(
+                instrument="EUR_USD",
+                time="2026-10-03T18:00:00Z",
+                bid=Decimal("1.1000"),
+                ask=Decimal("1.1002"),
+                bids=((Decimal("1.1000"), Decimal(4000)),),
+                asks=((Decimal("1.1002"), Decimal(2500)),),
+                units_available={
+                    "default": {"long": "1500", "short": "1800"},
+                },
+            )
+        ]
+
+    async def get_instruments(self, instruments: tuple[str, ...]):
+        assert instruments == ("EUR_USD",)
+        return [
+            OandaInstrument(
+                name="EUR_USD",
+                display_name="EUR/USD",
+                pip_location=-4,
+                display_precision=5,
+                trade_units_precision=0,
+                minimum_trade_size=Decimal(1),
+            )
+        ]
+
+    async def create_market_order(self, *args, **kwargs) -> OandaOrderResult:
+        self.orders.append((args, kwargs))
+        return OandaOrderResult(
+            order_id="order-1",
+            transaction_id="transaction-1",
+            fill_price=Decimal("1.1001"),
+            units=Decimal(str(args[1])),
+        )
+
+
+def _strategy_directory(tmp_path, monkeypatch) -> None:
+    directory = tmp_path / "strategies"
+    directory.mkdir()
+    (directory / "AutoTestStrategy.py").write_text(
+        """from freqtrade.strategy import IStrategy
+
+class AutoTestStrategy(IStrategy):
+    timeframe = "5m"
+    startup_candle_count = 2
+    can_short = True
+
+    def populate_indicators(self, dataframe, metadata):
+        return dataframe
+
+    def populate_entry_trend(self, dataframe, metadata):
+        close = dataframe["close"]
+        dataframe["enter_long"] = (close > close.shift(1)) & (close.shift(1) <= close.shift(2))
+        dataframe["enter_short"] = (close < close.shift(1)) & (close.shift(1) >= close.shift(2))
+        return dataframe
+
+    def populate_exit_trend(self, dataframe, metadata):
+        dataframe["exit_long"] = False
+        dataframe["exit_short"] = False
+        return dataframe
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("FOREX_STRATEGIES_DIR", str(directory))
+
+
+def _candles(direction: str) -> list[OandaCandle]:
+    closes = (
+        [Decimal("1.0"), Decimal("1.0"), Decimal("1.1")]
+        if direction == "long"
+        else [Decimal("1.1"), Decimal("1.1"), Decimal("1.0")]
+    )
+    start = datetime(2026, 10, 3, 17, 45, tzinfo=UTC)
+    return [
+        OandaCandle(
+            time=(start + timedelta(minutes=5 * index)).isoformat().replace("+00:00", "Z"),
+            complete=True,
+            open=value,
+            high=value,
+            low=value,
+            close=value,
+            volume=0,
+        )
+        for index, value in enumerate(closes)
+    ]
+
+
+def _executor(client: FakeOandaClient) -> OandaAutoStrategyExecutor:
+    setup = {
+        "pair_approved_revisions": {
+            "EUR_USD": {
+                "pair": "EUR/USD",
+                "timeframe": "5m",
+                "strategyClass": "AutoTestStrategy",
+            }
+        },
+        "pair_strategies": {"EUR_USD": "AutoTestStrategy"},
+        "pair_timeframes": {"EUR_USD": "5m"},
+    }
+    risk = {
+        "EUR/USD": {
+            "units": "5000",
+            "side": "BOTH",
+            "riskBudget": "0.50%",
+            "riskBudgetMode": "percent",
+            "maxExposure": "$10,000",
+            "maxExposureMode": "absolute",
+            "stopLoss": "10",
+            "stopLossMode": "pips",
+            "takeProfit": "20",
+            "takeProfitMode": "pips",
+        }
+    }
+    return OandaAutoStrategyExecutor(
+        client,
+        OandaSettings(
+            "token",
+            "test-account",
+            instruments=("EUR_USD",),
+            execution_mode="practice",
+        ),
+        setup,
+        risk,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("direction", "expected_units"), [("long", 1500), ("short", -1800)])
+async def test_approved_long_and_short_signals_submit_signed_protected_oanda_orders(
+    direction: str,
+    expected_units: int,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _strategy_directory(tmp_path, monkeypatch)
+    client = FakeOandaClient(_candles(direction))
+    executor = _executor(client)
+
+    results = await executor.run_cycle()
+
+    assert results[0]["signal"] == direction
+    assert results[0]["status"] == "filled"
+    assert client.orders[0][0] == ("EUR_USD", expected_units)
+    assert client.orders[0][1]["stop_loss_price"] == ("1.0992" if direction == "long" else "1.1010")
+    assert client.orders[0][1]["take_profit_price"] == (
+        "1.1022" if direction == "long" else "1.0980"
+    )
+    assert client.orders[0][1]["trade_client_extensions"]["tag"] == "auto"
+
+
+@pytest.mark.asyncio
+async def test_signal_candle_is_processed_at_most_once(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _strategy_directory(tmp_path, monkeypatch)
+    client = FakeOandaClient(_candles("long"))
+    executor = _executor(client)
+
+    first = await executor.run_cycle()
+    second = await executor.run_cycle()
+
+    assert first[0]["status"] == "filled"
+    assert second[0]["status"] == "already_processed"
+    assert len(client.orders) == 1
+
+
+@pytest.mark.asyncio
+async def test_signal_is_blocked_when_oanda_does_not_return_depth(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _strategy_directory(tmp_path, monkeypatch)
+    client = FakeOandaClient(_candles("long"))
+    client.get_prices = lambda instruments: _no_depth_quote(instruments)
+    executor = _executor(client)
+
+    result = await executor.run_cycle()
+
+    assert result[0]["status"] == "blocked"
+    assert "depth" in str(result[0]["reason"]).lower()
+    assert client.orders == []
+
+
+@pytest.mark.asyncio
+async def test_automatic_order_respects_saved_units_cap(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _strategy_directory(tmp_path, monkeypatch)
+    client = FakeOandaClient(_candles("short"))
+    executor = _executor(client)
+    executor.risk_configs["EUR/USD"]["units"] = "1200"
+
+    results = await executor.run_cycle()
+
+    assert results[0]["status"] == "filled"
+    assert client.orders[0][0] == ("EUR_USD", -1200)
+
+
+@pytest.mark.asyncio
+async def test_none_side_blocks_new_automatic_entries(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _strategy_directory(tmp_path, monkeypatch)
+    client = FakeOandaClient(_candles("long"))
+    executor = _executor(client)
+    executor.risk_configs["EUR/USD"]["side"] = "NONE"
+
+    results = await executor.run_cycle()
+
+    assert results[0]["status"] == "blocked"
+    assert "does not allow long" in str(results[0]["reason"])
+    assert client.orders == []
+
+
+@pytest.mark.asyncio
+async def test_opposite_signal_closes_automated_trade_before_reversing(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _strategy_directory(tmp_path, monkeypatch)
+    client = FakeOandaClient(_candles("short"))
+    client.open_trades = [
+        {
+            "id": "trade-1",
+            "instrument": "EUR_USD",
+            "currentUnits": "1000",
+            "tradeClientExtensions": {"tag": "auto"},
+        }
+    ]
+    executor = _executor(client)
+
+    results = await executor.run_cycle()
+
+    assert client.closed_trade_ids == ["trade-1"]
+    assert len(client.orders) == 1
+    assert client.orders[0][0] == ("EUR_USD", -1800)
+    assert results[0]["status"] == "filled"
+
+
+@pytest.mark.asyncio
+async def test_opposite_signal_does_not_reverse_when_close_is_not_filled(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _strategy_directory(tmp_path, monkeypatch)
+    client = FakeOandaClient(_candles("short"))
+    client.open_trades = [
+        {
+            "id": "trade-1",
+            "instrument": "EUR_USD",
+            "currentUnits": "1000",
+            "tradeClientExtensions": {"tag": "auto"},
+        }
+    ]
+    client.close_result = {"orderCancelTransaction": {"reason": "MARKET_HALTED"}}
+    executor = _executor(client)
+
+    results = await executor.run_cycle()
+
+    assert results[0]["status"] == "close_not_filled"
+    assert client.orders == []
+
+
+async def _no_depth_quote(instruments: tuple[str, ...]) -> list[OandaPrice]:
+    del instruments
+    return [
+        OandaPrice(
+            instrument="EUR_USD",
+            time="2026-10-03T18:00:00Z",
+            bid=Decimal("1.1000"),
+            ask=Decimal("1.1002"),
+        )
+    ]
+
+
+def test_live_execution_requires_the_live_account_mode(monkeypatch) -> None:
+    monkeypatch.setenv("OANDA_LIVE_CONFIRM", "1")
+    with pytest.raises(AutoExecutionError, match="environment and execution mode"):
+        OandaAutoStrategyExecutor(
+            FakeOandaClient(_candles("long")),
+            OandaSettings(
+                "token",
+                "test-account",
+                environment=OandaEnvironment.LIVE,
+                execution_mode="practice",
+            ),
+            {},
+            {},
+        )
+
+
+def test_auto_execution_api_requires_approved_strategy_before_enable(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OANDA_CONFIG_PATH", str(tmp_path / "config.json"))
+    monkeypatch.setenv("OANDA_AUTO_EXECUTION_STATE_PATH", str(tmp_path / "auto-execution.json"))
+    monkeypatch.setenv("OANDA_TOKEN", "test-token")
+    monkeypatch.setenv("OANDA_ACCOUNT_ID", "test-account")
+    monkeypatch.setenv("OANDA_ENVIRONMENT", "practice")
+    monkeypatch.setenv("OANDA_EXECUTION_MODE", "practice")
+    monkeypatch.setenv("OANDA_INSTRUMENTS", "EUR_USD")
+    monkeypatch.setenv("OANDA_RISK_CONFIG_PATH", str(tmp_path / "risk-config.json"))
+    (tmp_path / "config.json").write_text(
+        '{"pair_strategies": {}, "pair_timeframes": {}, "pair_approved_revisions": {}}',
+        encoding="utf-8",
+    )
+
+    with TestClient(create_app(tmp_path / "api.sqlite")) as client:
+        status = client.get("/api/v1/strategy/auto-execution")
+        default_risk = client.get("/api/v1/account/risk/config?pair=EUR%2FUSD")
+        saved_risk = client.post(
+            "/api/v1/account/risk/config",
+            json={
+                "pair": "EUR/USD",
+                "units": "2400",
+                "side": "BOTH",
+                "riskBudget": "0.5%",
+                "maxExposure": "$10,000",
+                "stopLoss": "10",
+                "stopLossMode": "pips",
+            },
+            headers={
+                "X-User-Role": "operator",
+                "X-CSRF-Token": "risk-config",
+            },
+        )
+        enable = client.post(
+            "/api/v1/strategy/auto-execution",
+            json={"enabled": True},
+            headers={
+                "X-User-Role": "operator",
+                "X-CSRF-Token": "strategy-auto-execution",
+            },
+        )
+
+    with TestClient(create_app(tmp_path / "api-restarted.sqlite")) as restarted_client:
+        restored_risk = restarted_client.get("/api/v1/account/risk/config?pair=EUR%2FUSD")
+
+    assert status.status_code == 200
+    assert status.json()["enabled"] is False
+    assert default_risk.status_code == 200
+    assert default_risk.json()["side"] == "NONE"
+    assert saved_risk.status_code == 200
+    assert saved_risk.json()["units"] == "2400"
+    assert restored_risk.status_code == 200
+    assert restored_risk.json()["side"] == "BOTH"
+    assert restored_risk.json()["units"] == "2400"
+    assert enable.status_code == 409
+    assert "approved strategy revision" in enable.json()["detail"]

@@ -410,20 +410,21 @@ def test_average_entry_uses_sell_units_and_adverse_price_for_losing_short(monkey
     assert order_calls[0][0][:3] == ('EUR_USD', -500, '1.1000')
 
 
-def test_risk_config_accepts_pips_for_post_trade_controls():
-    response = client.post(
-        '/api/v1/account/risk/config',
-        headers={'X-User-Role': 'operator', 'X-CSRF-Token': 'risk-config'},
-        json={
-            'pair': 'CHF/JPY',
-            'stopLoss': '15',
-            'stopLossMode': 'pips',
-            'takeProfit': '30',
-            'takeProfitMode': 'pips',
-            'averageEntry': '20',
-            'averageEntryMode': 'pips',
-        },
-    )
+def test_risk_config_accepts_pips_for_post_trade_controls(tmp_path):
+    with TestClient(create_app(tmp_path / 'risk-config.sqlite')) as scoped_client:
+        response = scoped_client.post(
+            '/api/v1/account/risk/config',
+            headers={'X-User-Role': 'operator', 'X-CSRF-Token': 'risk-config'},
+            json={
+                'pair': 'CHF/JPY',
+                'stopLoss': '15',
+                'stopLossMode': 'pips',
+                'takeProfit': '30',
+                'takeProfitMode': 'pips',
+                'averageEntry': '20',
+                'averageEntryMode': 'pips',
+            },
+        )
 
     assert response.status_code == 200, response.text
     assert response.json()['stopLossMode'] == 'pips'
