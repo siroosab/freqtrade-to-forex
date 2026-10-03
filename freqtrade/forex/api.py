@@ -256,6 +256,10 @@ def format_hyperopt_report(report: dict) -> str:
 
 
 def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> FastAPI:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(levelname)s: %(message)s",
+    )
     app = FastAPI(title="Forex Dry-Run API", version="0.1.0")
     ui_index = Path(__file__).resolve().parents[2] / "apps" / "ui" / "dist" / "index.html"
     app.add_middleware(
