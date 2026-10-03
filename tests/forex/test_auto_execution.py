@@ -384,6 +384,24 @@ def test_auto_execution_api_requires_approved_strategy_before_enable(
                 "X-CSRF-Token": "risk-config",
             },
         )
+        saved_other_pair = client.post(
+            "/api/v1/account/risk/config",
+            json={
+                "pair": "GBP/USD",
+                "units": "900",
+                "side": "SHORT",
+                "riskBudget": "0.25%",
+                "maxExposure": "$5,000",
+                "stopLoss": "12",
+                "stopLossMode": "pips",
+            },
+            headers={
+                "X-User-Role": "operator",
+                "X-CSRF-Token": "risk-config",
+            },
+        )
+        eur_after_gbp_save = client.get("/api/v1/account/risk/config?pair=EUR%2FUSD")
+        gbp_after_save = client.get("/api/v1/account/risk/config?pair=GBP%2FUSD")
         enable = client.post(
             "/api/v1/strategy/auto-execution",
             json={"enabled": True},
@@ -395,6 +413,7 @@ def test_auto_execution_api_requires_approved_strategy_before_enable(
 
     with TestClient(create_app(tmp_path / "api-restarted.sqlite")) as restarted_client:
         restored_risk = restarted_client.get("/api/v1/account/risk/config?pair=EUR%2FUSD")
+        restored_other_pair = restarted_client.get("/api/v1/account/risk/config?pair=GBP%2FUSD")
 
     assert status.status_code == 200
     assert status.json()["enabled"] is False
@@ -402,8 +421,16 @@ def test_auto_execution_api_requires_approved_strategy_before_enable(
     assert default_risk.json()["side"] == "NONE"
     assert saved_risk.status_code == 200
     assert saved_risk.json()["units"] == "2400"
+    assert saved_other_pair.status_code == 200
+    assert saved_other_pair.json()["units"] == "900"
+    assert eur_after_gbp_save.json()["units"] == "2400"
+    assert eur_after_gbp_save.json()["side"] == "BOTH"
+    assert gbp_after_save.json()["units"] == "900"
+    assert gbp_after_save.json()["side"] == "SHORT"
     assert restored_risk.status_code == 200
     assert restored_risk.json()["side"] == "BOTH"
     assert restored_risk.json()["units"] == "2400"
+    assert restored_other_pair.json()["side"] == "SHORT"
+    assert restored_other_pair.json()["units"] == "900"
     assert enable.status_code == 409
     assert "approved strategy revision" in enable.json()["detail"]

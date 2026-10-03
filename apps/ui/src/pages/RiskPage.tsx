@@ -88,7 +88,17 @@ export function RiskPage() {
     refetchInterval: 3000,
     retry: false,
   })
-  const saveMutation = useMutation({ mutationFn: saveRiskConfig, onSuccess: () => void configQuery.refetch() })
+  const [formDrafts, setFormDrafts] = useState<Record<string, RiskConfig>>({})
+  const saveMutation = useMutation({
+    mutationFn: saveRiskConfig,
+    onSuccess: async (savedConfig) => {
+      setFormDrafts((current) => ({ ...current, [savedConfig.pair]: savedConfig }))
+      queryClient.setQueryData(['risk-config', savedConfig.pair], savedConfig)
+      await queryClient.invalidateQueries({
+        queryKey: ['risk-config', savedConfig.pair],
+      })
+    },
+  })
   const protectionMutation = useMutation({
     mutationFn: ({ tradeId, payload }: {
       tradeId: string
@@ -120,7 +130,6 @@ export function RiskPage() {
       error: true,
     }),
   })
-  const [formDrafts, setFormDrafts] = useState<Record<string, RiskConfig>>({})
   const [selection, setSelection] = useState<ProtectedValue>('stopLoss')
   const [selectedTradeId, setSelectedTradeId] = useState('')
   const [averageUnitsByTrade, setAverageUnitsByTrade] = useState<Record<string, string>>({})
@@ -128,7 +137,10 @@ export function RiskPage() {
   const [saveFeedback, setSaveFeedback] = useState<string | null>(null)
   const [executionFeedback, setExecutionFeedback] = useState<{ message: string; error: boolean } | null>(null)
 
-  const form = formDrafts[selectedPair] ?? configQuery.data ?? null
+  const pairConfig = configQuery.data?.pair.replace('_', '/').toUpperCase() === selectedPair.toUpperCase()
+    ? configQuery.data
+    : null
+  const form = formDrafts[selectedPair] ?? pairConfig
   const update = <Key extends keyof RiskConfig,>(key: Key, value: RiskConfig[Key]) => setFormDrafts((current) => {
     const config = current[selectedPair] ?? configQuery.data
     return config ? { ...current, [selectedPair]: { ...config, [key]: value } } : current
