@@ -6,8 +6,6 @@ from enum import StrEnum
 from typing import Protocol
 
 import pandas as pd
-from freqtrade.timeframe import timeframe_to_minutes
-
 from freqtrade.forex.models import OandaInstrument
 from freqtrade.forex.paper import DryRunSession, PaperPosition
 from freqtrade.forex.provider import OandaMarketDataProvider
@@ -151,17 +149,47 @@ class DryRunStrategyLoop:
         refresh_informative = getattr(strategy, "update_informative_candles", None)
         strategy_instance = getattr(strategy, "strategy", None)
         if getattr(type(strategy), "supports_explicit_exit", False) is True and callable(refresh_informative) and strategy_instance is not None:
+            from freqtrade.forex.strategy_execution import (
+                strategy_informative_candle_count,
+                strategy_informative_timeframes,
+            )
+
             informative_candles: dict[str, pd.DataFrame] = {}
-            base_minutes = timeframe_to_minutes(strategy_instance.timeframe)
-            for informative, _ in strategy_instance._ft_informative:
-                informative_minutes = timeframe_to_minutes(informative.timeframe)
-                informative_count = max(10, (candle_count * base_minutes + informative_minutes - 1) // informative_minutes + 5)
-                informative_candles[informative.timeframe] = await self.provider.fetch_ohlcv(
+            live_informative_candles: dict[str, pd.DataFrame] = {}
+            live_timeframes = set(
+                getattr(strategy_instance, "live_informative_timeframes", ())
+            )
+            for informative_timeframe in strategy_informative_timeframes(
+                strategy_instance, pair
+            ):
+                informative_count = strategy_informative_candle_count(
+                    strategy_instance, informative_timeframe, candle_count
+                )
+                informative_candles[informative_timeframe] = await self.provider.fetch_ohlcv(
                     pair,
-                    informative.timeframe,
+                    informative_timeframe,
                     count=informative_count,
                 )
-            refresh_informative(informative_candles)
+                if informative_timeframe in live_timeframes:
+                    fetch_incomplete = getattr(
+                        self.provider, "fetch_incomplete_ohlcv", None
+                    )
+                    if not callable(fetch_incomplete):
+                        raise ValueError(
+                            "Market data provider cannot fetch forming informative candles"
+                        )
+                    live_informative_candles[informative_timeframe] = (
+                        await fetch_incomplete(
+                            pair, informative_timeframe, count=2
+                        )
+                    )
+            unknown_live_timeframes = live_timeframes - set(informative_candles)
+            if unknown_live_timeframes:
+                raise ValueError(
+                    "Live informative timeframe(s) are not declared by strategy: "
+                    + ", ".join(sorted(unknown_live_timeframes))
+                )
+            refresh_informative(informative_candles, live_informative_candles)
         await self.session.refresh_prices()
         signal = strategy.signal(candles)
         instrument = self.instrument.name

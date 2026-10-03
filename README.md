@@ -274,7 +274,17 @@ python -m freqtrade.forex backtest --pair EUR/USD --timeframe 1h --count 5000 --
 # اجبار به دانلود تازه هنگام بک‌تست یا پاک‌کردن کش
 python -m freqtrade.forex backtest --pair EUR/USD --timeframe 1h --count 5000 --strategy ForexEmaStrategy --freqaimodel LightGBMRegressor --refresh-data
 python -m freqtrade.forex cache-clear --pair EUR/USD --timeframe 1h
+
+# مشاهدهٔ strategy، timeframe و وضعیت تأیید جفت‌ارزها
+python -m freqtrade.forex show-timeframes
+
+# مشاهدهٔ تنظیمات و وضعیت تأیید یک جفت‌ارز مشخص
+python -m freqtrade.forex show-timeframes --pair EUR/USD
 ```
+
+این فرمان‌ها تنظیمات محلی را بدون اتصال به OANDA نمایش می‌دهند. پیش از اجرای
+`dry-run`، مطمئن شوید strategy و timeframe هر جفت‌ارز با نسخهٔ تأییدشده در
+Review مطابقت دارند.
 
 Hyperopt ابتدا مدل را با featureها و targetهای strategy آموزش می‌دهد، یا
 در صورت تطبیق `identifier`، داده، feature schema و تنظیمات مدل از cache

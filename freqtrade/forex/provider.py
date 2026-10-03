@@ -104,6 +104,20 @@ class OandaMarketDataProvider:
         candles = self.deduplicate_candles(candles)
         return self.candles_to_dataframe(candles)
 
+    async def fetch_incomplete_ohlcv(
+        self, pair: str, timeframe: str, *, count: int = 2
+    ) -> pd.DataFrame:
+        """Fetch only currently forming candles for live informative calculations."""
+        if count < 1:
+            raise ValueError("count must be at least 1")
+        candles = await self.client.get_candles(
+            self.to_oanda_instrument(pair),
+            self.to_oanda_granularity(timeframe),
+            count=count,
+        )
+        incomplete = [candle for candle in candles if not candle.complete]
+        return self.candles_to_dataframe(self.deduplicate_candles(incomplete))
+
     async def fetch_historical(
         self,
         pair: str,

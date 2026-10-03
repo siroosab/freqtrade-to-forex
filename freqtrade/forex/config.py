@@ -78,6 +78,7 @@ class OandaSettings:
     transaction_cursor_path: str = "user_data/oanda/transaction_cursor.json"
     pair_timeframes: dict[str, str] = field(default_factory=dict)
     pair_strategies: dict[str, str] = field(default_factory=dict)
+    pair_approved_revisions: dict[str, dict[str, object]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.token:
@@ -110,6 +111,11 @@ class OandaSettings:
             str(pair).strip().upper().replace("/", "_"): str(strategy).strip()
             for pair, strategy in dict(persisted.get("pair_strategies", {})).items()
         }
+        pair_approved_revisions = {
+            str(pair).strip().upper().replace("/", "_"): dict(revision)
+            for pair, revision in dict(persisted.get("pair_approved_revisions", {})).items()
+            if isinstance(revision, dict)
+        }
         timeframe_source = environ.get("OANDA_TIMEFRAMES")
         timeframes = tuple(
             item.strip()
@@ -126,6 +132,7 @@ class OandaSettings:
             execution_mode=environ.get("OANDA_EXECUTION_MODE", exchange.get("oanda_execution_mode", "dry_run")),
             pair_timeframes=pair_timeframes,
             pair_strategies=pair_strategies,
+            pair_approved_revisions=pair_approved_revisions,
             transaction_cursor_path=environ.get(
                 "OANDA_TRANSACTION_CURSOR_PATH", "user_data/oanda/transaction_cursor.json"
             ),
@@ -157,6 +164,11 @@ class OandaSettings:
             pair_strategies={
                 str(pair).strip().upper().replace("/", "_"): str(strategy).strip()
                 for pair, strategy in dict(config.get("pair_strategies", {})).items()
+            },
+            pair_approved_revisions={
+                str(pair).strip().upper().replace("/", "_"): dict(revision)
+                for pair, revision in dict(config.get("pair_approved_revisions", {})).items()
+                if isinstance(revision, dict)
             },
         )
 

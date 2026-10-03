@@ -34,7 +34,13 @@ from freqtrade.forex.practice_runs import PracticeRunRecord, PracticeRunRecorder
 from freqtrade.forex.provider import OandaMarketDataProvider
 from freqtrade.forex.runner import DryRunPortfolioWorker, DryRunWorker, WorkerConfig
 from freqtrade.forex.strategy_loop import DryRunStrategyLoop, EmaCrossStrategy, Signal
-from freqtrade.forex.strategy_execution import FreqtradeStrategyAdapter, freqtrade_timeframe, load_strategy
+from freqtrade.forex.strategy_execution import (
+    FreqtradeStrategyAdapter,
+    freqtrade_timeframe,
+    load_strategy,
+    strategy_informative_candle_count,
+    strategy_informative_timeframes,
+)
 from freqtrade.strategy.interface import IStrategy
 from freqtrade.forex.oanda import OandaClient
 from freqtrade.timeframe import timeframe_to_seconds
@@ -69,6 +75,12 @@ def build_parser() -> argparse.ArgumentParser:
     setup.add_argument("--instruments", default="EUR_USD,GBP_USD")
     setup.add_argument("--risk-fraction", default="0.01")
     setup.add_argument("--force", action="store_true", help="Replace an existing config file")
+    show_timeframes = subparsers.add_parser(
+        "show-timeframes",
+        help="Show configured and approved strategy timeframes for each pair",
+    )
+    show_timeframes.add_argument("--pair", default=None, help="Show one pair only")
+    show_timeframes.add_argument("--config", default=None, help="Forex config path")
     dry_run = subparsers.add_parser("dry-run", help="Run the live-price paper strategy safely")
     dry_run.add_argument("--pair", default=None, help="Run one pair; defaults to all pairs in setup")
     dry_run.add_argument("--timeframe", default=None)
@@ -245,6 +257,47 @@ async def run_dry_run(settings: OandaSettings, args: argparse.Namespace) -> int:
     )
     if not instrument_names:
         raise ValueError("setup must configure at least one instrument")
+    selected_scopes: dict[str, tuple[str, str, dict[str, object]]] = {}
+    for instrument_name in instrument_names:
+        pair = instrument_name.replace("_", "/")
+        approved = settings.pair_approved_revisions.get(instrument_name)
+        if not isinstance(approved, dict):
+            raise ValueError(
+                f"{pair} has no approved strategy/timeframe. Approve a revision in /ai Review first."
+            )
+        timeframe = str(approved.get("timeframe", ""))
+        strategy_class = str(approved.get("strategyClass", ""))
+        configured_timeframe = settings.pair_timeframes.get(instrument_name)
+        configured_strategy = settings.pair_strategies.get(instrument_name)
+        if (
+            not timeframe
+            or not strategy_class
+            or not configured_timeframe
+            or not configured_strategy
+            or freqtrade_timeframe(timeframe)
+            != freqtrade_timeframe(configured_timeframe)
+            or strategy_class != configured_strategy
+            or approved.get("pair") != pair.upper()
+        ):
+            raise ValueError(
+                f"{pair} has inconsistent approved and configured strategy/timeframe settings. "
+                "Review and approve the current pair configuration again."
+            )
+        timeframe = configured_timeframe
+        if args.timeframe and freqtrade_timeframe(args.timeframe) != freqtrade_timeframe(timeframe):
+            raise ValueError(f"--timeframe cannot override the approved timeframe {timeframe} for {pair}")
+        if args.strategy and args.strategy != strategy_class:
+            raise ValueError(f"--strategy cannot override the approved strategy {strategy_class} for {pair}")
+        hyperopt = approved.get("hyperopt")
+        hyperopt = hyperopt if isinstance(hyperopt, dict) else {}
+        parameters = hyperopt.get(
+            "parameters", hyperopt.get("bestParameters", {})
+        )
+        selected_scopes[instrument_name] = (
+            strategy_class,
+            timeframe,
+            parameters if isinstance(parameters, dict) else {},
+        )
     async with OandaClient(
         settings.token, settings.account_id, environment=settings.environment
     ) as client:
@@ -269,9 +322,13 @@ async def run_dry_run(settings: OandaSettings, args: argparse.Namespace) -> int:
         workers: list[DryRunWorker] = []
         for instrument_name in instrument_names:
             pair = instrument_name.replace("_", "/")
-            timeframe = settings.pair_timeframes.get(instrument_name) or args.timeframe or (settings.timeframes[0] if settings.timeframes else "5m")
-            strategy_class = settings.pair_strategies.get(instrument_name) or args.strategy or "ForexEmaStrategy"
-            strategy = load_strategy(strategy_class, freqtrade_timeframe(timeframe), pair)
+            strategy_class, timeframe, parameters = selected_scopes[instrument_name]
+            strategy = load_strategy(
+                strategy_class,
+                freqtrade_timeframe(timeframe),
+                pair,
+                parameter_values=parameters,
+            )
             adapter = FreqtradeStrategyAdapter(strategy, pair)
             loop = DryRunStrategyLoop(
                 provider,
@@ -289,6 +346,46 @@ async def run_dry_run(settings: OandaSettings, args: argparse.Namespace) -> int:
                 on_result=lambda result: print(json.dumps(result.as_dict(), default=str)),
             ))
         await DryRunPortfolioWorker(tuple(workers)).run(max_steps=args.steps)
+    return 0
+
+
+def run_show_timeframes(args: argparse.Namespace) -> int:
+    config = load_forex_config(Path(args.config) if args.config else None)
+    pair_timeframes = dict(config.get("pair_timeframes") or {})
+    pair_strategies = dict(config.get("pair_strategies") or {})
+    approved_revisions = dict(config.get("pair_approved_revisions") or {})
+    configured_pairs = {
+        str(item).strip().upper().replace("/", "_")
+        for item in dict(config.get("exchange", {})).get("pair_whitelist", ())
+    }
+    pairs = configured_pairs | set(pair_timeframes) | set(pair_strategies)
+    if args.pair:
+        pairs = {OandaMarketDataProvider.to_oanda_instrument(args.pair)}
+    result = []
+    for instrument_name in sorted(pairs):
+        revision = approved_revisions.get(instrument_name)
+        revision = revision if isinstance(revision, dict) else {}
+        configured_timeframe = pair_timeframes.get(instrument_name)
+        configured_strategy = pair_strategies.get(instrument_name)
+        approved_timeframe = revision.get("timeframe")
+        approved_strategy = revision.get("strategyClass")
+        approved = bool(
+            approved_timeframe
+            and approved_strategy
+            and configured_timeframe
+            and configured_strategy
+            and freqtrade_timeframe(str(approved_timeframe))
+            == freqtrade_timeframe(str(configured_timeframe))
+            and approved_strategy == configured_strategy
+            and revision.get("pair") == instrument_name.replace("_", "/")
+        )
+        result.append({
+            "pair": instrument_name.replace("_", "/"),
+            "timeframe": configured_timeframe,
+            "strategy": configured_strategy,
+            "approved": approved,
+        })
+    print(json.dumps(result, indent=2))
     return 0
 
 
@@ -474,6 +571,61 @@ def _print_backtest_summary(summary: dict[str, object]) -> None:
     Console().print(table)
 
 
+async def _fetch_strategy_informative_candles(
+    provider: OandaMarketDataProvider,
+    *,
+    strategy_class: str,
+    pair: str,
+    timeframe: str,
+    base_candle_count: int,
+    start: str | None,
+    end: str | None,
+    store: HistoricalCandleStore,
+    refresh: bool,
+    config_overrides: dict[str, object] | None = None,
+) -> dict[str, pd.DataFrame]:
+    from freqtrade.forex.strategy_execution import strategy_informative_timeframes
+
+    strategy = load_strategy(
+        strategy_class,
+        freqtrade_timeframe(timeframe),
+        pair,
+        config_overrides=config_overrides,
+    )
+    informative_candles: dict[str, pd.DataFrame] = {}
+    for informative_timeframe in strategy_informative_timeframes(strategy, pair):
+        informative_count = min(
+            5000,
+            strategy_informative_candle_count(
+                strategy, informative_timeframe, base_candle_count
+            ),
+        )
+        if start and end:
+            informative_candles[informative_timeframe] = (
+                await provider.fetch_historical(
+                    pair,
+                    informative_timeframe,
+                    start=start,
+                    end=end,
+                    store=store,
+                    refresh=refresh,
+                )
+            )
+        else:
+            informative_candles[informative_timeframe] = await provider.fetch_latest(
+                pair,
+                informative_timeframe,
+                count=informative_count,
+                store=store,
+                refresh=refresh,
+            )
+        if informative_candles[informative_timeframe].empty:
+            raise ValueError(
+                f"No informative candles returned for {informative_timeframe}"
+            )
+    return informative_candles
+
+
 async def run_backtest(settings: OandaSettings, args: argparse.Namespace) -> int:
     if args.count < 30:
         raise ValueError("--count must be at least 30")
@@ -524,6 +676,22 @@ async def run_backtest(settings: OandaSettings, args: argparse.Namespace) -> int
                     "or LightGBMClassifier"
                 )
             freqai_config = _resolve_cli_freqai_config(args.timeframe)
+            informative_candles = (
+                await _fetch_strategy_informative_candles(
+                    provider,
+                    strategy_class=args.strategy,
+                    pair=args.pair,
+                    timeframe=args.timeframe,
+                    base_candle_count=len(frame),
+                    start=args.start,
+                    end=args.end,
+                    store=store,
+                    refresh=args.refresh_data,
+                    config_overrides={"freqai": freqai_config},
+                )
+                if args.strategy
+                else {}
+            )
             report_path, weights_path, report = _run_lightgbm_hyperopt(
                 frame,
                 instrument=metadata[0],
@@ -542,6 +710,7 @@ async def run_backtest(settings: OandaSettings, args: argparse.Namespace) -> int
                 hyperopt_loss=DEFAULT_HYPEROPT_LOSS,
                 strategy_class=args.strategy,
                 freqai_config=freqai_config,
+                informative_candles=informative_candles,
                 optimize_strategy=False,
             )
             result = report.pop("_backtest_result")
@@ -705,7 +874,6 @@ async def run_hyperopt(settings: OandaSettings, args: argparse.Namespace) -> int
             conversion = Decimal("1") / gbp_usd.midpoint
         if args.strategy and not args.freqaimodel:
             from freqtrade.forex.ai_hyperopt import run_strategy_hyperopt
-            from freqtrade.forex.strategy_execution import strategy_informative_timeframes
 
             strategy_timeframe = freqtrade_timeframe(args.timeframe)
             selected_strategy = load_strategy(args.strategy, strategy_timeframe, args.pair)
@@ -715,12 +883,8 @@ async def run_hyperopt(settings: OandaSettings, args: argparse.Namespace) -> int
             ):
                 informative_count = min(
                     5000,
-                    max(
-                        10,
-                        (len(frame) * timeframe_to_seconds(strategy_timeframe)
-                         + timeframe_to_seconds(informative_timeframe) - 1)
-                        // timeframe_to_seconds(informative_timeframe)
-                        + 5,
+                    strategy_informative_candle_count(
+                        selected_strategy, informative_timeframe, len(frame)
                     ),
                 )
                 if args.start and args.end:
@@ -811,6 +975,22 @@ async def run_hyperopt(settings: OandaSettings, args: argparse.Namespace) -> int
             )
         if selected_freqaimodel != "ForexAIStrategyBaseline":
             freqai_config = _resolve_cli_freqai_config(args.timeframe)
+            informative_candles = (
+                await _fetch_strategy_informative_candles(
+                    provider,
+                    strategy_class=args.strategy,
+                    pair=args.pair,
+                    timeframe=args.timeframe,
+                    base_candle_count=len(frame),
+                    start=args.start,
+                    end=args.end,
+                    store=store,
+                    refresh=args.refresh_data,
+                    config_overrides={"freqai": freqai_config},
+                )
+                if args.strategy
+                else {}
+            )
             report_path, weights_path, report = _run_lightgbm_hyperopt(
                 frame,
                 instrument=metadata[0],
@@ -829,6 +1009,7 @@ async def run_hyperopt(settings: OandaSettings, args: argparse.Namespace) -> int
                 hyperopt_loss=args.hyperopt_loss,
                 strategy_class=args.strategy,
                 freqai_config=freqai_config,
+                informative_candles=informative_candles,
             )
             print(json.dumps({
                 "instrument": instrument_name,
@@ -951,6 +1132,7 @@ def _run_lightgbm_hyperopt(
     hyperopt_loss: str,
     strategy_class: str | None = None,
     freqai_config: dict[str, object] | None = None,
+    informative_candles: dict[str, pd.DataFrame] | None = None,
     optimize_strategy: bool = True,
     on_progress: Callable[[str, int, int], None] | None = None,
 ) -> tuple[Path, Path, dict[str, object]]:
@@ -970,6 +1152,7 @@ def _run_lightgbm_hyperopt(
     strategy_features = None
     target_column = None
     selected_strategy = None
+    informative_candles = informative_candles or {}
     if strategy_class is not None:
         if freqai_config is None:
             raise ValueError("FreqAI settings are required when a strategy class is selected")
@@ -980,6 +1163,15 @@ def _run_lightgbm_hyperopt(
             config_overrides={"freqai": freqai_config},
         )
         selected_strategy.freqai_info = freqai_config
+        required_timeframes = set(
+            strategy_informative_timeframes(selected_strategy, pair)
+        )
+        missing_timeframes = required_timeframes - set(informative_candles)
+        if missing_timeframes:
+            raise ValueError(
+                "Missing informative candles for: "
+                + ", ".join(sorted(missing_timeframes))
+            )
         strategy_features, target_column = _build_freqai_strategy_features(
             candles,
             selected_strategy,
@@ -1338,7 +1530,9 @@ def _run_lightgbm_hyperopt(
 
             backtest_strategy.freqai = CachedFreqAIPredictions(strategy_predictions)
             backtest_result = ForexBacktester(
-                FreqtradeStrategyAdapter(backtest_strategy, pair),
+                FreqtradeStrategyAdapter(
+                    backtest_strategy, pair, informative_candles
+                ),
                 instrument,
                 starting_balance=starting_balance,
                 risk_fraction=risk_fraction,
@@ -1403,7 +1597,7 @@ def _run_lightgbm_hyperopt(
 
         strategy_candidates = run_strategy_hyperopt(
             validation_candles,
-            {},
+            informative_candles,
             instrument,
             pair=pair,
             strategy_class=strategy_class,
@@ -1905,6 +2099,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "setup":
         return run_setup(args)
+    if args.command == "show-timeframes":
+        return run_show_timeframes(args)
     if args.command == "dry-run":
         return asyncio.run(run_dry_run(OandaSettings.from_environment(), args))
     if args.command == "practice":

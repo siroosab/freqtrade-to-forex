@@ -2,11 +2,14 @@
 
 from copy import deepcopy
 
+import pandas as pd
 from pandas import DataFrame, to_numeric
 
 from freqtrade.forex.features import ForexFeaturePipeline
-from freqtrade.strategy import DecimalParameter, IntParameter, IStrategy
+from freqtrade.strategy import DecimalParameter, IntParameter, IStrategy, informative
+import logging
 
+logger = logging.getLogger(__name__)
 
 class ForexEmaStrategy(IStrategy):
     """Native Freqtrade strategy contract for a two-sided FX EMA crossover."""
@@ -15,6 +18,8 @@ class ForexEmaStrategy(IStrategy):
     can_short = True
     timeframe = "5m"
     startup_candle_count = 26
+    informative_ema_period = 20
+    live_informative_timeframes = ("4h",)
     minimal_roi = {"0": 10.0}
     stoploss = -0.10
     process_only_new_candles = True
@@ -75,6 +80,7 @@ class ForexEmaStrategy(IStrategy):
         return dataframe
 
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
+        logger.info(f"Populating indicators for timeframe: {self.timeframe}")
         pipeline = ForexFeaturePipeline(
             (
                 lambda frame: frame.assign(
@@ -88,6 +94,36 @@ class ForexEmaStrategy(IStrategy):
         if self.config.get("freqai", {}).get("enabled", False):
             result = self.freqai.start(result, metadata, self)
         return result
+
+    @informative("4h")
+    def populate_indicators_4h(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
+        dataframe["ema_4h"] = dataframe["close"].ewm(
+            span=self.informative_ema_period, adjust=False
+        ).mean()
+        return dataframe
+
+    def populate_live_informative_indicators(
+        self,
+        dataframe: DataFrame,
+        metadata: dict,
+        live_informative_candles: dict[str, DataFrame],
+    ) -> DataFrame:
+        forming_candle = live_informative_candles.get("4h")
+        if forming_candle is None or forming_candle.empty:
+            return dataframe
+        column = "ema_4h_4h"
+        if column not in dataframe or pd.isna(dataframe[column].iloc[-1]):
+            raise ValueError("EMA 4h warmup data is missing for the live candle")
+
+        last_close = to_numeric(forming_candle["close"], errors="coerce").iloc[-1]
+        if pd.isna(last_close):
+            raise ValueError("The forming 4h candle has no numeric close")
+
+        previous_ema = float(dataframe[column].iloc[-1])
+        alpha = 2.0 / (self.informative_ema_period + 1.0)
+        live_ema = alpha * float(last_close) + (1.0 - alpha) * previous_ema
+        dataframe.loc[dataframe.index[-1], column] = live_ema
+        return dataframe
 
     def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         if "&-s_close" in dataframe:
@@ -111,8 +147,13 @@ class ForexEmaStrategy(IStrategy):
         ready = ForexFeaturePipeline(
             (), warmup_candles=self.startup_candle_count
         ).ready_mask(dataframe)
-        dataframe["enter_long"] = (crossed_above & ready).fillna(False)
-        dataframe["enter_short"] = (crossed_below & ready).fillna(False)
+        higher_timeframe_ema = dataframe["ema_4h_4h"]
+        dataframe["enter_long"] = (
+            crossed_above & ready & (dataframe["close"] > higher_timeframe_ema)
+        ).fillna(False)
+        dataframe["enter_short"] = (
+            crossed_below & ready & (dataframe["close"] < higher_timeframe_ema)
+        ).fillna(False)
         return dataframe
 
     def populate_exit_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:

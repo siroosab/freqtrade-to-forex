@@ -98,6 +98,7 @@ def load_strategy(
         strategy = strategy_class(config)
     except Exception as exc:
         raise ValueError(f"Strategy initialization failed: {exc}") from exc
+    strategy.timeframe = timeframe
     if isinstance(config.get("freqai"), dict):
         strategy.freqai_info = config["freqai"]
     for name, value in (parameter_values or {}).items():
@@ -108,6 +109,7 @@ def load_strategy(
             setattr(strategy, name, parameter)
         else:
             setattr(strategy, name, value)
+    strategy_informative_timeframes(strategy, pair)
     return strategy
 
 
@@ -122,6 +124,18 @@ def strategy_informative_timeframes(strategy: IStrategy, pair: str) -> tuple[str
     return tuple(sorted(timeframes, key=timeframe_to_minutes))
 
 
+def strategy_informative_candle_count(
+    strategy: IStrategy, timeframe: str, base_candle_count: int
+) -> int:
+    """Return enough informative candles for both coverage and strategy warmup."""
+    base_minutes = timeframe_to_minutes(strategy.timeframe)
+    informative_minutes = timeframe_to_minutes(timeframe)
+    covered_candles = (
+        base_candle_count * base_minutes + informative_minutes - 1
+    ) // informative_minutes
+    return max(10, covered_candles + 5, strategy.startup_candle_count + 5)
+
+
 class FreqtradeStrategyAdapter:
     """Evaluate standard strategy callbacks using causal, prefix-only candle data."""
 
@@ -132,15 +146,22 @@ class FreqtradeStrategyAdapter:
         strategy: IStrategy,
         pair: str,
         informative_candles: dict[str, pd.DataFrame] | None = None,
+        live_informative_candles: dict[str, pd.DataFrame] | None = None,
     ) -> None:
         self.strategy = strategy
         self.pair = pair
         self.informative_candles = informative_candles or {}
+        self.live_informative_candles = live_informative_candles or {}
         self._cached_length = -1
         self._cached_frame: pd.DataFrame | None = None
 
-    def update_informative_candles(self, candles: dict[str, pd.DataFrame]) -> None:
+    def update_informative_candles(
+        self,
+        candles: dict[str, pd.DataFrame],
+        live_candles: dict[str, pd.DataFrame] | None = None,
+    ) -> None:
         self.informative_candles = candles
+        self.live_informative_candles = live_candles or {}
         self._cached_length = -1
         self._cached_frame = None
 
@@ -165,6 +186,17 @@ class FreqtradeStrategyAdapter:
         indicators = self.strategy.populate_indicators(result, metadata)
         if indicators is None:
             raise ValueError("populate_indicators must return a dataframe")
+        populate_live = getattr(
+            self.strategy, "populate_live_informative_indicators", None
+        )
+        if self.live_informative_candles and callable(populate_live):
+            indicators = populate_live(
+                indicators, metadata, self.live_informative_candles
+            )
+            if indicators is None:
+                raise ValueError(
+                    "populate_live_informative_indicators must return a dataframe"
+                )
         entries = self.strategy.populate_entry_trend(indicators, metadata)
         if entries is None:
             raise ValueError("populate_entry_trend must return a dataframe")

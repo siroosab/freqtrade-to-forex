@@ -81,8 +81,36 @@ loaded from OANDA at their declared higher timeframe and merged using
 Freqtrade's causal timeframe merge. Generic AI Hyperopt samples declared
 Freqtrade parameters; custom strategies without optimizable parameters are
 rejected. Approval, reports, and scheduled Hyperopt retain their pair, class,
-and timeframe scope. The standalone `dry-run` command uses the saved pair
-strategy/timeframe mappings and runs each pair on its own cadence.
+and timeframe scope.
+
+Only the exact approved pair/strategy/timeframe revision may produce runtime
+signals. The Review approval stores an active revision snapshot in
+`pair_approved_revisions`, including its Hyperopt parameters. The standalone
+`dry-run` command refuses to start a pair with no snapshot or if its configured
+strategy/timeframe no longer matches that snapshot. Changing a pair's strategy
+or timeframe in Setup invalidates its approval; approve that configuration
+again before running it. `--strategy` and `--timeframe` on `dry-run` can check
+the approved values but cannot override them. Hyperopt and Backtest remain
+available for unapproved research.
+
+Inspect the currently selected pair settings and approval state without broker
+credentials:
+
+```bash
+python -m freqtrade.forex show-timeframes
+python -m freqtrade.forex show-timeframes --pair EUR/USD
+```
+
+`ForexEmaStrategy` demonstrates a four-hour helper EMA. Its `@informative("4h")`
+callback computes and merges the closed-candle EMA for Hyperopt and Backtest.
+During live-price `dry-run` only, it also requests the forming four-hour candle
+and recalculates the EMA for the latest base-timeframe row as
+`alpha * current_close + (1 - alpha) * previous_ema`, with
+`alpha = 2 / (period + 1)`. Historical candles and prior rows are unchanged;
+the 4h EMA is used as a trend filter for entries. This strategy's declared
+four-hour informative timeframe must be equal to or higher than its selected
+base timeframe, so selecting a base timeframe above 4h is rejected by the
+strategy loader.
 
 For a user-level systemd service, enable the Live setup gate only when needed:
 
@@ -191,4 +219,3 @@ the update. Restart the user systemd service after the update if it is running:
 ```bash
 systemctl --user restart freqtrade-forex
 ```
-

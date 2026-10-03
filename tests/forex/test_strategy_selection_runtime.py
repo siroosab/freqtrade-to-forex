@@ -28,6 +28,68 @@ def test_missing_strategy_error_lists_discovered_class_names() -> None:
         load_strategy("MyFreqAIStrategy", "1h", "EUR/USD")
 
 
+def test_strategy_loader_applies_pair_timeframe_and_checks_informatives() -> None:
+    strategy = load_strategy("ForexEmaStrategy", "1h", "EUR/USD")
+
+    assert strategy.timeframe == "1h"
+    assert strategy.config["timeframe"] == "1h"
+    assert strategy_informative_timeframes(strategy, "EUR/USD") == ("4h",)
+    with pytest.raises(ValueError, match="Informative timeframe must be equal to or higher"):
+        load_strategy("ForexEmaStrategy", "1d", "EUR/USD")
+
+
+def test_live_ema_uses_forming_four_hour_close_without_changing_history() -> None:
+    strategy = load_strategy("ForexEmaStrategy", "5m", "EUR/USD")
+    base_dates = pd.date_range("2026-01-01", periods=2000, freq="5min", tz="UTC")
+    base_closes = [1.1 + index * 0.00001 for index in range(len(base_dates))]
+    base = pd.DataFrame({
+        "date": base_dates,
+        "open": base_closes,
+        "high": [value + 0.0001 for value in base_closes],
+        "low": [value - 0.0001 for value in base_closes],
+        "close": base_closes,
+        "volume": [0.0] * len(base_dates),
+    })
+    informative_dates = pd.date_range(
+        "2026-01-01", periods=41, freq="4h", tz="UTC"
+    )
+    informative_closes = [1.0 + index * 0.001 for index in range(41)]
+    informative = pd.DataFrame({
+        "date": informative_dates,
+        "open": informative_closes,
+        "high": informative_closes,
+        "low": informative_closes,
+        "close": informative_closes,
+        "volume": [0.0] * len(informative_dates),
+    })
+    forming = pd.DataFrame({
+        "date": [pd.Timestamp("2026-01-07T20:00:00Z")],
+        "open": [1.2],
+        "high": [1.3],
+        "low": [1.1],
+        "close": [1.25],
+        "volume": [0.0],
+    })
+    adapter = FreqtradeStrategyAdapter(
+        strategy, "EUR/USD", {"4h": informative}
+    )
+    closed_result = adapter._populate(base)
+    closed_ema = float(closed_result["ema_4h_4h"].iloc[-1])
+
+    adapter.update_informative_candles(
+        {"4h": informative}, {"4h": forming}
+    )
+    live_result = adapter._populate(base)
+    expected = (
+        (2.0 / 21.0) * 1.25
+        + (1.0 - 2.0 / 21.0) * closed_ema
+    )
+    assert live_result["ema_4h_4h"].iloc[-1] == pytest.approx(expected)
+    assert live_result["ema_4h_4h"].iloc[-2] == pytest.approx(
+        closed_result["ema_4h_4h"].iloc[-2]
+    )
+
+
 def test_builtin_ema_strategy_exposes_optimizer_parameters() -> None:
     dates = pd.date_range("2026-01-01", periods=60, freq="5min", tz="UTC")
     closes = [1.1 + ((index % 12) - 6) * 0.0002 for index in range(len(dates))]
@@ -39,9 +101,21 @@ def test_builtin_ema_strategy_exposes_optimizer_parameters() -> None:
         "close": closes,
         "volume": [0.0] * len(dates),
     })
+    informative_dates = pd.date_range(
+        "2025-12-31", periods=12, freq="4h", tz="UTC"
+    )
+    informative_closes = [1.1 + index * 0.0001 for index in range(12)]
+    informative = pd.DataFrame({
+        "date": informative_dates,
+        "open": informative_closes,
+        "high": informative_closes,
+        "low": informative_closes,
+        "close": informative_closes,
+        "volume": [0.0] * len(informative_dates),
+    })
     candidates = run_strategy_hyperopt(
         candles,
-        {},
+        {"4h": informative},
         OandaInstrument(
             name="EUR_USD",
             display_name="EUR/USD",
@@ -347,6 +421,18 @@ def test_forex_ema_strategy_supports_freqai_predictions_and_threshold(tmp_path) 
         hyperopt_loss="ProfitDrawDownHyperOptLoss",
         strategy_class="ForexEmaStrategy",
         freqai_config=freqai_config,
+        informative_candles={
+            "4h": pd.DataFrame({
+                "date": pd.date_range(
+                    "2025-12-31", periods=65, freq="4h", tz="UTC"
+                ),
+                "open": [1.1 + index * 0.0001 for index in range(65)],
+                "high": [1.101 + index * 0.0001 for index in range(65)],
+                "low": [1.099 + index * 0.0001 for index in range(65)],
+                "close": [1.1 + index * 0.0001 for index in range(65)],
+                "volume": [100.0] * 65,
+            })
+        },
     )
     assert report_path.is_file()
     assert weights_path.is_file()

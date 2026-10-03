@@ -11,7 +11,7 @@ import httpx
 import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
-from freqtrade.enums import RunMode, TradingMode
+from freqtrade.enums import CandleType, RunMode, TradingMode
 
 from freqtrade.forex.models import (
     ForexMarketSession,
@@ -776,6 +776,44 @@ def test_market_data_provider_maps_timeframes_and_filters_incomplete_candles() -
     assert gaps == ["2026-09-17T00:05:00Z"]
 
 
+async def test_market_data_provider_can_fetch_only_forming_candles() -> None:
+    from freqtrade.forex.models import OandaCandle
+
+    class FakeClient:
+        async def get_candles(self, instrument, granularity, *, count):
+            assert instrument == "EUR_USD"
+            assert granularity == "H4"
+            assert count == 2
+            return [
+                OandaCandle(
+                    time="2026-09-17T00:00:00Z",
+                    complete=True,
+                    open=Decimal("1.10"),
+                    high=Decimal("1.11"),
+                    low=Decimal("1.09"),
+                    close=Decimal("1.105"),
+                    volume=10,
+                ),
+                OandaCandle(
+                    time="2026-09-17T04:00:00Z",
+                    complete=False,
+                    open=Decimal("1.105"),
+                    high=Decimal("1.12"),
+                    low=Decimal("1.10"),
+                    close=Decimal("1.115"),
+                    volume=5,
+                ),
+            ]
+
+    provider = OandaMarketDataProvider(
+        FakeClient(), OandaSettings("token", "account")
+    )
+    frame = await provider.fetch_incomplete_ohlcv("EUR/USD", "4h")
+
+    assert len(frame) == 1
+    assert frame.iloc[0]["close"] == pytest.approx(1.115)
+
+
 def test_live_settings_require_explicit_confirmation(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OANDA_LIVE_CONFIRM", raising=False)
     with pytest.raises(ValueError, match="OANDA_LIVE_CONFIRM=1"):
@@ -788,6 +826,13 @@ def test_oanda_settings_and_pair_mapping_from_freqtrade_config() -> None:
             "timeframe": "5m",
             "pair_timeframes": {"EUR_USD": "5m", "GBP_USD": "1h"},
             "pair_strategies": {"EUR_USD": "ForexAIStrategyBaseline", "GBP_USD": "ForexEmaStrategy"},
+            "pair_approved_revisions": {
+                "GBP_USD": {
+                    "pair": "GBP/USD",
+                    "strategyClass": "ForexEmaStrategy",
+                    "timeframe": "H1",
+                }
+            },
             "exchange": {
                 "api_key": "config-token",
                 "account_id": "config-account",
@@ -804,6 +849,7 @@ def test_oanda_settings_and_pair_mapping_from_freqtrade_config() -> None:
     assert settings.execution_mode == "dry_run"
     assert settings.pair_timeframes == {"EUR_USD": "5m", "GBP_USD": "1h"}
     assert settings.pair_strategies == {"EUR_USD": "ForexAIStrategyBaseline", "GBP_USD": "ForexEmaStrategy"}
+    assert settings.pair_approved_revisions["GBP_USD"]["timeframe"] == "H1"
     assert OandaMarketDataProvider.to_oanda_instrument("eur/usd") == "EUR_USD"
     assert OandaMarketDataProvider.to_freqtrade_pair("GBP_USD") == "GBP/USD"
 
@@ -849,9 +895,13 @@ async def test_dry_run_uses_pair_strategy_and_timeframe_over_global_args(monkeyp
     monkeypatch.setattr("freqtrade.forex.cli.DryRunSession", lambda *args, **kwargs: object())
     monkeypatch.setattr("freqtrade.forex.cli.OandaMarketDataProvider", lambda *args, **kwargs: object())
     monkeypatch.setattr("freqtrade.forex.cli.PaperLedger", lambda *args, **kwargs: object())
-    monkeypatch.setattr("freqtrade.forex.cli.load_strategy", lambda name, timeframe, pair: (
-        loaded_strategies.append((name, timeframe, pair)) or object()
-    ))
+    monkeypatch.setattr(
+        "freqtrade.forex.cli.load_strategy",
+        lambda name, timeframe, pair, parameter_values=None: (
+            loaded_strategies.append((name, timeframe, pair, parameter_values))
+            or object()
+        ),
+    )
     monkeypatch.setattr("freqtrade.forex.cli.FreqtradeStrategyAdapter", lambda *args, **kwargs: object())
     monkeypatch.setattr("freqtrade.forex.cli.DryRunStrategyLoop", lambda *args, **kwargs: object())
     monkeypatch.setattr("freqtrade.forex.cli.DryRunWorker", FakeWorker)
@@ -862,20 +912,59 @@ async def test_dry_run_uses_pair_strategy_and_timeframe_over_global_args(monkeyp
         instruments=("EUR_USD",),
         pair_timeframes={"EUR_USD": "1h"},
         pair_strategies={"EUR_USD": "ApprovedForexStrategy"},
+        pair_approved_revisions={
+            "EUR_USD": {
+                "pair": "EUR/USD",
+                "strategyClass": "ApprovedForexStrategy",
+                "timeframe": "H1",
+                "hyperopt": {"parameters": {"fast": 7}},
+            }
+        },
     )
     args = SimpleNamespace(
         steps=1,
         pair=None,
-        timeframe="5m",
-        strategy="UnapprovedGlobalStrategy",
+        timeframe="1h",
+        strategy="ApprovedForexStrategy",
         ledger=str(tmp_path / "paper.sqlite"),
         stop_pips=Decimal("1"),
     )
 
     await run_dry_run(settings, args)
 
-    assert loaded_strategies == [("ApprovedForexStrategy", "1h", "EUR/USD")]
+    assert loaded_strategies == [
+        ("ApprovedForexStrategy", "1h", "EUR/USD", {"fast": 7})
+    ]
     assert workers[0].config.timeframe == "1h"
+
+
+async def test_dry_run_blocks_pairs_without_approved_revision(monkeypatch) -> None:
+    settings = OandaSettings(
+        "token",
+        "account",
+        instruments=("EUR_USD",),
+        pair_timeframes={"EUR_USD": "5m"},
+        pair_strategies={"EUR_USD": "ForexEmaStrategy"},
+    )
+    args = SimpleNamespace(
+        steps=1,
+        pair=None,
+        timeframe=None,
+        strategy=None,
+        ledger="paper.sqlite",
+        stop_pips=Decimal("1"),
+    )
+    client_called = False
+
+    def fail_if_called(*args, **kwargs):
+        nonlocal client_called
+        client_called = True
+        raise AssertionError("broker client must not be created for an unapproved pair")
+
+    monkeypatch.setattr("freqtrade.forex.cli.OandaClient", fail_if_called)
+    with pytest.raises(ValueError, match="no approved strategy/timeframe"):
+        await run_dry_run(settings, args)
+    assert not client_called
 
 
 def test_oanda_settings_reject_unknown_execution_mode() -> None:
@@ -945,6 +1034,47 @@ def test_exchange_resolver_loads_native_oanda_without_ccxt(default_conf) -> None
 def test_practice_cli_is_distinct_from_dry_run() -> None:
     assert build_parser().parse_args(["practice"]).command == "practice"
     assert build_parser().parse_args(["dry-run"]).command == "dry-run"
+
+
+def test_show_timeframes_cli_reports_pair_scope_and_approval(tmp_path, capsys) -> None:
+    from freqtrade.forex.cli import run_show_timeframes
+
+    config_path = tmp_path / "forex.json"
+    config_path.write_text(json.dumps({
+        "exchange": {"pair_whitelist": ["EUR_USD", "GBP_USD"]},
+        "pair_timeframes": {"EUR_USD": "5m", "GBP_USD": "1h"},
+        "pair_strategies": {
+            "EUR_USD": "ForexEmaStrategy",
+            "GBP_USD": "ForexEmaStrategy",
+        },
+        "pair_approved_revisions": {
+            "GBP_USD": {
+                "pair": "GBP/USD",
+                "strategyClass": "ForexEmaStrategy",
+                "timeframe": "H1",
+            }
+        },
+    }))
+    args = build_parser().parse_args([
+        "show-timeframes", "--config", str(config_path)
+    ])
+
+    assert run_show_timeframes(args) == 0
+    rows = json.loads(capsys.readouterr().out)
+    assert rows == [
+        {
+            "pair": "EUR/USD",
+            "timeframe": "5m",
+            "strategy": "ForexEmaStrategy",
+            "approved": False,
+        },
+        {
+            "pair": "GBP/USD",
+            "timeframe": "1h",
+            "strategy": "ForexEmaStrategy",
+            "approved": True,
+        },
+    ]
 
 
 def test_paper_backup_cli_requires_destination() -> None:
@@ -2542,6 +2672,22 @@ def test_approval_restores_exact_hyperopt_report_after_restart(tmp_path, monkeyp
     assert approved["timeframe"] == "H1"
     assert approved["hyperopt"]["entryThreshold"] == "0.25"
     assert approved["hyperopt"]["maxSpreadPct"] == "0.4"
+    runtime_config = json.loads((tmp_path / "config.json").read_text())
+    assert runtime_config["pair_timeframes"]["GBP_USD"] == "1h"
+    assert runtime_config["pair_strategies"]["GBP_USD"] == "ForexAIStrategyBaseline"
+    assert runtime_config["pair_approved_revisions"]["GBP_USD"] == approved
+
+
+def test_signal_endpoints_reject_unapproved_pair_timeframes(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("OANDA_CONFIG_PATH", str(tmp_path / "config.json"))
+    with TestClient(create_app(tmp_path / "unapproved.sqlite")) as client:
+        signals = client.get("/api/v1/ai/signals?pair=EUR%2FUSD&timeframe=M5")
+        chart = client.get(
+            "/api/v1/orders/chart?pair=EUR%2FUSD&timeframe=H4&count=100"
+        )
+
+    assert signals.status_code == 409
+    assert chart.status_code == 409
 
 
 def test_hyperopt_scheduler_requires_approved_pairs_and_staggers_all_pairs(tmp_path, monkeypatch) -> None:
@@ -3224,9 +3370,13 @@ def test_native_ema_strategy_is_loadable_and_configurable() -> None:
         {
             "forex_fast_period": 2,
             "forex_slow_period": 3,
+            "candle_type_def": CandleType.SPOT,
         }
     )
-    frame = pd.DataFrame({"close": [1.0, 1.01, 1.02, 1.01, 1.00]})
+    frame = pd.DataFrame({
+        "close": [1.0, 1.01, 1.02, 1.01, 1.00],
+        "ema_4h_4h": [0.99] * 5,
+    })
 
     populated = strategy.populate_indicators(frame, {"pair": "EUR/USD"})
     populated = strategy.populate_entry_trend(populated, {"pair": "EUR/USD"})
@@ -3240,12 +3390,18 @@ def test_native_ema_strategy_is_loadable_and_configurable() -> None:
 
 
 def test_native_ema_strategy_keeps_long_and_short_signals_independent() -> None:
-    strategy = ForexEmaStrategy({"forex_fast_period": 2, "forex_slow_period": 3})
+    strategy = ForexEmaStrategy({
+        "forex_fast_period": 2,
+        "forex_slow_period": 3,
+        "candle_type_def": CandleType.SPOT,
+    })
     index = range(strategy.startup_candle_count + 1)
     base = pd.DataFrame(
         {
+            "close": [1.0] * strategy.startup_candle_count + [1.1],
             "fast_ema": [1.0] * strategy.startup_candle_count + [1.1],
             "slow_ema": [1.0] * strategy.startup_candle_count + [1.0],
+            "ema_4h_4h": [1.0] * (strategy.startup_candle_count + 1),
         },
         index=index,
     )
