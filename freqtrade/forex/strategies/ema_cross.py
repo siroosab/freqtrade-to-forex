@@ -81,7 +81,7 @@ class ForexEmaStrategy(IStrategy):
 
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         
-        logger.info("Populating indicators for timeframe: %s", self.timeframe)
+        #logger.info("Populating indicators for timeframe: %s", self.timeframe)
         pipeline = ForexFeaturePipeline(
             (
                 lambda frame: frame.assign(

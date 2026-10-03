@@ -39,6 +39,7 @@ from freqtrade.forex.strategy_execution import (
     FreqtradeStrategyAdapter,
     freqtrade_timeframe,
     load_strategy,
+    oanda_granularity,
     strategy_informative_candle_count,
     strategy_informative_timeframes,
 )
@@ -1149,7 +1150,7 @@ def _run_lightgbm_hyperopt(
             "LightGBM FreqAI models require the freqai dependencies; install the project's freqai extra"
         ) from exc
 
-    timeframe_code = {"5m": "M5", "1h": "H1"}[timeframe]
+    timeframe_code = oanda_granularity(timeframe)
     strategy_features = None
     target_column = None
     selected_strategy = None

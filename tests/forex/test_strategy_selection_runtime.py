@@ -357,7 +357,7 @@ def test_forex_ema_strategy_supports_freqai_predictions_and_threshold(tmp_path) 
     freqai_config = {
         "enabled": True,
         "feature_parameters": {
-            "include_timeframes": ["1h"],
+            "include_timeframes": ["30m"],
             "include_corr_pairlist": [],
             "indicator_periods_candles": [3, 5],
             "include_shifted_candles": 1,
@@ -366,9 +366,9 @@ def test_forex_ema_strategy_supports_freqai_predictions_and_threshold(tmp_path) 
         },
     }
     strategy = load_strategy(
-        "ForexEmaStrategy", "1h", "EUR/USD", config_overrides={"freqai": freqai_config}
+        "ForexEmaStrategy", "30m", "EUR/USD", config_overrides={"freqai": freqai_config}
     )
-    dates = pd.date_range("2026-01-01", periods=240, freq="1h", tz="UTC")
+    dates = pd.date_range("2026-01-01", periods=240, freq="30min", tz="UTC")
     close = [1.1 + index * 0.0001 + (index % 7) * 0.00003 for index in range(240)]
     candles = pd.DataFrame({
         "date": dates,
@@ -383,7 +383,7 @@ def test_forex_ema_strategy_supports_freqai_predictions_and_threshold(tmp_path) 
         candles,
         strategy,
         pair="EUR/USD",
-        timeframe="1h",
+        timeframe="30m",
         freqai_config=freqai_config,
     )
     _validate_freqai_strategy_consumption(strategy, target)
@@ -407,7 +407,7 @@ def test_forex_ema_strategy_supports_freqai_predictions_and_threshold(tmp_path) 
         candles,
         instrument=OandaInstrument("EUR_USD", "EUR/USD", -4, 5, 0, Decimal("1")),
         pair="EUR/USD",
-        timeframe="1h",
+        timeframe="30m",
         model_name="LightGBMRegressor",
         epochs=2,
         model_dir=tmp_path,
