@@ -172,6 +172,25 @@ export function RiskPage() {
   const volatilityCandles = volatilityQuery.data?.candles.slice(-7) ?? []
   const volatilityHigh = volatilityCandles.length ? Math.max(...volatilityCandles.map((candle) => candle.high)) : Number.NaN
   const volatilityLow = volatilityCandles.length ? Math.min(...volatilityCandles.map((candle) => candle.low)) : Number.NaN
+  const latestPrice = quote ? (Number(quote.bid) + Number(quote.ask)) / 2 : Number.NaN
+  const volatilityRange = volatilityHigh - volatilityLow
+  const pricePositionPercent = Number.isFinite(latestPrice)
+    && Number.isFinite(volatilityLow)
+    && Number.isFinite(volatilityHigh)
+    && volatilityRange > 0
+    ? (latestPrice - volatilityLow) / volatilityRange * 100
+    : Number.NaN
+  const rangeMarkerPosition = Number.isFinite(pricePositionPercent)
+    ? Math.min(100, Math.max(0, pricePositionPercent))
+    : 0
+  const rangeLabelPosition = Math.min(92, Math.max(8, rangeMarkerPosition))
+  const priceRangeStatus = Number.isFinite(pricePositionPercent)
+    ? pricePositionPercent < 0
+      ? 'Below 7-day low'
+      : pricePositionPercent > 100
+        ? 'Above 7-day high'
+        : 'Inside 7-day range'
+    : 'Price/range unavailable'
   const volatilityPercent = Number.isFinite(volatilityHigh) && Number.isFinite(volatilityLow) && volatilityLow > 0
     ? (volatilityHigh - volatilityLow) / volatilityLow * 100
     : Number.NaN
@@ -253,7 +272,35 @@ export function RiskPage() {
           {volatilityQuery.isLoading && <p>Loading daily candles from OANDA…</p>}
           {volatilityQuery.isError && <p role="alert">{volatilityQuery.error instanceof Error ? volatilityQuery.error.message : 'Daily OANDA candles unavailable.'}</p>}
           {!volatilityQuery.isLoading && !volatilityQuery.isError && (Number.isFinite(volatilityPercent)
-            ? <div className="risk-summary"><div><span>7-day high</span><strong>{volatilityHigh.toFixed(precision)}</strong></div><div><span>7-day low</span><strong>{volatilityLow.toFixed(precision)}</strong></div><div><span>High-low range</span><strong>{volatilityPercent.toFixed(2)}%</strong></div><div><span>Daily candles</span><strong>{volatilityCandles.length} / 7</strong></div></div>
+            ? <>
+              <div
+                className="volatility-range-visual"
+                role="meter"
+                aria-label={`${selectedPair} latest price relative to its seven-day high and low`}
+                aria-valuemin={volatilityLow}
+                aria-valuemax={volatilityHigh}
+                aria-valuenow={Number.isFinite(latestPrice)
+                  ? Math.min(volatilityHigh, Math.max(volatilityLow, latestPrice))
+                  : undefined}
+                aria-valuetext={`${Number.isFinite(latestPrice) ? latestPrice.toFixed(precision) : 'Price unavailable'}; ${priceRangeStatus}`}
+              >
+                <strong className="volatility-range-price" style={{ left: `${rangeLabelPosition}%` }}>
+                  {Number.isFinite(latestPrice) ? latestPrice.toFixed(precision) : 'Price unavailable'}
+                </strong>
+                <div className="volatility-range-track">
+                  <span className="volatility-range-midpoint" />
+                  {Number.isFinite(latestPrice) && <span className="volatility-range-marker" style={{ left: `${rangeMarkerPosition}%` }} />}
+                </div>
+                <div className="volatility-range-labels">
+                  <span>7-day low · {volatilityLow.toFixed(precision)}</span>
+                  <span>7-day high · {volatilityHigh.toFixed(precision)}</span>
+                </div>
+                <small className={`volatility-range-status ${pricePositionPercent < 0 || pricePositionPercent > 100 ? 'outside' : ''}`}>
+                  {priceRangeStatus}
+                </small>
+              </div>
+              <div className="risk-summary"><div><span>High-low range</span><strong>{volatilityPercent.toFixed(2)}%</strong></div><div><span>Daily candles</span><strong>{volatilityCandles.length} / 7</strong></div></div>
+            </>
             : <p>Not enough OANDA daily candles to calculate the 7-day range.</p>)}
         </div>
       </section>

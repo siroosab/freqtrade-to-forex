@@ -1615,6 +1615,80 @@
   font-size: 0.82rem;
 }
 
+.volatility-range-visual {
+  position: relative;
+  margin: 28px 4px 10px;
+  padding-top: 10px;
+}
+
+.volatility-range-price {
+  position: absolute;
+  top: -18px;
+  z-index: 1;
+  padding: 4px 7px;
+  transform: translateX(-50%);
+  border: 1px solid rgba(125, 211, 252, 0.48);
+  border-radius: 7px;
+  color: #e0f2fe;
+  background: #0c4a6e;
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+.volatility-range-track {
+  position: relative;
+  height: 12px;
+  overflow: visible;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 999px;
+  background: linear-gradient(90deg, #f87171 0%, #fbbf24 50%, #34d399 100%);
+}
+
+.volatility-range-midpoint {
+  position: absolute;
+  top: -3px;
+  left: 50%;
+  height: 16px;
+  border-left: 1px dashed rgba(15, 23, 42, 0.72);
+}
+
+.volatility-range-marker {
+  position: absolute;
+  top: 50%;
+  width: 18px;
+  height: 18px;
+  transform: translate(-50%, -50%);
+  border: 3px solid #f8fafc;
+  border-radius: 50%;
+  background: #0f172a;
+  box-shadow: 0 0 0 2px rgba(15, 23, 42, 0.48);
+}
+
+.volatility-range-labels {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 10px;
+  color: #94a3b8;
+  font-size: 0.7rem;
+}
+
+.volatility-range-labels span:last-child {
+  text-align: right;
+}
+
+.volatility-range-status {
+  display: block;
+  margin-top: 8px;
+  color: #a7f3d0;
+  font-size: 0.72rem;
+  text-align: center;
+}
+
+.volatility-range-status.outside {
+  color: #fcd34d;
+}
+
 .risk-click-controls {
   margin: 12px 0;
 }
