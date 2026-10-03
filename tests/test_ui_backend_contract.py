@@ -201,6 +201,236 @@ def test_broker_positions_returns_open_and_closed_trade_details(monkeypatch):
     assert payload['accountCurrency'] == 'GBP'
 
 
+def test_risk_protection_is_applied_to_the_open_oanda_trade(monkeypatch):
+    modifications = []
+
+    class FakeClient:
+        def __init__(self, token, account_id, environment):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+        async def get_open_trades(self):
+            return [{'id': 'risk-trade-1', 'instrument': 'EUR_USD'}]
+
+        async def modify_trade_orders(self, trade_id, **orders):
+            modifications.append((trade_id, orders))
+            return {'lastTransactionID': 'tx-risk-1'}
+
+    environment = type('Env', (), {'value': 'practice'})()
+    settings = type(
+        'Settings', (), {'token': 'token', 'account_id': 'account', 'environment': environment}
+    )()
+    monkeypatch.setattr('freqtrade.forex.api.OandaClient', FakeClient)
+    monkeypatch.setattr('freqtrade.forex.api.OandaSettings.from_environment', lambda: settings)
+
+    response = client.post(
+        '/api/v1/positions/risk-trade-1/risk-protection',
+        headers={'X-User-Role': 'operator', 'X-CSRF-Token': 'risk-control'},
+        json={'stopLoss': '1.0800', 'takeProfit': '1.1200'},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()['status'] == 'modified'
+    assert modifications == [
+        (
+            'risk-trade-1',
+            {
+                'stop_loss_price': '1.0800',
+                'take_profit_price': '1.1200',
+                'trailing_stop_loss_distance': None,
+            },
+        )
+    ]
+
+
+def test_average_entry_creates_adverse_limit_order_linked_to_parent_trade(monkeypatch):
+    order_calls = []
+
+    class FakePrice:
+        bid = Decimal('1.0900')
+        ask = Decimal('1.0902')
+        tradeable = True
+
+    class FakeOrderResult:
+        order_id = 'average-order-1'
+        transaction_id = 'tx-average-1'
+
+    class FakeClient:
+        def __init__(self, token, account_id, environment):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+        async def get_open_trades(self):
+            return [{
+                'id': 'parent-trade-1',
+                'instrument': 'EUR_USD',
+                'currentUnits': '1000',
+                'price': '1.1000',
+                'unrealizedPL': '-10.00',
+            }]
+
+        async def get_prices(self, instruments):
+            assert instruments == ('EUR_USD',)
+            return [FakePrice()]
+
+        async def create_limit_order(self, *args, **kwargs):
+            order_calls.append((args, kwargs))
+            return FakeOrderResult()
+
+    environment = type('Env', (), {'value': 'practice'})()
+    settings = type(
+        'Settings', (), {'token': 'token', 'account_id': 'account', 'environment': environment}
+    )()
+    monkeypatch.setattr('freqtrade.forex.api.OandaClient', FakeClient)
+    monkeypatch.setattr('freqtrade.forex.api.OandaSettings.from_environment', lambda: settings)
+
+    response = client.post(
+        '/api/v1/positions/parent-trade-1/average-entry',
+        headers={'X-User-Role': 'operator', 'X-CSRF-Token': 'risk-control'},
+        json={'units': '1500', 'price': '1.0800', 'stopLoss': '1.0700', 'takeProfit': '1.1200'},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()['orderId'] == 'average-order-1'
+    args, kwargs = order_calls[0]
+    assert args[:3] == ('EUR_USD', 1500, '1.0800')
+    assert kwargs['stop_loss_price'] == '1.0700'
+    assert kwargs['take_profit_price'] == '1.1200'
+    assert kwargs['client_order_id'].startswith('risk-average-for-parent-trade-1-')
+    assert kwargs['trade_client_extensions']['comment'] == 'average-for:parent-trade-1'
+
+
+def test_average_entry_rejects_trade_not_currently_at_a_loss(monkeypatch):
+    class FakePrice:
+        bid = Decimal('1.0900')
+        ask = Decimal('1.0902')
+        tradeable = True
+
+    class FakeClient:
+        def __init__(self, token, account_id, environment):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+        async def get_open_trades(self):
+            return [{
+                'id': 'parent-trade-2',
+                'instrument': 'EUR_USD',
+                'currentUnits': '1000',
+                'price': '1.0800',
+                'unrealizedPL': '10.00',
+            }]
+
+        async def get_prices(self, instruments):
+            return [FakePrice()]
+
+    environment = type('Env', (), {'value': 'practice'})()
+    settings = type(
+        'Settings', (), {'token': 'token', 'account_id': 'account', 'environment': environment}
+    )()
+    monkeypatch.setattr('freqtrade.forex.api.OandaClient', FakeClient)
+    monkeypatch.setattr('freqtrade.forex.api.OandaSettings.from_environment', lambda: settings)
+
+    response = client.post(
+        '/api/v1/positions/parent-trade-2/average-entry',
+        headers={'X-User-Role': 'operator', 'X-CSRF-Token': 'risk-control'},
+        json={'units': '1000', 'price': '1.0700'},
+    )
+
+    assert response.status_code == 409
+    assert 'only be placed while' in response.json()['detail']
+
+
+def test_average_entry_uses_sell_units_and_adverse_price_for_losing_short(monkeypatch):
+    order_calls = []
+
+    class FakePrice:
+        bid = Decimal('1.0898')
+        ask = Decimal('1.0900')
+        tradeable = True
+
+    class FakeOrderResult:
+        order_id = 'average-short-order'
+        transaction_id = 'tx-average-short'
+
+    class FakeClient:
+        def __init__(self, token, account_id, environment):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+        async def get_open_trades(self):
+            return [{
+                'id': 'parent-short-1',
+                'instrument': 'EUR_USD',
+                'currentUnits': '-700',
+                'price': '1.0800',
+                'unrealizedPL': '-7.00',
+            }]
+
+        async def get_prices(self, instruments):
+            return [FakePrice()]
+
+        async def create_limit_order(self, *args, **kwargs):
+            order_calls.append((args, kwargs))
+            return FakeOrderResult()
+
+    environment = type('Env', (), {'value': 'practice'})()
+    settings = type(
+        'Settings', (), {'token': 'token', 'account_id': 'account', 'environment': environment}
+    )()
+    monkeypatch.setattr('freqtrade.forex.api.OandaClient', FakeClient)
+    monkeypatch.setattr('freqtrade.forex.api.OandaSettings.from_environment', lambda: settings)
+
+    response = client.post(
+        '/api/v1/positions/parent-short-1/average-entry',
+        headers={'X-User-Role': 'operator', 'X-CSRF-Token': 'risk-control'},
+        json={'units': '500', 'price': '1.1000'},
+    )
+
+    assert response.status_code == 200, response.text
+    assert order_calls[0][0][:3] == ('EUR_USD', -500, '1.1000')
+
+
+def test_risk_config_accepts_pips_for_post_trade_controls():
+    response = client.post(
+        '/api/v1/account/risk/config',
+        headers={'X-User-Role': 'operator', 'X-CSRF-Token': 'risk-config'},
+        json={
+            'pair': 'CHF/JPY',
+            'stopLoss': '15',
+            'stopLossMode': 'pips',
+            'takeProfit': '30',
+            'takeProfitMode': 'pips',
+            'averageEntry': '20',
+            'averageEntryMode': 'pips',
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()['stopLossMode'] == 'pips'
+    assert response.json()['takeProfitMode'] == 'pips'
+    assert response.json()['averageEntryMode'] == 'pips'
+
+
 def test_orders_chart_accepts_supported_timeframe_and_requested_count(monkeypatch):
     calls = []
 

@@ -64,7 +64,7 @@ python -m freqtrade.forex paper-report --ledger user_data/oanda/paper.sqlite
 The JSON report separates realized and unrealized P/L and lists each trade's
 instrument, units, entry/exit prices, and status.
 
-## Read-only API
+## API
 
 Start the local API on loopback:
 
@@ -78,7 +78,26 @@ Available endpoints:
 - `GET http://127.0.0.1:8090/api/v1/paper/report`
 - `GET http://127.0.0.1:8090/api/v1/paper/trades`
 
-The API is read-only. It has no order, cancel, or account-mutation endpoint.
+The health and paper endpoints above are read-only.
+
+## Practice dashboard risk controls
+
+The Risk page reads open trade status, P/L, quotes, and candles from OANDA rather
+than the local paper ledger. Stop loss and take profit updates, plus trailing
+stop changes, are sent to OANDA's trade protection API. The price, percent, and
+pip views use the selected instrument's live OANDA pip size.
+
+Average-entry controls create a separate OANDA limit order in the same direction
+as the selected trade. The API only accepts it while the parent trade is at a
+loss and the limit price is adverse to both the entry and current quote. Its
+unit size is editable (initially suggested from the open trade). The server
+checks linked pending orders every five seconds and cancels one when its parent
+trade is no longer open. Averaging can increase exposure and should be tested
+carefully.
+
+These dashboard order controls are restricted to the OANDA Practice
+environment. Risk policy settings are separate from protective orders actually
+applied to a broker trade.
 
 ## One-step dry-run
 

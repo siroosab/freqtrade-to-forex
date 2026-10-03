@@ -10,7 +10,7 @@ import type {
 } from '../types'
 import type { ForexChartData } from '../components/ForexChart'
 
-export type RiskConfig = { pair: string; units: string; riskBudget: string; riskBudgetMode: 'percent' | 'absolute'; leverage: string; maxExposure: string; maxExposureMode: 'percent' | 'absolute'; side: string; stopLoss: string | null; stopLossMode: 'percent' | 'price'; takeProfit: string | null; takeProfitMode: 'percent' | 'price'; averageEntry: string | null; averageEntryMode: 'percent' | 'price'; maxAdds: string; source: string }
+export type RiskConfig = { pair: string; units: string; riskBudget: string; riskBudgetMode: 'percent' | 'absolute'; leverage: string; maxExposure: string; maxExposureMode: 'percent' | 'absolute'; side: string; stopLoss: string | null; stopLossMode: 'percent' | 'price' | 'pips'; takeProfit: string | null; takeProfitMode: 'percent' | 'price' | 'pips'; averageEntry: string | null; averageEntryMode: 'percent' | 'price' | 'pips'; maxAdds: string; source: string }
 export type LiquidityLevel = { price: string; units: string }
 export type LiveQuote = { pair: string; bid: string; ask: string; spread: string; time: string; tradeable: boolean; environment: string; displayPrecision: number; tradeUnitsPrecision: number; minimumTradeSize: string; baseCurrency?: string | null; quoteCurrency?: string | null; pipSize?: string; marginRate?: string | null; bids?: LiquidityLevel[]; asks?: LiquidityLevel[]; unitsAvailable?: Record<string, Record<string, string>> | null; accountCurrency?: string; marginAvailable?: string; quoteToAccountRate?: string | null; conversionError?: string | null }
 export type BrokerTrade = { id: string; symbol: string; side: 'BUY' | 'SELL'; units: string; entryPrice: string; currentPrice: string | null; exitPrice: string | null; stopLoss: string | null; takeProfit: string | null; pnl: string; openedAt: string | null; closedAt: string | null; status: 'open' | 'closed'; manual: boolean; source: string; clientOrderId: string | null }
@@ -543,6 +543,40 @@ export async function modifyManualPosition(
     throw new Error(detail)
   }
   return response.json() as Promise<{ status: string; tradeId: string; transactionId?: string }>
+}
+
+async function brokerAction<T>(path: string, payload: Record<string, string | null>): Promise<T> {
+  const response = await fetch(buildApiUrl(path), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-User-Role': 'operator', 'X-CSRF-Token': 'risk-control' },
+    body: JSON.stringify(payload),
+  })
+  if (!response.ok) {
+    let detail = 'OANDA rejected the risk control'
+    try { detail = ((await response.json()) as { detail?: string }).detail ?? detail } catch { /* status is enough */ }
+    throw new Error(detail)
+  }
+  return response.json() as Promise<T>
+}
+
+export function applyBrokerRiskProtection(
+  tradeId: string,
+  payload: { stopLoss: string | null; takeProfit: string | null; trailingStopLossDistance: string | null },
+) {
+  return brokerAction<{ status: string; tradeId: string; transactionId?: string }>(
+    `/api/v1/positions/${encodeURIComponent(tradeId)}/risk-protection`,
+    payload,
+  )
+}
+
+export function createAverageEntryOrder(
+  tradeId: string,
+  payload: { units: string; price: string; stopLoss: string | null; takeProfit: string | null },
+) {
+  return brokerAction<{ status: string; tradeId: string; orderId: string; transactionId?: string }>(
+    `/api/v1/positions/${encodeURIComponent(tradeId)}/average-entry`,
+    payload,
+  )
 }
 
 export async function modifyPendingOrder(

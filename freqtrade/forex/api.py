@@ -1,10 +1,11 @@
-"""Read-only HTTP API for OANDA health and paper performance."""
+"""HTTP API for OANDA-backed trading controls and paper performance."""
 
 from __future__ import annotations
 
 import asyncio
 import hashlib
 import json
+import logging
 import os
 import re
 import secrets
@@ -20,9 +21,9 @@ from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconne
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, Response
 
-from freqtrade.forex.backtest import ForexBacktester
-from freqtrade.forex.ai_strategy import ForexAIStrategyBaseline
 from freqtrade.forex.ai_hyperopt import run_ai_hyperopt_robust
+from freqtrade.forex.ai_strategy import ForexAIStrategyBaseline
+from freqtrade.forex.backtest import ForexBacktester
 from freqtrade.forex.config import OandaSettings, load_forex_config, save_forex_config
 from freqtrade.forex.health import OandaHealthCheck
 from freqtrade.forex.historical import HistoricalCandleStore
@@ -39,7 +40,9 @@ from freqtrade.forex.strategy_execution import (
 )
 from freqtrade.timeframe import timeframe_to_minutes, timeframe_to_seconds
 
+
 MINIMUM_FREQAI_HISTORY_DAYS = 7
+logger = logging.getLogger(__name__)
 
 
 def minimum_freqai_history(freqai_config: dict[str, object], timeframe: str) -> int:
@@ -83,6 +86,51 @@ def freqai_history_config(
     config["trainPeriodDays"] = train_days
     config["backtestPeriodDays"] = validation_days
     return config
+
+
+def _validated_protection_values(
+    payload: dict,
+) -> tuple[str | None, str | None, str | None]:
+    stop_loss = payload.get("stopLoss")
+    take_profit = payload.get("takeProfit")
+    trailing_distance = payload.get("trailingStopLossDistance")
+    if stop_loss is not None and trailing_distance is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="A fixed stop loss and a trailing stop loss cannot be set simultaneously",
+        )
+    if stop_loss is None and take_profit is None and trailing_distance is None:
+        raise HTTPException(status_code=400, detail="At least one protective order is required")
+    for name, value in (("stopLoss", stop_loss), ("takeProfit", take_profit)):
+        if value is None:
+            continue
+        try:
+            parsed = Decimal(str(value))
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=f"{name} must be a number") from exc
+        if not parsed.is_finite() or parsed <= 0:
+            raise HTTPException(
+                status_code=400, detail=f"{name} must be a positive number"
+            )
+    if trailing_distance is not None:
+        try:
+            parsed_distance = Decimal(str(trailing_distance))
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=400,
+                detail="trailingStopLossDistance must be a number",
+            ) from exc
+        if not parsed_distance.is_finite() or parsed_distance <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail="trailingStopLossDistance must be a positive number",
+            )
+        trailing_distance = str(parsed_distance)
+    return (
+        str(stop_loss) if stop_loss is not None else None,
+        str(take_profit) if take_profit is not None else None,
+        str(trailing_distance) if trailing_distance is not None else None,
+    )
 
 
 def _render_ui_index(ui_index: Path) -> str:
@@ -1105,8 +1153,10 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             if candidate[key] not in {"percent", "absolute"}:
                 raise HTTPException(status_code=400, detail=f"{key} must be percent or absolute")
         for key in ("stopLossMode", "takeProfitMode", "averageEntryMode"):
-            if candidate[key] not in {"percent", "price"}:
-                raise HTTPException(status_code=400, detail=f"{key} must be percent or price")
+            if candidate[key] not in {"percent", "price", "pips"}:
+                raise HTTPException(
+                    status_code=400, detail=f"{key} must be percent, price, or pips"
+                )
         candidate["pair"] = pair.replace("_", "/").upper()
         candidate["source"] = "operator-config"
         current.update(candidate)
@@ -1828,52 +1878,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         session_token: str | None = Header(default=None, alias="X-Session-Token"),
     ) -> dict:
         validate_write_access(user_role, csrf_token, session_token)
-        stop_loss = payload.get("stopLoss")
-        take_profit = payload.get("takeProfit")
-        trailing_stop_loss_distance = payload.get("trailingStopLossDistance")
-        if stop_loss is not None and trailing_stop_loss_distance is not None:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "A fixed stop loss and a trailing stop loss cannot be set "
-                    "simultaneously"
-                ),
-            )
-        if (
-            stop_loss is None
-            and take_profit is None
-            and trailing_stop_loss_distance is None
-        ):
-            raise HTTPException(
-                status_code=400, detail="At least one protective order is required"
-            )
-        for name, value in (("stopLoss", stop_loss), ("takeProfit", take_profit)):
-            if value is None:
-                continue
-            try:
-                parsed = Decimal(str(value))
-            except (InvalidOperation, TypeError, ValueError) as exc:
-                raise HTTPException(
-                    status_code=400, detail=f"{name} must be a number"
-                ) from exc
-            if not parsed.is_finite() or parsed <= 0:
-                raise HTTPException(
-                    status_code=400, detail=f"{name} must be a positive number"
-                )
-        if trailing_stop_loss_distance is not None:
-            try:
-                parsed_distance = Decimal(str(trailing_stop_loss_distance))
-            except (InvalidOperation, TypeError, ValueError) as exc:
-                raise HTTPException(
-                    status_code=400,
-                    detail="trailingStopLossDistance must be a number",
-                ) from exc
-            if not parsed_distance.is_finite() or parsed_distance <= 0:
-                raise HTTPException(
-                    status_code=400,
-                    detail="trailingStopLossDistance must be a positive number",
-                )
-            trailing_stop_loss_distance = str(parsed_distance)
+        stop_loss, take_profit, trailing_stop_loss_distance = (
+            _validated_protection_values(payload)
+        )
         try:
             settings = OandaSettings.from_environment()
             environment_name = str(
@@ -1945,6 +1952,191 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         except (OandaAPIError, ValueError) as exc:
             raise HTTPException(
                 status_code=502, detail=f"Broker modification rejected: {exc}"
+            ) from exc
+
+    @app.post("/api/v1/positions/{trade_id}/risk-protection")
+    async def apply_risk_protection(
+        trade_id: str,
+        payload: dict,
+        user_role: str | None = Header(default=None, alias="X-User-Role"),
+        csrf_token: str | None = Header(default=None, alias="X-CSRF-Token"),
+        session_token: str | None = Header(default=None, alias="X-Session-Token"),
+    ) -> dict:
+        validate_write_access(user_role, csrf_token, session_token)
+        stop_loss, take_profit, trailing_stop_loss_distance = (
+            _validated_protection_values(payload)
+        )
+        try:
+            settings = OandaSettings.from_environment()
+            environment_name = str(
+                getattr(settings.environment, "value", settings.environment)
+            ).lower()
+            if environment_name != "practice":
+                raise HTTPException(
+                    status_code=403,
+                    detail=(
+                        "Risk protection updates are restricted to the OANDA "
+                        "Practice environment"
+                    ),
+                )
+            async with OandaClient(
+                settings.token, settings.account_id, environment=settings.environment
+            ) as client:
+                open_trades = await client.get_open_trades()
+                trade = next(
+                    (item for item in open_trades if str(item.get("id")) == trade_id),
+                    None,
+                )
+                if trade is None:
+                    raise HTTPException(status_code=404, detail="Open broker trade not found")
+                result = await client.modify_trade_orders(
+                    trade_id,
+                    stop_loss_price=str(stop_loss) if stop_loss is not None else None,
+                    take_profit_price=str(take_profit) if take_profit is not None else None,
+                    trailing_stop_loss_distance=(
+                        str(trailing_stop_loss_distance)
+                        if trailing_stop_loss_distance is not None
+                        else None
+                    ),
+                )
+            record_audit_event(
+                "positions.risk_protection.update",
+                details={
+                    "tradeId": trade_id,
+                    "stopLoss": stop_loss,
+                    "takeProfit": take_profit,
+                    "trailingStopLossDistance": trailing_stop_loss_distance,
+                },
+                username=(resolve_session_user(session_token) or {}).get("username", "anonymous"),
+                role=user_role,
+                allowed=True,
+            )
+            return {
+                "status": "modified",
+                "tradeId": trade_id,
+                "transactionId": result.get("lastTransactionID"),
+                "environment": settings.environment.value,
+            }
+        except HTTPException:
+            raise
+        except (OandaAPIError, ValueError) as exc:
+            raise HTTPException(
+                status_code=502, detail=f"Broker protection update rejected: {exc}"
+            ) from exc
+
+    @app.post("/api/v1/positions/{trade_id}/average-entry")
+    async def create_average_entry_order(
+        trade_id: str,
+        payload: dict,
+        user_role: str | None = Header(default=None, alias="X-User-Role"),
+        csrf_token: str | None = Header(default=None, alias="X-CSRF-Token"),
+        session_token: str | None = Header(default=None, alias="X-Session-Token"),
+    ) -> dict:
+        validate_write_access(user_role, csrf_token, session_token)
+        try:
+            units = Decimal(str(payload.get("units", "")))
+            price = Decimal(str(payload.get("price", "")))
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="units and price must be numbers") from exc
+        if not units.is_finite() or units <= 0 or units != units.to_integral_value():
+            raise HTTPException(
+                status_code=400, detail="units must be a positive whole number"
+            )
+        if not price.is_finite() or price <= 0:
+            raise HTTPException(status_code=400, detail="price must be a positive number")
+        try:
+            settings = OandaSettings.from_environment()
+            environment_name = str(
+                getattr(settings.environment, "value", settings.environment)
+            ).lower()
+            if environment_name != "practice":
+                raise HTTPException(
+                    status_code=403,
+                    detail=(
+                        "Average-entry orders are restricted to the OANDA "
+                        "Practice environment"
+                    ),
+                )
+            async with OandaClient(
+                settings.token, settings.account_id, environment=settings.environment
+            ) as client:
+                open_trades = await client.get_open_trades()
+                trade = next(
+                    (item for item in open_trades if str(item.get("id")) == trade_id),
+                    None,
+                )
+                if trade is None:
+                    raise HTTPException(status_code=404, detail="Open broker trade not found")
+                current_units = Decimal(str(trade.get("currentUnits", "0")))
+                if current_units == 0:
+                    raise HTTPException(status_code=409, detail="Broker trade has no open units")
+                if Decimal(str(trade.get("unrealizedPL", "0"))) >= 0:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            "Average-entry orders can only be placed while the "
+                            "broker trade is at a loss"
+                        ),
+                    )
+                instrument = str(trade.get("instrument", ""))
+                prices = await client.get_prices((instrument,))
+                if not prices or not prices[0].tradeable:
+                    raise HTTPException(
+                        status_code=409, detail="Broker instrument is not tradeable"
+                    )
+                quote = prices[0]
+                is_long = current_units > 0
+                entry_price = Decimal(str(trade.get("price", "0")))
+                price_is_adverse = price < entry_price if is_long else price > entry_price
+                price_is_pending = price < quote.ask if is_long else price > quote.bid
+                if not price_is_adverse or not price_is_pending:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "Average-entry price must be adverse to entry and "
+                            "remain beyond the live quote"
+                        ),
+                    )
+                stop_loss = payload.get("stopLoss")
+                take_profit = payload.get("takeProfit")
+                client_order_id = f"risk-average-for-{trade_id}-{secrets.token_hex(6)}"
+                result = await client.create_limit_order(
+                    instrument,
+                    int(units) if is_long else -int(units),
+                    str(price),
+                    stop_loss_price=str(stop_loss) if stop_loss else None,
+                    take_profit_price=str(take_profit) if take_profit else None,
+                    client_order_id=client_order_id,
+                    trade_client_extensions={
+                        "id": client_order_id,
+                        "tag": "risk-average",
+                        "comment": f"average-for:{trade_id}",
+                    },
+                )
+            record_audit_event(
+                "positions.average_entry.create",
+                details={
+                    "tradeId": trade_id,
+                    "orderId": result.order_id,
+                    "units": str(units),
+                    "price": str(price),
+                },
+                username=(resolve_session_user(session_token) or {}).get("username", "anonymous"),
+                role=user_role,
+                allowed=True,
+            )
+            return {
+                "status": "created",
+                "tradeId": trade_id,
+                "orderId": result.order_id,
+                "transactionId": result.transaction_id,
+                "environment": settings.environment.value,
+            }
+        except HTTPException:
+            raise
+        except (OandaAPIError, ValueError) as exc:
+            raise HTTPException(
+                status_code=502, detail=f"Average-entry order rejected by broker: {exc}"
             ) from exc
 
     @app.get("/api/v1/settings")
@@ -3941,13 +4133,72 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
 
         app.state.hyperopt_scheduler_task = asyncio.create_task(scheduler_loop())
 
+        async def average_order_cleanup_loop() -> None:
+            while True:
+                await asyncio.sleep(5)
+                try:
+                    settings = OandaSettings.from_environment()
+                    async with OandaClient(
+                        settings.token, settings.account_id, environment=settings.environment
+                    ) as client:
+                        pending_orders = await client.get_pending_orders()
+                        linked_orders = [
+                            order
+                            for order in pending_orders
+                            if str(
+                                (order.get("clientExtensions") or {}).get("id", "")
+                            ).startswith("risk-average-for-")
+                        ]
+                        if not linked_orders:
+                            continue
+                        open_trade_ids = {
+                            str(trade.get("id")) for trade in await client.get_open_trades()
+                        }
+                        for order in linked_orders:
+                            client_order_id = str(
+                                (order.get("clientExtensions") or {}).get("id", "")
+                            )
+                            parent_id = client_order_id.removeprefix(
+                                "risk-average-for-"
+                            ).rsplit("-", 1)[0]
+                            if parent_id in open_trade_ids:
+                                continue
+                            try:
+                                await client.cancel_order(str(order.get("id", "")))
+                                record_audit_event(
+                                    "positions.average_entry.cancel_parent_closed",
+                                    details={
+                                        "parentTradeId": parent_id,
+                                        "orderId": str(order.get("id", "")),
+                                    },
+                                    username="system",
+                                    role="system",
+                                    allowed=True,
+                                )
+                            except (OandaAPIError, ValueError):
+                                logger.exception(
+                                    "Could not cancel average-entry order %s after parent trade %s closed",
+                                    order.get("id"),
+                                    parent_id,
+                                )
+                except (OandaAPIError, ValueError):
+                    logger.warning(
+                        "Could not check pending average-entry orders against open OANDA trades",
+                        exc_info=True,
+                    )
+
+        app.state.average_order_cleanup_task = asyncio.create_task(
+            average_order_cleanup_loop()
+        )
+
     @app.on_event("shutdown")
     async def stop_hyperopt_scheduler() -> None:
-        task = getattr(app.state, "hyperopt_scheduler_task", None)
-        if task is not None:
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
+        for task_name in ("hyperopt_scheduler_task", "average_order_cleanup_task"):
+            task = getattr(app.state, task_name, None)
+            if task is not None:
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
 
     if ui_index.exists():
         from fastapi.staticfiles import StaticFiles
