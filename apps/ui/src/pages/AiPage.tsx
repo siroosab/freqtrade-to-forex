@@ -550,6 +550,7 @@ export function AiPage() {
                   <div><span>Loss function</span><strong>{hyperoptReportQuery.data.report.hyperoptLoss ?? hyperoptLoss}</strong></div>
                   <div><span>Best parameters</span><strong>{Object.entries(hyperoptReportQuery.data.report.bestParameters ?? {}).map(([key, value]) => `${key}=${value}`).join(' • ') || 'not available'}</strong></div>
                   <div><span>Best minimal ROI (minute: return)</span><strong>{Object.entries(hyperoptReportQuery.data.report.bestMinimalRoi ?? {}).map(([minute, rate]) => `${minute}: ${rate}`).join(' • ') || 'not optimized for this model'}</strong></div>
+                  <div><span>ROI search parameters</span><strong>{Object.entries(hyperoptReportQuery.data.report.roiParameters ?? {}).map(([key, value]) => `${key}=${value}`).join(' • ') || 'not available'}</strong></div>
                   <div><span>ROI volatility range</span><strong>{hyperoptReportQuery.data.report.bestRoiVolatilityRegime && hyperoptReportQuery.data.report.bestRoiVolatilityPer5m !== undefined ? `${hyperoptReportQuery.data.report.bestRoiVolatilityRegime} · ${(hyperoptReportQuery.data.report.bestRoiVolatilityPer5m * 100).toFixed(4)}% typical range / 5m` : 'not available'}</strong></div>
                   <div><span>Train</span><strong>{hyperoptReportQuery.data.report.train.netPl} / DD {hyperoptReportQuery.data.report.train.drawdown} / {hyperoptReportQuery.data.report.train.trades} trades</strong></div>
                   <div><span>Validation</span><strong>{hyperoptReportQuery.data.report.validation.netPl} / DD {hyperoptReportQuery.data.report.validation.drawdown} / {hyperoptReportQuery.data.report.validation.trades} trades</strong></div>
@@ -559,13 +560,14 @@ export function AiPage() {
                 <pre className="hyperopt-report">{hyperoptReportQuery.data.report.reportText}</pre>
                 <div className="strategy-table-wrap" style={{ marginTop: '18px' }}>
                   <table className="positions-table">
-                    <thead><tr><th>Rank</th><th>Parameters</th><th>Minimal ROI (minute: return)</th><th>Objective</th><th>Train P/L</th><th>Validation P/L</th><th>Validation DD</th><th>Trades</th><th>Coverage</th></tr></thead>
+                    <thead><tr><th>Rank</th><th>Parameters</th><th>Minimal ROI (minute: return)</th><th>ROI search parameters</th><th>Objective</th><th>Train P/L</th><th>Validation P/L</th><th>Validation DD</th><th>Trades</th><th>Coverage</th></tr></thead>
                     <tbody>
                       {hyperoptReportQuery.data.report.candidates.slice(0, 5).map((candidate) => (
                         <tr key={`${candidate.rank}-${JSON.stringify(candidate.parameters ?? {})}`} className={Number(candidate.validationNetPl) >= 0 ? 'row-profit' : 'row-loss'}>
                           <td>{candidate.rank === 1 ? 'Best' : candidate.rank}</td>
                           <td>{Object.entries(candidate.parameters ?? { entryThreshold: candidate.entryThreshold ?? '-', maxSpreadPct: candidate.maxSpreadPct ?? '-' }).map(([name, value]) => `${name}=${value}`).join(', ')}</td>
                           <td>{Object.entries(candidate.minimal_roi ?? {}).map(([minute, rate]) => `${minute}: ${rate}`).join(' • ') || '—'}</td>
+                          <td>{Object.entries(candidate.roi_parameters ?? {}).map(([name, value]) => `${name}=${value}`).join(' • ') || '—'}</td>
                           <td>{candidate.objective}</td>
                           <td>{candidate.trainNetPl}</td>
                           <td>{candidate.validationNetPl}</td>

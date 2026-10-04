@@ -1037,7 +1037,11 @@ async def run_hyperopt(settings: OandaSettings, args: argparse.Namespace) -> int
             return 0
 
         print("AI MODEL: ForexAIStrategyBaseline (deterministic; no ML training)", flush=True)
-        print("STRATEGY HYPEROPT: optimizing entry_threshold and max_spread_pct", flush=True)
+        print(
+            "STRATEGY HYPEROPT: optimizing entry_threshold, max_spread_pct "
+            "and minimal_roi",
+            flush=True,
+        )
         best_so_far: Decimal | None = None
 
         def show_epoch(done: int, total: int, candidate) -> None:
@@ -1050,7 +1054,8 @@ async def run_hyperopt(settings: OandaSettings, args: argparse.Namespace) -> int
             print(
                 f"Epoch {done}/{total} | objective={candidate.objective} "
                 f"| best={best_so_far} | entry={candidate.entry_threshold} "
-                f"| max_spread={candidate.max_spread_pct}",
+                f"| max_spread={candidate.max_spread_pct} "
+                f"| minimal_roi={candidate.minimal_roi}",
                 flush=True,
             )
 
@@ -1065,16 +1070,24 @@ async def run_hyperopt(settings: OandaSettings, args: argparse.Namespace) -> int
             quote_to_account_rate=conversion,
             max_attempts=args.epochs,
             hyperopt_loss=args.hyperopt_loss,
+            timeframe=freqtrade_timeframe(args.timeframe),
             on_candidate=show_epoch,
         )
     best = result.best
     print("FINAL STRATEGY HYPEROPT RESULTS", flush=True)
-    print("Epoch | Entry threshold | Max spread | Objective | Validation P/L | Drawdown | Trades")
-    print("------+-----------------+------------+-----------+----------------+----------+-------")
+    print(
+        "Epoch | Entry threshold | Max spread | Minimal ROI | Objective | "
+        "Validation P/L | Drawdown | Trades"
+    )
+    print(
+        "------+-----------------+------------+-------------+-----------+"
+        "----------------+----------+-------"
+    )
     for epoch, candidate in enumerate(result.candidates[:10], start=1):
         print(
             f"{epoch:>5} | {candidate.entry_threshold:>15} | "
-            f"{candidate.max_spread_pct:>10} | {candidate.objective:>9} | "
+            f"{candidate.max_spread_pct:>10} | {candidate.minimal_roi!s:>11} | "
+            f"{candidate.objective:>9} | "
             f"{candidate.validation_result.net_pl:>14} | "
             f"{candidate.validation_result.max_drawdown:>8} | "
             f"{len(candidate.validation_result.trades):>6}"
@@ -1091,12 +1104,20 @@ async def run_hyperopt(settings: OandaSettings, args: argparse.Namespace) -> int
             "entry_threshold": str(best.entry_threshold),
             "max_spread_pct": str(best.max_spread_pct),
         },
+        "minimal_roi": best.minimal_roi,
+        "roi_parameters": best.roi_parameters,
+        "roi_volatility_per_5m": best.roi_volatility_per_5m,
+        "roi_volatility_regime": best.roi_volatility_regime,
         "objective": str(best.objective),
         "saved_at": datetime.now(UTC).isoformat(),
         "candidates": [
             {
                 "entry_threshold": str(candidate.entry_threshold),
                 "max_spread_pct": str(candidate.max_spread_pct),
+                "minimal_roi": candidate.minimal_roi,
+                "roi_parameters": candidate.roi_parameters,
+                "roi_volatility_per_5m": candidate.roi_volatility_per_5m,
+                "roi_volatility_regime": candidate.roi_volatility_regime,
                 "objective": str(candidate.objective),
                 "validation_net_pl": str(candidate.validation_result.net_pl),
                 "validation_drawdown": str(candidate.validation_result.max_drawdown),
@@ -1115,6 +1136,8 @@ async def run_hyperopt(settings: OandaSettings, args: argparse.Namespace) -> int
         "candidates_tested": result.candidates_tested,
         "entry_threshold": str(best.entry_threshold),
         "max_spread_pct": str(best.max_spread_pct),
+        "minimal_roi": best.minimal_roi,
+        "roi_parameters": best.roi_parameters,
         "ending_balance": str(best.validation_result.ending_balance),
         "net_pl": str(best.validation_result.net_pl),
         "max_drawdown": str(best.validation_result.max_drawdown),

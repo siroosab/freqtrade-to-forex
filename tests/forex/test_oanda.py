@@ -3327,11 +3327,23 @@ def test_run_ai_hyperopt_reports_progress_and_stops_cooperatively() -> None:
         spread=Decimal("0.0001"),
         entry_thresholds=(Decimal("0.1"), Decimal("0.2"), Decimal("0.3")),
         max_spreads=(Decimal("1"),),
+        roi_random_seed=42,
         on_attempt=lambda done, total: progress.append((done, total)),
     )
 
     assert progress == [(1, 3), (2, 3), (3, 3)]
     assert result.candidates_tested == 3
+    assert all(candidate.minimal_roi for candidate in result.candidates)
+    assert all(candidate.minimal_roi != {"0": 10.0} for candidate in result.candidates)
+    assert all(candidate.roi_parameters for candidate in result.candidates)
+    assert len({
+        tuple(sorted(candidate.minimal_roi.items()))
+        for candidate in result.candidates
+    }) > 1
+    assert all(
+        candidate.roi_volatility_regime in {"low", "medium", "high"}
+        for candidate in result.candidates
+    )
 
     stopped_progress: list[int] = []
 
@@ -3351,6 +3363,7 @@ def test_run_ai_hyperopt_reports_progress_and_stops_cooperatively() -> None:
     )
 
     assert stopped_result.candidates_tested == 2
+    assert all(candidate.minimal_roi for candidate in stopped_result.candidates)
 
 
 def test_run_ai_hyperopt_robust_stops_cooperatively_with_consistent_coverage() -> None:

@@ -238,6 +238,7 @@ def format_hyperopt_report(report: dict) -> str:
         f"  Loss function: {report.get('hyperoptLoss', 'ProfitDrawDownHyperOptLoss')}",
         f"  Best parameters: {parameter_text(best_parameters)}",
         f"  Best minimal ROI: {parameter_text(best_minimal_roi)}",
+        f"  ROI search parameters: {parameter_text(report.get('roiParameters') or {})}",
         (
             f"  ROI volatility: {report['bestRoiVolatilityRegime']} "
             f"({float(report['bestRoiVolatilityPer5m']) * 100:.4f}% typical range per 5m)"
@@ -261,6 +262,7 @@ def format_hyperopt_report(report: dict) -> str:
         lines.append(
             f"    #{candidate['rank']} {parameter_text(parameters)}"
             f" minimal_roi={parameter_text(candidate.get('minimal_roi') or {})}"
+            f" roi_parameters={parameter_text(candidate.get('roi_parameters') or {})}"
             f" objective={candidate['objective']} val P/L={sign}{candidate['validationNetPl']}"
             f" trades={candidate['validationTrades']}"
         )
@@ -3476,12 +3478,43 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     spread=spreads[instrument_names[0]],
                     max_attempts=attempts,
                     hyperopt_loss=hyperopt_loss,
+                    timeframe=freqtrade_timeframe(timeframe),
                     on_attempt=on_attempt,
                     should_stop=should_stop,
                 )
-                candidates = [{"entryThreshold": str(item.entry_threshold), "maxSpreadPct": str(item.max_spread_pct), "objective": format_decimal(item.objective), "trainNetPl": format_decimal(item.train_result.net_pl), "validationNetPl": format_decimal(item.validation_result.net_pl), "validationDrawdown": format_decimal(item.validation_result.max_drawdown), "validationTrades": len(item.validation_result.trades), "coverage": 2} for item in single.candidates]
+                candidates = [
+                    {
+                        "entryThreshold": str(item.entry_threshold),
+                        "maxSpreadPct": str(item.max_spread_pct),
+                        "minimal_roi": item.minimal_roi,
+                        "roi_parameters": item.roi_parameters,
+                        "roi_volatility_per_5m": item.roi_volatility_per_5m,
+                        "roi_volatility_regime": item.roi_volatility_regime,
+                        "objective": format_decimal(item.objective),
+                        "trainNetPl": format_decimal(item.train_result.net_pl),
+                        "validationNetPl": format_decimal(item.validation_result.net_pl),
+                        "validationDrawdown": format_decimal(
+                            item.validation_result.max_drawdown
+                        ),
+                        "validationTrades": len(item.validation_result.trades),
+                        "trainTrades": len(item.train_result.trades),
+                        "coverage": 2,
+                    }
+                    for item in single.candidates
+                ]
             else:
-                candidates = run_ai_hyperopt_robust(candles_by_pair, instruments, starting_balance=starting_balance, risk_fraction=risk_fraction, spreads=spreads, max_attempts=attempts, hyperopt_loss=hyperopt_loss, on_attempt=on_attempt, should_stop=should_stop)
+                candidates = run_ai_hyperopt_robust(
+                    candles_by_pair,
+                    instruments,
+                    starting_balance=starting_balance,
+                    risk_fraction=risk_fraction,
+                    spreads=spreads,
+                    max_attempts=attempts,
+                    hyperopt_loss=hyperopt_loss,
+                    timeframe=freqtrade_timeframe(timeframe),
+                    on_attempt=on_attempt,
+                    should_stop=should_stop,
+                )
             if not candidates:
                 raise ValueError("Hyperopt was stopped before completing any attempt")
             best = candidates[0]

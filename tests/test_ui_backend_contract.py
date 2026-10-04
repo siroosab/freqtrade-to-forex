@@ -1,4 +1,5 @@
 import json
+import time
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -767,8 +768,16 @@ def test_hyperopt_start_warns_and_clears_old_cache_before_refresh(monkeypatch):
         def __init__(self):
             self.entry_threshold = '0.7'
             self.max_spread_pct = '0.8'
+            self.minimal_roi = {'0': 0.001, '30': 0.0005, '60': 0.0}
+            self.roi_parameters = {'roi_t1': 60, 'roi_p1': 0.0005}
+            self.roi_volatility_per_5m = 0.0002
+            self.roi_volatility_regime = 'medium'
             self.objective = Decimal('1.2')
-            self.train_result = type('TrainResult', (), {'net_pl': Decimal('120.0')})()
+            self.train_result = type(
+                'TrainResult',
+                (),
+                {'net_pl': Decimal('120.0'), 'trades': []},
+            )()
             self.validation_result = type('ValidationResult', (), {'net_pl': Decimal('110.0'), 'max_drawdown': Decimal('20.0'), 'trades': []})()
 
     def fake_hyperopt(*args, **kwargs):
@@ -794,6 +803,26 @@ def test_hyperopt_start_warns_and_clears_old_cache_before_refresh(monkeypatch):
     payload = response.json()
     assert calls == [('EUR/USD', 'M5')]
     assert 'clearing previous cached historical data' in payload['warning'].lower()
+    report_url = (
+        '/api/v1/ai/hyperopt/report?pair=EUR%2FUSD'
+        f'&strategy_class={payload["strategyClass"]}&timeframe=M5'
+        f'&freqaimodel={payload["freqaimodel"]}'
+    )
+    status_url = report_url.replace('/report?', '/status?')
+    for _ in range(100):
+        status_response = client.get(status_url)
+        status_payload = status_response.json()
+        if status_payload.get('status') != 'running':
+            break
+        time.sleep(0.01)
+    assert status_payload.get('status') in {'completed', 'stopped'}, status_payload
+    report_response = client.get(report_url)
+    assert report_response.status_code == 200, report_response.text
+    assert report_response.json().get('available'), report_response.json()
+    report = report_response.json()['report']
+    assert report['bestMinimalRoi'] == FakeCandidate().minimal_roi
+    assert report['roiParameters'] == FakeCandidate().roi_parameters
+    assert report['candidates'][0]['minimal_roi'] == FakeCandidate().minimal_roi
 
 
 def test_ai_research_cache_clear_is_scoped_and_preserves_reports(tmp_path, monkeypatch):
@@ -1885,6 +1914,7 @@ def test_hyperopt_report_formats_generic_strategy_parameters():
         'periodsTested': 2,
         'coverage': 2,
         'bestParameters': {'fast_period_opt': 12, 'slow_period_opt': 26},
+        'roiParameters': {'roi_t1': 60, 'roi_p1': 0.001},
         'bestRoiVolatilityPer5m': 0.0002,
         'bestRoiVolatilityRegime': 'medium',
         'objective': '100.00',
@@ -1893,6 +1923,8 @@ def test_hyperopt_report_formats_generic_strategy_parameters():
         'candidates': [{
             'rank': 1,
             'parameters': {'fast_period_opt': 12, 'slow_period_opt': 26},
+            'minimal_roi': {'0': 0.01, '30': 0.005, '60': 0.0},
+            'roi_parameters': {'roi_t1': 60, 'roi_p1': 0.001},
             'objective': '100.00',
             'validationNetPl': '50.00',
             'validationTrades': 1,
@@ -1904,3 +1936,5 @@ def test_hyperopt_report_formats_generic_strategy_parameters():
     assert 'Strategy: ForexEmaStrategy' in formatted
     assert 'fast_period_opt=12 slow_period_opt=26' in formatted
     assert 'ROI volatility: medium (0.0200% typical range per 5m)' in formatted
+    assert 'ROI search parameters: roi_t1=60 roi_p1=0.001' in formatted
+    assert 'minimal_roi=0=0.01 30=0.005 60=0.0 roi_parameters=roi_t1=60 roi_p1=0.001' in formatted

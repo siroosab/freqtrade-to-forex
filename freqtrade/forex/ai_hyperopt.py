@@ -452,10 +452,12 @@ class AiHyperoptCandidate:
     entry_threshold: Decimal
     max_spread_pct: Decimal
     train_result: BacktestResult
-
-
     validation_result: BacktestResult
     objective: Decimal
+    minimal_roi: dict[str, float]
+    roi_parameters: dict[str, int | float]
+    roi_volatility_per_5m: float
+    roi_volatility_regime: str
 
 
 @dataclass(frozen=True)
@@ -476,15 +478,23 @@ def run_ai_hyperopt_robust(
     spreads: dict[str, Decimal],
     max_attempts: int = 6,
     hyperopt_loss: str = DEFAULT_HYPEROPT_LOSS,
+    timeframe: str = "5m",
     on_attempt: Callable[[int, int], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
 ) -> list[dict[str, object]]:
     """Aggregate the bounded search across at least two pairs and two periods."""
     if len(candles_by_pair) < 2:
         raise ValueError("robust AI hyperopt requires at least 2 pairs")
-    aggregate: dict[tuple[str, str], dict[str, object]] = {}
+    aggregate: dict[tuple[str, str, str], dict[str, object]] = {}
     coverage = len(candles_by_pair) * 2
     progress = {"completed_slices": 0}
+    training_volatilities = [
+        _estimate_roi_volatility_per_5m(
+            candles.iloc[: max(1, len(candles) // 2)], timeframe
+        )
+        for candles in candles_by_pair.values()
+    ]
+    aggregate_volatility = float(pd.Series(training_volatilities).median())
 
     def slice_on_attempt(done: int, total: int) -> None:
         if on_attempt is not None:
@@ -507,13 +517,37 @@ def run_ai_hyperopt_robust(
                 spread=spreads[pair],
                 max_attempts=max_attempts,
                 hyperopt_loss=hyperopt_loss,
+                timeframe=timeframe,
+                roi_volatility_override=aggregate_volatility,
+                roi_random_seed=1,
                 on_attempt=slice_on_attempt,
                 should_stop=should_stop,
             )
             progress["completed_slices"] += 1
             for candidate in result.candidates:
-                key = (str(candidate.entry_threshold), str(candidate.max_spread_pct))
-                row = aggregate.setdefault(key, {"entryThreshold": key[0], "maxSpreadPct": key[1], "objective": Decimal("0"), "trainNetPl": Decimal("0"), "validationNetPl": Decimal("0"), "validationDrawdown": Decimal("0"), "validationTrades": 0, "coverage": 0})
+                roi_key = tuple(sorted(candidate.minimal_roi.items()))
+                key = (
+                    str(candidate.entry_threshold),
+                    str(candidate.max_spread_pct),
+                    repr(roi_key),
+                )
+                row = aggregate.setdefault(
+                    key,
+                    {
+                        "entryThreshold": key[0],
+                        "maxSpreadPct": key[1],
+                        "minimal_roi": candidate.minimal_roi,
+                        "roi_parameters": candidate.roi_parameters,
+                        "roi_volatility_per_5m": candidate.roi_volatility_per_5m,
+                        "roi_volatility_regime": candidate.roi_volatility_regime,
+                        "objective": Decimal("0"),
+                        "trainNetPl": Decimal("0"),
+                        "validationNetPl": Decimal("0"),
+                        "validationDrawdown": Decimal("0"),
+                        "validationTrades": 0,
+                        "coverage": 0,
+                    },
+                )
                 row["objective"] += candidate.objective
                 row["trainNetPl"] += candidate.train_result.net_pl
                 row["validationNetPl"] += candidate.validation_result.net_pl
@@ -530,7 +564,10 @@ def run_ai_hyperopt_robust(
     usable = [row for row in aggregate.values() if int(row["coverage"]) == max_coverage]
     ordered = sorted(usable, key=lambda row: row["objective"], reverse=True)
     return [
-        {key: (format(value, ".2f") if isinstance(value, Decimal) else value) for key, value in row.items()}
+        {
+            key: (format(value, ".2f") if isinstance(value, Decimal) else value)
+            for key, value in row.items()
+        }
         for row in ordered
     ]
 
@@ -551,6 +588,9 @@ def run_ai_hyperopt(
     max_spreads: tuple[Decimal, ...] = tuple(Decimal(index) / Decimal("10") for index in range(1, 31)),
     max_attempts: int | None = None,
     hyperopt_loss: str = DEFAULT_HYPEROPT_LOSS,
+    timeframe: str = "5m",
+    roi_volatility_override: float | None = None,
+    roi_random_seed: int | None = None,
     on_attempt: Callable[[int, int], None] | None = None,
     on_candidate: Callable[[int, int, AiHyperoptCandidate], None] | None = None,
     should_stop: Callable[[], bool] | None = None,
@@ -562,7 +602,13 @@ def run_ai_hyperopt(
     split = max(10, min(len(candles) - 10, int(len(candles) * 0.7)))
     train = candles.iloc[:split]
     validation = candles.iloc[split:]
+    roi_volatility_per_5m = (
+        roi_volatility_override
+        if roi_volatility_override is not None
+        else _estimate_roi_volatility_per_5m(train, timeframe)
+    )
     candidates: list[AiHyperoptCandidate] = []
+    roi_rng = random.Random(roi_random_seed)
 
     search_space = list(product(entry_thresholds, max_spreads))
     if max_attempts is not None and max_attempts < len(search_space):
@@ -585,7 +631,12 @@ def run_ai_hyperopt(
             "forex_ai_volatility_window": str(volatility_window),
             "forex_ai_atr_window": str(atr_window),
         }
+        roi_parameters = _sample_roi_parameters(
+            roi_rng, timeframe, roi_volatility_per_5m
+        )
+        minimal_roi = _generate_roi_table(roi_parameters)
         strategy = ForexAIStrategyBaseline(strategy_config)
+        strategy.minimal_roi = minimal_roi
         backtester = dict(
             starting_balance=starting_balance,
             risk_fraction=risk_fraction,
@@ -603,7 +654,15 @@ def run_ai_hyperopt(
         )
         objective = compute_hyperopt_objective(validation_result, hyperopt_loss)
         candidate = AiHyperoptCandidate(
-            entry_threshold, max_spread_pct, train_result, validation_result, objective
+            entry_threshold,
+            max_spread_pct,
+            train_result,
+            validation_result,
+            objective,
+            minimal_roi,
+            roi_parameters,
+            roi_volatility_per_5m,
+            _roi_regime(roi_volatility_per_5m),
         )
         candidates.append(candidate)
         if on_candidate is not None:
