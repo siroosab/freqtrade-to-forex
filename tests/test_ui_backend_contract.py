@@ -1255,12 +1255,36 @@ def test_setup_mutations_require_authenticated_session():
 
 def test_login_fails_closed_when_no_api_users_are_configured(monkeypatch, tmp_path):
     monkeypatch.delenv('FOREX_API_USERS_JSON', raising=False)
+    monkeypatch.delenv('OANDA_CONFIG_PATH', raising=False)
     with TestClient(create_app(tmp_path / 'no-api-users.sqlite')) as unconfigured_client:
         response = unconfigured_client.post(
             '/api/v1/auth/login',
             json={'username': 'operator', 'password': 'test-operator-password'},
         )
     assert response.status_code == 503, response.text
+
+
+def test_login_accepts_credentials_from_local_config_file(monkeypatch, tmp_path):
+    monkeypatch.delenv('FOREX_API_USERS_JSON', raising=False)
+    config_path = tmp_path / 'config.json'
+    config_path.write_text(
+        json.dumps({
+            'api_users': {
+                'admin': {'password': '1234', 'role': 'admin'},
+            }
+        }),
+        encoding='utf-8',
+    )
+    monkeypatch.setenv('OANDA_CONFIG_PATH', str(config_path))
+    with TestClient(create_app(tmp_path / 'local-config.sqlite')) as local_client:
+        response = local_client.post(
+            '/api/v1/auth/login',
+            json={'username': 'admin', 'password': '1234'},
+        )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload['user']['username'] == 'admin'
+    assert payload['user']['role'] == 'admin'
 
 
 def test_operation_preflight_validation_accepts_valid_session_and_rejects_invalid_role():

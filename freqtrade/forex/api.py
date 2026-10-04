@@ -267,6 +267,81 @@ def format_hyperopt_report(report: dict) -> str:
     return "\n".join(lines)
 
 
+def _normalize_api_users(raw_users: object, *, source_name: str, min_password_length: int) -> dict[str, dict[str, str]]:
+    normalized: dict[str, dict[str, str]] = {}
+    sources: list[tuple[str, object]] = []
+    if isinstance(raw_users, dict):
+        sources.append((source_name, raw_users))
+    elif isinstance(raw_users, list):
+        sources.append((source_name, raw_users))
+    else:
+        raise ValueError(f"{source_name} must contain a JSON object or list of user objects")
+
+    for source_label, source_value in sources:
+        if isinstance(source_value, dict):
+            iterable = source_value.items()
+        else:
+            iterable = [(None, item) for item in source_value]
+
+        for username, user_config in iterable:
+            if isinstance(source_value, list):
+                if not isinstance(user_config, dict):
+                    raise ValueError(f"{source_label} entries must map usernames to user objects")
+                username = str(user_config.get("username", "")).strip()
+                resolved_user = user_config
+            else:
+                if not isinstance(username, str) or not username.strip() or not isinstance(user_config, dict):
+                    raise ValueError(f"{source_label} entries must map usernames to user objects")
+                resolved_user = user_config
+            if not isinstance(username, str) or not username.strip():
+                raise ValueError(f"{source_label} entries must map usernames to user objects")
+            password = resolved_user.get("password")
+            role = resolved_user.get("role")
+            if not isinstance(password, str) or len(password) < min_password_length:
+                raise ValueError(
+                    f"configured API user passwords in {source_label} must be at least {min_password_length} characters"
+                )
+            if not isinstance(role, str) or role not in {"viewer", "operator", "admin"}:
+                raise ValueError("configured API user role must be viewer, operator, or admin")
+            normalized[username] = {
+                "username": username,
+                "password": password,
+                "role": str(role),
+            }
+    return normalized
+
+
+def _load_session_users() -> dict[str, dict[str, str]]:
+    configured_users = os.environ.get("FOREX_API_USERS_JSON", "")
+    if configured_users:
+        try:
+            raw_users = json.loads(configured_users)
+        except json.JSONDecodeError as exc:
+            raise ValueError("FOREX_API_USERS_JSON must contain a JSON object") from exc
+        return _normalize_api_users(raw_users, source_name="FOREX_API_USERS_JSON", min_password_length=12)
+
+    config_path = Path(os.environ.get("OANDA_CONFIG_PATH", "user_data/config.json"))
+    if config_path.exists():
+        try:
+            payload = json.loads(config_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return {}
+        if not isinstance(payload, dict):
+            return {}
+        api_users = payload.get("api_users")
+        if api_users is None:
+            api_users = payload.get("apiUsers")
+        if api_users is None:
+            auth_block = payload.get("auth")
+            if isinstance(auth_block, dict):
+                api_users = auth_block.get("users")
+        if api_users is None:
+            return {}
+        return _normalize_api_users(api_users, source_name=str(config_path), min_password_length=4)
+
+    return {}
+
+
 def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> FastAPI:
     logging.basicConfig(
         level=logging.INFO,
@@ -303,32 +378,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         allow_headers=["*"],
     )
     ledger = PaperLedger(ledger_path)
-    configured_users = os.environ.get("FOREX_API_USERS_JSON", "")
-    try:
-        raw_users = json.loads(configured_users) if configured_users else {}
-    except json.JSONDecodeError as exc:
-        raise ValueError("FOREX_API_USERS_JSON must contain a JSON object") from exc
-    if not isinstance(raw_users, dict):
-        raise ValueError("FOREX_API_USERS_JSON must contain a JSON object")
-    SESSION_USERS: dict[str, dict[str, str]] = {}
-    for username, user_config in raw_users.items():
-        if (
-            not isinstance(username, str)
-            or not username.strip()
-            or not isinstance(user_config, dict)
-        ):
-            raise ValueError("FOREX_API_USERS_JSON entries must map usernames to user objects")
-        password = user_config.get("password")
-        role = user_config.get("role")
-        if not isinstance(password, str) or len(password) < 12:
-            raise ValueError("configured API user passwords must be at least 12 characters")
-        if not isinstance(role, str) or role not in {"viewer", "operator", "admin"}:
-            raise ValueError("configured API user role must be viewer, operator, or admin")
-        SESSION_USERS[username] = {
-            "username": username,
-            "password": password,
-            "role": str(role),
-        }
+    SESSION_USERS = _load_session_users()
     ACTIVE_SESSIONS: dict[str, dict[str, str]] = {}
     session_lifetime = timedelta(hours=8)
     AUDIT_LOGS: list[dict] = []
