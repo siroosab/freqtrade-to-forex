@@ -126,7 +126,7 @@ class ForexHyperopt:
                 slippage=self.slippage,
                 financing_rate_per_day=self.financing_rate_per_day,
                 quote_to_account_rate=self.quote_to_account_rate,
-            ).run(train_window)
+            ).run(train_window, detail_candles=train_window)
             drawdown = self._max_drawdown(result)
             objective = self._resolve_objective(result, drawdown, objective_fn=objective_fn, loss_function=loss_function)
             return HyperoptCandidate(fast, slow, candidate_stop, candidate_risk, result, drawdown, objective)

@@ -3375,7 +3375,6 @@ def test_native_ema_strategy_is_loadable_and_configurable() -> None:
     )
     frame = pd.DataFrame({
         "close": [1.0, 1.01, 1.02, 1.01, 1.00],
-        "ema_4h_4h": [0.99] * 5,
     })
 
     populated = strategy.populate_indicators(frame, {"pair": "EUR/USD"})
@@ -3398,10 +3397,11 @@ def test_native_ema_strategy_keeps_long_and_short_signals_independent() -> None:
     index = range(strategy.startup_candle_count + 1)
     base = pd.DataFrame(
         {
-            "close": [1.0] * strategy.startup_candle_count + [1.1],
+            "close": [1.0] * strategy.startup_candle_count + [1.2],
             "fast_ema": [1.0] * strategy.startup_candle_count + [1.1],
             "slow_ema": [1.0] * strategy.startup_candle_count + [1.0],
-            "ema_4h_4h": [1.0] * (strategy.startup_candle_count + 1),
+            "rsi": [60.0] * (strategy.startup_candle_count + 1),
+            "htf_bias": [1] * (strategy.startup_candle_count + 1),
         },
         index=index,
     )
@@ -3901,7 +3901,7 @@ def test_backtest_validation_supports_train_test_and_walk_forward_splits() -> No
     )
     candles = pd.DataFrame(
         {
-            "date": [f"2026-01-{day:02d}T00:00:00Z" for day in range(1, 61)],
+            "date": pd.date_range("2026-01-01", periods=60, freq="D", tz="UTC"),
             "open": [1.1000 + i * 0.00005 for i in range(60)],
             "high": [1.1005 + i * 0.00005 for i in range(60)],
             "low": [1.0995 + i * 0.00005 for i in range(60)],

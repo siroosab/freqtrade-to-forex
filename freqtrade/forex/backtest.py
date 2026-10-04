@@ -221,8 +221,8 @@ def validate_backtest_split(
         fill_ratio=fill_ratio,
     )
 
-    train_result = backtester.run(train_window)
-    test_result = backtester.run(test_window)
+    train_result = backtester.run(train_window, detail_candles=train_window)
+    test_result = backtester.run(test_window, detail_candles=test_window)
 
     wf_windows: list[dict[str, object]] = []
     if walk_forward_steps > 1:
@@ -238,7 +238,7 @@ def validate_backtest_split(
                 {
                     "window_start": window.iloc[0]["date"],
                     "window_end": window.iloc[-1]["date"],
-                    "result": backtester.run(window),
+                    "result": backtester.run(window, detail_candles=window),
                 }
             )
     return {
@@ -420,6 +420,12 @@ class ForexBacktester:
             raise ValueError(f"backtest candles missing columns: {', '.join(sorted(missing))}")
         if detail_candles is not None and not {"date", "high", "low"}.issubset(detail_candles.columns):
             raise ValueError("detail candles require date, high, and low columns")
+        detail_dates: pd.DatetimeIndex | None = None
+        if detail_candles is not None:
+            detail_candles = detail_candles.sort_values("date").reset_index(drop=True)
+            detail_dates = pd.DatetimeIndex(
+                pd.to_datetime(detail_candles["date"], utc=True)
+            ).as_unit("ns")
 
         trades: list[BacktestTrade] = []
         position: tuple[Signal, int, Decimal, object, object] | None = None
@@ -428,10 +434,16 @@ class ForexBacktester:
             signal = strategy.signal(window)
             candle = candles.iloc[index]
             intrabar_closed = False
-            if position and detail_candles is not None and index > 0:
+            if (
+                position is not None
+                and detail_candles is not None
+                and detail_dates is not None
+                and index > 0
+            ):
                 trigger = self._intrabar_trigger(
                     position,
                     detail_candles,
+                    detail_dates,
                     start=position[4],
                     end=candle["date"],
                     instrument=instrument,
@@ -495,10 +507,15 @@ class ForexBacktester:
                             entry_time,
                         )
                         open_symbols.add(instrument.name)
-                        if detail_candles is not None and index + 2 < len(candles):
+                        if (
+                            detail_candles is not None
+                            and detail_dates is not None
+                            and index + 2 < len(candles)
+                        ):
                             trigger = self._intrabar_trigger(
                                 position,
                                 detail_candles,
+                                detail_dates,
                                 start=position[4],
                                 end=candles.iloc[index + 2]["date"],
                                 instrument=instrument,
@@ -512,10 +529,11 @@ class ForexBacktester:
                                     open_symbols.discard(instrument.name)
         if position:
             trigger = None
-            if detail_candles is not None:
+            if detail_candles is not None and detail_dates is not None:
                 trigger = self._intrabar_trigger(
                     position,
                     detail_candles,
+                    detail_dates,
                     start=position[4],
                     end=pd.Timestamp.max.tz_localize("UTC"),
                     instrument=instrument,
@@ -711,6 +729,7 @@ class ForexBacktester:
         self,
         position: tuple[Signal, int, Decimal, object, object],
         detail_candles: pd.DataFrame,
+        detail_dates: pd.DatetimeIndex,
         *,
         start: object,
         end: object,
@@ -731,22 +750,28 @@ class ForexBacktester:
             )
         start_time = self._utc_timestamp(start)
         end_time = self._utc_timestamp(end)
-        for _, detail in detail_candles.sort_values("date").iterrows():
-            timestamp = self._utc_timestamp(detail["date"])
+        start_index = detail_dates.searchsorted(start_time, side="left")
+        end_index = detail_dates.searchsorted(end_time, side="left")
+        relevant_candles = detail_candles.iloc[start_index:end_index]
+        for timestamp, detail in zip(
+            detail_dates[start_index:end_index],
+            relevant_candles.itertuples(index=False),
+            strict=True,
+        ):
             if not start_time <= timestamp < end_time:
                 continue
-            high = Decimal(str(detail["high"]))
-            low = Decimal(str(detail["low"]))
+            high = Decimal(str(detail.high))
+            low = Decimal(str(detail.low))
             if direction is Signal.LONG:
                 if low <= stop:
-                    return detail["date"], stop
+                    return detail.date, stop
                 if target is not None and high >= target:
-                    return detail["date"], target
+                    return detail.date, target
             else:
                 if high >= stop:
-                    return detail["date"], stop
+                    return detail.date, stop
                 if target is not None and low <= target:
-                    return detail["date"], target
+                    return detail.date, target
         return None
 
     @staticmethod
@@ -773,4 +798,3 @@ class ForexBacktester:
         return (current is Signal.LONG and new is Signal.SHORT) or (
             current is Signal.SHORT and new is Signal.LONG
         )
-

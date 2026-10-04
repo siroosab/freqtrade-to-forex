@@ -57,8 +57,8 @@ def test_live_ema_uses_forming_four_hour_close_without_changing_history() -> Non
     informative = pd.DataFrame({
         "date": informative_dates,
         "open": informative_closes,
-        "high": informative_closes,
-        "low": informative_closes,
+        "high": [value + 0.001 for value in informative_closes],
+        "low": [value - 0.001 for value in informative_closes],
         "close": informative_closes,
         "volume": [0.0] * len(informative_dates),
     })
@@ -74,20 +74,132 @@ def test_live_ema_uses_forming_four_hour_close_without_changing_history() -> Non
         strategy, "EUR/USD", {"4h": informative}
     )
     closed_result = adapter._populate(base)
-    closed_ema = float(closed_result["ema_4h_4h"].iloc[-1])
+    closed_fast = float(closed_result["ema_fast_4h"].iloc[-1])
 
     adapter.update_informative_candles(
         {"4h": informative}, {"4h": forming}
     )
     live_result = adapter._populate(base)
-    expected = (
-        (2.0 / 21.0) * 1.25
-        + (1.0 - 2.0 / 21.0) * closed_ema
+    expected_fast = (2.0 / 21.0) * 1.25 + (1.0 - 2.0 / 21.0) * closed_fast
+    assert live_result["ema_fast_4h"].iloc[-1] == pytest.approx(expected_fast)
+    assert live_result["htf_bias"].iloc[-1] == 1
+    assert live_result["ema_fast_4h"].iloc[-2] == pytest.approx(
+        closed_result["ema_fast_4h"].iloc[-2]
     )
-    assert live_result["ema_4h_4h"].iloc[-1] == pytest.approx(expected)
-    assert live_result["ema_4h_4h"].iloc[-2] == pytest.approx(
-        closed_result["ema_4h_4h"].iloc[-2]
+
+    bearish_closes = (
+        [1.0 + index * 0.001 for index in range(60)]
+        + [1.059 - (index + 1) * 0.001 for index in range(40)]
     )
+    bearish_dates = pd.date_range(
+        end=informative_dates[-1], periods=len(bearish_closes), freq="4h", tz="UTC"
+    )
+    bearish_informative = pd.DataFrame({
+        "date": bearish_dates,
+        "open": bearish_closes,
+        "high": [value + 0.001 for value in bearish_closes],
+        "low": [value - 0.001 for value in bearish_closes],
+        "close": bearish_closes,
+        "volume": [0.0] * len(bearish_closes),
+    })
+    bearish_forming = forming.assign(close=bearish_closes[-1] - 0.0005)
+    adapter.update_informative_candles(
+        {"4h": bearish_informative}, {"4h": bearish_forming}
+    )
+    bearish_live_result = adapter._populate(base)
+    assert bearish_live_result["htf_bias"].iloc[-1] == -1
+
+
+def test_higher_timeframe_adx_threshold_filters_weak_trend() -> None:
+    strategy = load_strategy("ForexEmaStrategy", "5m", "EUR/USD")
+    index = range(40)
+    weak = pd.DataFrame({
+        "close_4h": [1.1] * 40,
+        "ema_fast_4h": [1.09] * 40,
+        "ema_slow_4h": [1.08] * 40,
+        "ema_fast_previous_4h": [1.08] * 40,
+        "adx_4h": [10.0] * 40,
+    }, index=index)
+    strategy.informative_adx_min_opt.value = 20
+    assert not bool(strategy._closed_higher_timeframe_bias(weak).any())
+    weak["adx_4h"] = 25.0
+    assert bool((strategy._closed_higher_timeframe_bias(weak) == 1).all())
+
+
+def test_ema_strategy_requires_lower_timeframe_setup_in_htf_direction() -> None:
+    strategy = load_strategy("ForexEmaStrategy", "5m", "EUR/USD")
+    bullish = pd.DataFrame({
+        "close": [1.1] * 84 + [1.099, 1.101],
+        "fast_ema": [1.100] * 86,
+        "slow_ema": [1.099] * 86,
+        "rsi": [60.0] * 86,
+        "htf_bias": [1] * 86,
+    })
+    long_signals = strategy.populate_entry_trend(bullish, {"pair": "EUR/USD"})
+    assert bool(long_signals.iloc[-1]["enter_long"])
+    assert not bool(long_signals.iloc[-1]["enter_short"])
+
+    bullish["htf_bias"] = -1
+    blocked_long = strategy.populate_entry_trend(bullish, {"pair": "EUR/USD"})
+    assert not bool(blocked_long.iloc[-1]["enter_long"])
+
+    bearish = pd.DataFrame({
+        "close": [1.1] * 84 + [1.101, 1.099],
+        "fast_ema": [1.100] * 86,
+        "slow_ema": [1.101] * 86,
+        "rsi": [40.0] * 86,
+        "htf_bias": [-1] * 86,
+    })
+    short_signals = strategy.populate_entry_trend(bearish, {"pair": "EUR/USD"})
+    assert bool(short_signals.iloc[-1]["enter_short"])
+    assert not bool(short_signals.iloc[-1]["enter_long"])
+
+
+def test_precomputed_ema_backtest_matches_prefix_only_signals() -> None:
+    strategy = load_strategy("ForexEmaStrategy", "5m", "EUR/USD")
+    dates = pd.date_range("2026-01-01", periods=240, freq="5min", tz="UTC")
+    close = [
+        1.1 + index * 0.00001 + ((index % 18) - 9) * 0.00008
+        for index in range(len(dates))
+    ]
+    candles = pd.DataFrame({
+        "date": dates,
+        "open": close,
+        "high": [value + 0.0001 for value in close],
+        "low": [value - 0.0001 for value in close],
+        "close": close,
+        "volume": [0.0] * len(close),
+    })
+    informative_dates = pd.date_range(
+        "2025-12-20", periods=110, freq="4h", tz="UTC"
+    )
+    informative_close = [
+        1.0 + index * 0.0002 + (0.002 if index % 30 > 15 else 0.0)
+        for index in range(len(informative_dates))
+    ]
+    informative = pd.DataFrame({
+        "date": informative_dates,
+        "open": informative_close,
+        "high": [value + 0.001 for value in informative_close],
+        "low": [value - 0.001 for value in informative_close],
+        "close": informative_close,
+        "volume": [0.0] * len(informative_close),
+    })
+    prepared = FreqtradeStrategyAdapter(strategy, "EUR/USD", {"4h": informative})
+    prepared.prepare_backtest(candles)
+
+    for end in (85, 120, 180, len(candles)):
+        prefix = candles.iloc[:end]
+        reference = FreqtradeStrategyAdapter(
+            load_strategy("ForexEmaStrategy", "5m", "EUR/USD"),
+            "EUR/USD",
+            {"4h": informative},
+        )
+        assert prepared.signal(prefix) is reference.signal(prefix)
+        for direction in (Signal.LONG, Signal.SHORT):
+            assert prepared.exit_signal(prefix, direction) == reference.exit_signal(
+                prefix, direction
+            )
 
 
 def test_builtin_ema_strategy_exposes_optimizer_parameters() -> None:
@@ -134,7 +246,17 @@ def test_builtin_ema_strategy_exposes_optimizer_parameters() -> None:
         hyperopt_loss="ProfitDrawDownHyperOptLoss",
     )
     assert len(candidates) == 2
-    assert all(set(candidate["parameters"]) == {"fast_period_opt", "slow_period_opt"} for candidate in candidates)
+    assert all(
+        set(candidate["parameters"]) == {
+            "fast_period_opt",
+            "slow_period_opt",
+            "informative_fast_period_opt",
+            "informative_slow_period_opt",
+            "informative_adx_min_opt",
+            "entry_rsi_opt",
+        }
+        for candidate in candidates
+    )
 
 
 def test_informative_strategy_loads_and_hyperopts_with_daily_candles(monkeypatch, tmp_path) -> None:
@@ -346,13 +468,35 @@ def test_lightgbm_classifier_trains_on_categorical_strategy_targets() -> None:
     assert set(dataset["label"]) == {"up", "down", "flat"}
 
 
-def test_forex_ema_strategy_supports_freqai_predictions_and_threshold(tmp_path) -> None:
+def test_forex_ema_strategy_supports_freqai_predictions_and_threshold(
+    tmp_path, monkeypatch
+) -> None:
     from freqtrade.forex.cli import (
         _build_freqai_strategy_features,
         _run_lightgbm_hyperopt,
         _validate_freqai_strategy_consumption,
     )
+    from freqtrade.forex.backtest import ForexBacktester
     from freqtrade.forex.strategy_execution import CachedFreqAIPredictions
+
+    backtest_calls: list[tuple[dict[str, object], int, int]] = []
+
+    class RecordingBacktester:
+        def __init__(self, *args, **kwargs) -> None:
+            self.backtester = ForexBacktester(*args, **kwargs)
+
+        def run(self, candles: pd.DataFrame, **kwargs):
+            prepared_frame = self.backtester.strategy._prepared_frame
+            backtest_calls.append((
+                kwargs,
+                len(candles),
+                len(prepared_frame) if prepared_frame is not None else 0,
+            ))
+            return self.backtester.run(candles, **kwargs)
+
+    monkeypatch.setattr(
+        "freqtrade.forex.ai_hyperopt.ForexBacktester", RecordingBacktester
+    )
 
     freqai_config = {
         "enabled": True,
@@ -368,8 +512,12 @@ def test_forex_ema_strategy_supports_freqai_predictions_and_threshold(tmp_path) 
     strategy = load_strategy(
         "ForexEmaStrategy", "30m", "EUR/USD", config_overrides={"freqai": freqai_config}
     )
+    assert strategy.freqai_entry_threshold.low == pytest.approx(0.00001)
+    assert strategy.freqai_entry_threshold.high == pytest.approx(0.0005)
+    assert strategy.freqai_entry_threshold.value == pytest.approx(0.0001)
     dates = pd.date_range("2026-01-01", periods=240, freq="30min", tz="UTC")
     close = [1.1 + index * 0.0001 + (index % 7) * 0.00003 for index in range(240)]
+    close[-2] -= 0.001
     candles = pd.DataFrame({
         "date": dates,
         "open": close,
@@ -392,11 +540,18 @@ def test_forex_ema_strategy_supports_freqai_predictions_and_threshold(tmp_path) 
         for timestamp in dates
     })
     prediction_frame = strategy.populate_indicators(candles.copy(), {"pair": "EUR/USD"})
+    prediction_frame["htf_bias"] = 1
     signals = strategy.populate_entry_trend(prediction_frame, {"pair": "EUR/USD"})
 
     assert target == "&-s_close"
     assert "%-return-3" in feature_frame.columns
     assert bool(signals.iloc[-1]["enter_long"])
+    bearish_prediction_frame = prediction_frame.copy()
+    bearish_prediction_frame["htf_bias"] = -1
+    bearish_signals = strategy.populate_entry_trend(
+        bearish_prediction_frame, {"pair": "EUR/USD"}
+    )
+    assert not bool(bearish_signals.iloc[-1]["enter_long"])
     strategy.freqai_entry_threshold.value = 0.003
     higher_threshold_signals = strategy.populate_entry_trend(
         prediction_frame.copy(), {"pair": "EUR/USD"}
@@ -439,6 +594,15 @@ def test_forex_ema_strategy_supports_freqai_predictions_and_threshold(tmp_path) 
     assert report["strategy"] == "ForexEmaStrategy"
     assert "freqai_entry_threshold" in report["strategy_parameters"]
     assert len(report["candidates"]) == 2
+    assert backtest_calls
+    assert all(
+        kwargs.get("detail_candles") is not None
+        for kwargs, _, _ in backtest_calls
+    )
+    assert any(
+        prepared_length > candle_length
+        for _, candle_length, prepared_length in backtest_calls
+    )
 
 
 def test_one_portfolio_cycle_runs_every_due_pair(tmp_path) -> None:

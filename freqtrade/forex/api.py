@@ -4445,7 +4445,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                         slippage=Decimal("0"),
                         financing_rate_per_day=Decimal("0"),
                         quote_to_account_rate=Decimal("1"),
-                    ).run(frame)
+                    ).run(frame, detail_candles=frame)
                     strategy_parameters = dict(
                         approved_run.get("parameters", {})
                         if isinstance(approved_run, dict) else {}

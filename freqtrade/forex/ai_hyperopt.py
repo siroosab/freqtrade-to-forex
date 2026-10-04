@@ -131,6 +131,7 @@ def run_strategy_hyperopt(
     freqai_config: dict[str, object] | None = None,
     freqai_predictions: dict[int, dict[str, object]] | None = None,
     freqai_target_column: str | None = None,
+    indicator_context: pd.DataFrame | None = None,
     should_stop: Callable[[], bool] | None = None,
 ) -> list[dict[str, object]]:
     """Sample declared Freqtrade parameter spaces and score each on held-out candles."""
@@ -201,7 +202,11 @@ def run_strategy_hyperopt(
             break
         values = {name: sample(parameter) for name, parameter in parameters.items()}
 
-        def evaluate(data: pd.DataFrame) -> BacktestResult:
+        def evaluate(
+            data: pd.DataFrame,
+            *,
+            indicator_context: pd.DataFrame | None = None,
+        ) -> BacktestResult:
             candidate_strategy = load_strategy(
                 strategy_class,
                 timeframe,
@@ -222,6 +227,13 @@ def run_strategy_hyperopt(
             if data.empty:
                 return BacktestResult(starting_balance, starting_balance, ())
             adapter = FreqtradeStrategyAdapter(candidate_strategy, pair, informative_candles)
+            context = indicator_context if indicator_context is not None else data
+            if "date" not in context.columns:
+                raise ValueError("indicator context candles must include a date column")
+            context = context.loc[context["date"] <= data["date"].iloc[-1]]
+            if context.empty or context["date"].iloc[-1] < data["date"].iloc[-1]:
+                raise ValueError("indicator context must cover all evaluated candles")
+            adapter.prepare_backtest(context)
             return ForexBacktester(
                 adapter,
                 instrument,
@@ -232,10 +244,15 @@ def run_strategy_hyperopt(
                 slippage=slippage,
                 financing_rate_per_day=financing_rate_per_day,
                 quote_to_account_rate=quote_to_account_rate,
-            ).run(data)
+            ).run(data, detail_candles=data)
 
         train_result = evaluate(train)
-        validation_result = evaluate(validation)
+        validation_result = evaluate(
+            validation,
+            indicator_context=(
+                indicator_context if indicator_context is not None else candles
+            ),
+        )
         objective = compute_hyperopt_objective(validation_result, hyperopt_loss)
         row = {
             "parameters": values,
@@ -406,8 +423,12 @@ def run_ai_hyperopt(
             financing_rate_per_day=financing_rate_per_day,
             quote_to_account_rate=quote_to_account_rate,
         )
-        train_result = ForexBacktester(strategy, instrument, **backtester).run(train)
-        validation_result = ForexBacktester(strategy, instrument, **backtester).run(validation)
+        train_result = ForexBacktester(strategy, instrument, **backtester).run(
+            train, detail_candles=train
+        )
+        validation_result = ForexBacktester(strategy, instrument, **backtester).run(
+            validation, detail_candles=validation
+        )
         objective = compute_hyperopt_objective(validation_result, hyperopt_loss)
         candidate = AiHyperoptCandidate(
             entry_threshold, max_spread_pct, train_result, validation_result, objective

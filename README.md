@@ -303,14 +303,17 @@ http://SERVER_IP:8090/health
 # دانلود مستقل؛ داده در کش محلی ذخیره می‌شود
 python -m freqtrade.forex download-data --pair EUR/USD --timeframe 1h --count 5000
 
-# آموزش/بازیابی LightGBM، سپس Hyperopt پارامترهای ForexEmaStrategy
-python -m freqtrade.forex hyperopt --pair EUR/USD --timeframe 1h --count 5000 --epochs 30 --strategy ForexEmaStrategy --freqaimodel LightGBMRegressor
+# Hyperopt استراتژی در 5m با کمتر از 30 روز بازار فارکس
+python -m freqtrade.forex hyperopt --pair EUR/USD --timeframe 5m --count 5000 --epochs 30 --strategy ForexEmaStrategy
 
-# بک‌تست OOS با همان مدل و پارامترهای Hyperopt
-python -m freqtrade.forex backtest --pair EUR/USD --timeframe 1h --count 5000 --strategy ForexEmaStrategy --freqaimodel LightGBMRegressor
+# آموزش/بازیابی LightGBMRegressor و Hyperopt آستانهٔ پیش‌بینی
+python -m freqtrade.forex hyperopt --pair EUR/USD --timeframe 5m --count 5000 --epochs 30 --strategy ForexEmaStrategy --freqaimodel LightGBMRegressor
+
+# بک‌تست همان بازهٔ محدود
+python -m freqtrade.forex backtest --pair EUR/USD --timeframe 5m --count 5000 --strategy ForexEmaStrategy
 
 # اجبار به دانلود تازه هنگام بک‌تست یا پاک‌کردن کش
-python -m freqtrade.forex backtest --pair EUR/USD --timeframe 1h --count 5000 --strategy ForexEmaStrategy --freqaimodel LightGBMRegressor --refresh-data
+python -m freqtrade.forex backtest --pair EUR/USD --timeframe 5m --count 5000 --strategy ForexEmaStrategy --freqaimodel LightGBMRegressor --refresh-data
 python -m freqtrade.forex cache-clear --pair EUR/USD --timeframe 1h
 
 # مشاهدهٔ strategy، timeframe و وضعیت تأیید جفت‌ارزها
@@ -320,9 +323,19 @@ python -m freqtrade.forex show-timeframes
 python -m freqtrade.forex show-timeframes --pair EUR/USD
 ```
 
-این فرمان‌ها تنظیمات محلی را بدون اتصال به OANDA نمایش می‌دهند. پیش از اجرای
-`dry-run`، مطمئن شوید strategy و timeframe هر جفت‌ارز با نسخهٔ تأییدشده در
-Review مطابقت دارند.
+`ForexEmaStrategy` جهت 4h را با EMA سریع/کند و شیب EMA سریع می‌سنجد؛ در اجرای
+زنده، آخرین کندل در حال تشکیل 4h نیز در این جهت‌سنجی وارد می‌شود. ورود 5m فقط
+پس از بازپس‌گیری EMA سریع و تأیید RSI، و هم‌جهت با روند 4h مجاز است. پارامترهای
+EMAهای هر دو تایم‌فریم، RSI و حداقل ADX روند 4h در Hyperopt قابل تنظیم‌اند؛
+حداقل ADX صفر فیلتر روند را غیرفعال می‌کند. برای AI، مدل
+`LightGBMRegressor` بازده آیندهٔ کندل‌های بسته‌شده را پیش‌بینی می‌کند و پیش‌بینی
+فقط وقتی اجازهٔ ورود دارد که setup تایم‌فریم پایین و جهت 4h نیز تأییدش کنند.
+نتیجهٔ 30 روز صرفاً غربال اولیه است؛ پیش از استفادهٔ عملی، آن را روی بازه‌های
+جداگانه و جفت‌ارزهای دیگر نیز ارزیابی کنید.
+
+زیر‌فرمان‌های `show-timeframes` تنظیمات محلی را بدون اتصال به OANDA نمایش
+می‌دهند. پیش از اجرای `dry-run`، مطمئن شوید strategy و timeframe هر جفت‌ارز با
+نسخهٔ تأییدشده در Review مطابقت دارند.
 
 Hyperopt ابتدا مدل را با featureها و targetهای strategy آموزش می‌دهد، یا
 در صورت تطبیق `identifier`، داده، feature schema و تنظیمات مدل از cache
@@ -331,6 +344,10 @@ validation بررسی می‌کند. بک‌تست همان مدل/prediction ca
 Hyperopt را reuse می‌کند و نتیجه را فقط برای بازهٔ out-of-sample می‌سنجد.
 گزارش Hyperopt، وزن مدل، prediction cache و گزارش بک‌تست در
 `user_data/hyperopt_results/` ذخیره می‌شوند.
+
+در بک‌تست و Hyperopt، حدضرر و حدسود با OHLC کندل‌های موجود شبیه‌سازی می‌شوند؛
+این شبیه‌سازی tick-level نیست و اگر هر دو سطح در یک کندل لمس شوند، حدضرر
+محافظه‌کارانه زودتر فرض می‌شود.
 
 خلاصهٔ جدول‌مانند بک‌تست شامل تعداد معاملات، wins/draws/losses، win rate،
 سود خالص و میانگین هر معامله به ارز حساب، gross profit/loss، profit factor،

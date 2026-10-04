@@ -766,7 +766,7 @@ async def run_backtest(settings: OandaSettings, args: argparse.Namespace) -> int
             slippage=args.slippage,
             financing_rate_per_day=args.financing_rate_per_day,
             quote_to_account_rate=conversion,
-        ).run(frame)
+        ).run(frame, detail_candles=frame)
     summary = _backtest_summary(
         result,
         frame,
@@ -1543,7 +1543,7 @@ def _run_lightgbm_hyperopt(
                 slippage=slippage,
                 financing_rate_per_day=financing_rate_per_day,
                 quote_to_account_rate=quote_to_account_rate,
-            ).run(candles)
+            ).run(candles, detail_candles=candles)
             backtest_report_path = model_dir / f"{stem}.backtest.json"
             backtest_report: dict[str, object] = {
                 "version": 1,
@@ -1617,6 +1617,9 @@ def _run_lightgbm_hyperopt(
             freqai_config=freqai_config,
             freqai_predictions=strategy_predictions,
             freqai_target_column=target_column,
+            indicator_context=candle_frame[
+                candle_frame["date"] <= validation_candles["date"].iloc[-1]
+            ],
         )
         print("FINAL STRATEGY HYPEROPT RESULTS", flush=True)
         print("Rank | Objective | Validation P/L | Drawdown | Parameters")
@@ -1754,7 +1757,7 @@ def _run_lightgbm_hyperopt(
     for epoch, (entry_threshold, max_spread) in enumerate(search_space, start=1):
         strategy = PredictionStrategy(entry_threshold, max_spread)
         backtest_result = ForexBacktester(strategy, instrument, **backtest_settings).run(
-            validation_candles
+            validation_candles, detail_candles=validation_candles
         )
         objective = compute_hyperopt_objective(backtest_result, hyperopt_loss)
         row = {

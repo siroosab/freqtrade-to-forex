@@ -154,6 +154,8 @@ class FreqtradeStrategyAdapter:
         self.live_informative_candles = live_informative_candles or {}
         self._cached_length = -1
         self._cached_frame: pd.DataFrame | None = None
+        self._prepared_frame: pd.DataFrame | None = None
+        self._prepared_positions: dict[pd.Timestamp, int] = {}
 
     def update_informative_candles(
         self,
@@ -164,6 +166,37 @@ class FreqtradeStrategyAdapter:
         self.live_informative_candles = live_candles or {}
         self._cached_length = -1
         self._cached_frame = None
+        self._prepared_frame = None
+        self._prepared_positions.clear()
+
+    def prepare_backtest(self, candles: pd.DataFrame) -> None:
+        """Precompute opted-in causal indicators once for a full backtest window."""
+        if not getattr(self.strategy, "precompute_backtest_indicators", False):
+            return
+        if candles.empty:
+            self._prepared_frame = None
+            self._prepared_positions.clear()
+            return
+        self._prepared_frame = self._populate(candles)
+        dates = pd.to_datetime(candles["date"], utc=True)
+        self._prepared_positions = {
+            timestamp: position for position, timestamp in enumerate(dates)
+        }
+
+    def _latest_populated_row(self, candles: pd.DataFrame) -> pd.Series | None:
+        if candles.empty:
+            return None
+        if self._prepared_frame is not None:
+            timestamp = pd.Timestamp(candles.iloc[-1]["date"])
+            if timestamp.tzinfo is None:
+                timestamp = timestamp.tz_localize("UTC")
+            else:
+                timestamp = timestamp.tz_convert("UTC")
+            position = self._prepared_positions.get(timestamp)
+            if position is not None:
+                return self._prepared_frame.iloc[position]
+        populated = self._populate(candles)
+        return None if populated.empty else populated.iloc[-1]
 
     def _populate(self, candles: pd.DataFrame) -> pd.DataFrame:
         if self._cached_length == len(candles) and self._cached_frame is not None:
@@ -208,10 +241,9 @@ class FreqtradeStrategyAdapter:
         return exits
 
     def signal(self, candles: pd.DataFrame) -> Signal:
-        populated = self._populate(candles)
-        if populated.empty:
+        latest = self._latest_populated_row(candles)
+        if latest is None:
             return Signal.FLAT
-        latest = populated.iloc[-1]
         if bool(latest.get("enter_long", False)):
             return Signal.LONG
         if bool(latest.get("enter_short", False)):
@@ -221,10 +253,9 @@ class FreqtradeStrategyAdapter:
     def exit_signal(self, candles: pd.DataFrame, direction: Signal) -> bool:
         if hasattr(self.strategy, "signal"):
             return False
-        populated = self._populate(candles)
-        if populated.empty:
+        latest = self._latest_populated_row(candles)
+        if latest is None:
             return False
-        latest = populated.iloc[-1]
         column = "exit_long" if direction is Signal.LONG else "exit_short"
         return bool(latest.get(column, False))
 
