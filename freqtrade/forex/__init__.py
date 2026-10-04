@@ -133,6 +133,10 @@ def __getattr__(name: str):
         from freqtrade.forex.strategies.ema_cross import ForexEmaStrategy
 
         return ForexEmaStrategy
+    if name == "ForexSampleStrategy":
+        from freqtrade.forex.strategies.forex_sample import ForexSampleStrategy
+
+        return ForexSampleStrategy
     if name == "create_app":
         from freqtrade.forex.api import create_app
 
@@ -167,6 +171,7 @@ __all__ = [
     "EmaCrossStrategy",
     "ForexStrategyAdapter",
     "ForexEmaStrategy",
+    "ForexSampleStrategy",
     "ForexStrategyState",
     "ForexStrategyStateStore",
     "Signal",

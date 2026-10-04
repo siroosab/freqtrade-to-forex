@@ -22,6 +22,7 @@ OANDA_GRANULARITIES = {
     "1w": "W1",
     "1mo": "M1",
 }
+MAX_HISTORICAL_CANDLES_PER_REQUEST = 5000
 
 
 class OandaMarketDataProvider:
@@ -137,12 +138,23 @@ class OandaMarketDataProvider:
             cached = store.load(instrument, timeframe, start=start, end=end)
             if cached is not None:
                 return self.candles_to_dataframe(cached)
-        candles = await self.client.get_candles(
-            instrument,
-            self.to_oanda_granularity(timeframe),
-            from_time=start,
-            to_time=end,
+        granularity = self.to_oanda_granularity(timeframe)
+        interval = self._timeframe_delta(timeframe)
+        max_page_duration = interval * (
+            MAX_HISTORICAL_CANDLES_PER_REQUEST - 1
         )
+        candles: list[OandaCandle] = []
+        page_start = start_dt
+        while page_start < end_dt:
+            page_end = min(page_start + max_page_duration, end_dt)
+            page = await self.client.get_candles(
+                instrument,
+                granularity,
+                from_time=page_start.isoformat().replace("+00:00", "Z"),
+                to_time=page_end.isoformat().replace("+00:00", "Z"),
+            )
+            candles.extend(page)
+            page_start = page_end
         candles = self.filter_incomplete_candles(self.deduplicate_candles(candles))
         candles = [
             candle

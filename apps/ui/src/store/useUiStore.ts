@@ -113,7 +113,7 @@ export const useUiStore = create<UiState>()(
       executionMode: 'Practice',
       environment: 'practice',
       connectionState: 'online',
-      userRole: 'operator',
+      userRole: 'viewer',
       alerts: [
         {
           id: 'system-ready',
@@ -172,7 +172,6 @@ export const useUiStore = create<UiState>()(
       partialize: (state) => ({
         executionMode: state.executionMode,
         environment: state.environment,
-        userRole: state.userRole,
         selectedInstruments: state.selectedInstruments,
       }),
       version: 1,

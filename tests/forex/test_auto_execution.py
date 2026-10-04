@@ -20,6 +20,25 @@ from freqtrade.forex.models import (
 from freqtrade.forex.state import OandaAccountState
 
 
+def _auth_headers(client, role: str = "operator") -> dict[str, str]:
+    passwords = {
+        "viewer": "test-viewer-password",
+        "operator": "test-operator-password",
+        "admin": "test-admin-password",
+    }
+    response = client.post(
+        "/api/v1/auth/login",
+        json={"username": role, "password": passwords[role]},
+    )
+    assert response.status_code == 200, response.text
+    session = response.json()
+    return {
+        "X-Session-Token": session["sessionToken"],
+        "X-User-Role": session["user"]["role"],
+        "X-CSRF-Token": session["csrfToken"],
+    }
+
+
 class FakeOandaClient:
     def __init__(self, candles: list[OandaCandle]) -> None:
         self.candles = candles
@@ -379,10 +398,7 @@ def test_auto_execution_api_requires_approved_strategy_before_enable(
                 "stopLoss": "10",
                 "stopLossMode": "pips",
             },
-            headers={
-                "X-User-Role": "operator",
-                "X-CSRF-Token": "risk-config",
-            },
+            headers=_auth_headers(client),
         )
         saved_other_pair = client.post(
             "/api/v1/account/risk/config",
@@ -395,20 +411,14 @@ def test_auto_execution_api_requires_approved_strategy_before_enable(
                 "stopLoss": "12",
                 "stopLossMode": "pips",
             },
-            headers={
-                "X-User-Role": "operator",
-                "X-CSRF-Token": "risk-config",
-            },
+            headers=_auth_headers(client),
         )
         eur_after_gbp_save = client.get("/api/v1/account/risk/config?pair=EUR%2FUSD")
         gbp_after_save = client.get("/api/v1/account/risk/config?pair=GBP%2FUSD")
         enable = client.post(
             "/api/v1/strategy/auto-execution",
             json={"enabled": True},
-            headers={
-                "X-User-Role": "operator",
-                "X-CSRF-Token": "strategy-auto-execution",
-            },
+            headers=_auth_headers(client),
         )
 
     with TestClient(create_app(tmp_path / "api-restarted.sqlite")) as restarted_client:

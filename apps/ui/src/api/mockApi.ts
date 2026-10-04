@@ -23,6 +23,107 @@ const browserWebSocketOrigin = typeof window !== 'undefined'
   : 'ws://127.0.0.1:8090'
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? browserOrigin).replace(/\/$/, '')
 const WS_BASE_URL = (import.meta.env.VITE_WS_BASE_URL ?? browserWebSocketOrigin).replace(/\/$/, '')
+const AUTH_SESSION_STORAGE_KEY = 'fx-control-api-session'
+
+export type AuthSession = {
+  username: string
+  role: 'viewer' | 'operator' | 'admin'
+  sessionToken: string
+  csrfToken: string
+}
+
+export function getStoredAuthSession(): AuthSession | null {
+  const serialized = window.sessionStorage.getItem(AUTH_SESSION_STORAGE_KEY)
+  if (!serialized) return null
+  try {
+    const session = JSON.parse(serialized) as AuthSession
+    if (
+      typeof session.sessionToken === 'string'
+      && typeof session.csrfToken === 'string'
+      && typeof session.username === 'string'
+      && ['viewer', 'operator', 'admin'].includes(session.role)
+    ) {
+      return session
+    }
+  } catch {
+    window.sessionStorage.removeItem(AUTH_SESSION_STORAGE_KEY)
+  }
+  return null
+}
+
+function saveAuthSession(session: AuthSession | null): void {
+  if (session) {
+    window.sessionStorage.setItem(AUTH_SESSION_STORAGE_KEY, JSON.stringify(session))
+  } else {
+    window.sessionStorage.removeItem(AUTH_SESSION_STORAGE_KEY)
+  }
+}
+
+async function fetch(input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(init.headers)
+  const session = getStoredAuthSession()
+  if (session) {
+    headers.set('X-Session-Token', session.sessionToken)
+    headers.set('X-User-Role', session.role)
+    if (['POST', 'PUT', 'PATCH', 'DELETE'].includes((init.method ?? 'GET').toUpperCase())) {
+      headers.set('X-CSRF-Token', session.csrfToken)
+    }
+  }
+  const response = await globalThis.fetch(input, { ...init, headers })
+  if (response.status === 401 && session) {
+    saveAuthSession(null)
+    window.dispatchEvent(new Event('fx-auth-expired'))
+  }
+  return response
+}
+
+export async function loginUser(username: string, password: string): Promise<AuthSession> {
+  const response = await globalThis.fetch(buildApiUrl('/api/v1/auth/login'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  })
+  if (!response.ok) {
+    let detail = `HTTP ${response.status}`
+    try {
+      detail = ((await response.json()) as { detail?: string }).detail ?? detail
+    } catch {
+      // The status still explains why authentication failed.
+    }
+    throw new Error(`Login failed: ${detail}`)
+  }
+  const payload = await response.json() as {
+    user: { username: string; role: AuthSession['role'] }
+    sessionToken: string
+    csrfToken: string
+  }
+  const session: AuthSession = {
+    username: payload.user.username,
+    role: payload.user.role,
+    sessionToken: payload.sessionToken,
+    csrfToken: payload.csrfToken,
+  }
+  saveAuthSession(session)
+  return session
+}
+
+export async function getAuthSession(): Promise<AuthSession> {
+  const stored = getStoredAuthSession()
+  if (!stored) throw new Error('No authenticated session')
+  const response = await fetch(buildApiUrl('/api/v1/auth/session'))
+  if (!response.ok) throw new Error('Session is invalid or has expired')
+  const payload = await response.json() as { username: string; role: AuthSession['role'] }
+  return { ...stored, username: payload.username, role: payload.role }
+}
+
+export async function logoutUser(): Promise<void> {
+  try {
+    const response = await fetch(buildApiUrl('/api/v1/auth/logout'), { method: 'POST' })
+    if (!response.ok) throw new Error('Logout failed')
+  } finally {
+    saveAuthSession(null)
+  }
+}
 
 export type AiFreqaiFeatureParameters = {
   labelPeriodCandles: number
@@ -141,14 +242,11 @@ export async function getAutoExecutionStatus(): Promise<AutoExecutionStatus> {
 
 export async function setAutoExecution(
   enabled: boolean,
-  userRole: 'viewer' | 'operator' | 'admin' = 'operator',
 ): Promise<AutoExecutionStatus> {
   const response = await fetch(buildApiUrl('/api/v1/strategy/auto-execution'), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'X-User-Role': userRole,
-      'X-CSRF-Token': 'strategy-auto-execution',
     },
     body: JSON.stringify({ enabled }),
   })
@@ -167,14 +265,14 @@ export async function setAutoExecution(
 export async function validateAiConfig(config: Partial<AiConfig>, pair = 'EUR/USD') {
   const response = await fetch(buildApiUrl(`/api/v1/ai/config/validate?pair=${encodeURIComponent(pair)}`), {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-User-Role': 'admin', 'X-CSRF-Token': 'ai-config-validate' },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(config),
   })
   if (!response.ok) throw new Error('AI config validation rejected')
   return response.json() as Promise<{ valid: boolean; pair: string; effectiveConfig: AiConfig }>
 }
 
-export type AiHyperoptCandidateRow = { rank: number; entryThreshold?: string; maxSpreadPct?: string; parameters?: Record<string, string | number | boolean>; objective: string; trainNetPl: string; validationNetPl: string; validationDrawdown: string; validationTrades: number; coverage: number }
+export type AiHyperoptCandidateRow = { rank: number; entryThreshold?: string; maxSpreadPct?: string; parameters?: Record<string, string | number | boolean>; minimal_roi?: Record<string, number>; roi_parameters?: Record<string, number>; roi_volatility_per_5m?: number; roi_volatility_regime?: 'low' | 'medium' | 'high'; objective: string; trainNetPl: string; validationNetPl: string; validationDrawdown: string; validationTrades: number; coverage: number }
 
 export type AiHyperoptReport = {
   pair: string
@@ -203,6 +301,10 @@ export type AiHyperoptReport = {
   trainCandles: number
   validationCandles: number
   bestParameters: Record<string, string | number | boolean>
+  bestMinimalRoi?: Record<string, number>
+  roiParameters?: Record<string, number>
+  bestRoiVolatilityPer5m?: number
+  bestRoiVolatilityRegime?: 'low' | 'medium' | 'high'
   objective: string
   train: { netPl: string; drawdown: string; trades: number }
   validation: { netPl: string; drawdown: string; trades: number }
@@ -228,7 +330,7 @@ export type AiHyperoptStatus = {
 export async function startAiHyperopt(payload: { pair: string; timeframe: string; strategyClass?: string; freqaimodel?: AiFreqaiModel; steps: number; attempts: number; historyMode?: 'candles' | 'days'; historyValue?: number; resetPrevious?: boolean; hyperoptLoss?: string }): Promise<{ pair: string; status: string; freqaimodel?: AiFreqaiModel; attemptsTotal: number; warning?: string }> {
   const response = await fetch(buildApiUrl('/api/v1/ai/hyperopt/start'), {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-User-Role': 'operator', 'X-CSRF-Token': 'ai-hyperopt' },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ resetPrevious: true, ...payload }),
   })
   if (!response.ok) {
@@ -257,7 +359,7 @@ export async function getAiHyperoptStatus(pair = 'EUR/USD', strategyClass?: stri
 export async function stopAiHyperopt(pair = 'EUR/USD', strategyClass?: string, timeframe?: string) {
   const response = await fetch(buildApiUrl('/api/v1/ai/hyperopt/stop'), {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-User-Role': 'operator', 'X-CSRF-Token': 'ai-hyperopt-stop' },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ pair, strategyClass, timeframe }),
   })
   if (!response.ok) {
@@ -315,7 +417,7 @@ export async function getAiHyperoptScheduler(strategyClass?: string, timeframe?:
 export async function saveAiHyperoptScheduler(config: { enabled: boolean; intervalDays: number; gapMinutes: number; pairs: string[]; strategyClass: string; freqaimodel: AiFreqaiModel; timeframe: string; pairStrategies: Record<string, string>; pairTimeframes: Record<string, string> }): Promise<AiHyperoptScheduler> {
   const response = await fetch(buildApiUrl('/api/v1/ai/hyperopt/scheduler'), {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-User-Role': 'operator', 'X-CSRF-Token': 'hyperopt-scheduler' },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(config),
   })
   if (!response.ok) {
@@ -329,7 +431,6 @@ export async function saveAiHyperoptScheduler(config: { enabled: boolean; interv
 export async function runAiHyperoptSchedulerNow(): Promise<{ status: string; pairs: string[]; jobs?: Array<{ pair: string; status: string; freqaimodel?: AiFreqaiModel; attemptsCompleted?: number; warning?: string }>; warnings?: string[] }> {
   const response = await fetch(buildApiUrl('/api/v1/ai/hyperopt/scheduler/run-now'), {
     method: 'POST',
-    headers: { 'X-User-Role': 'operator', 'X-CSRF-Token': 'hyperopt-scheduler-run' },
   })
   if (!response.ok) throw new Error('Scheduled Hyperopt start rejected')
   return response.json() as Promise<{ status: string; pairs: string[]; jobs?: Array<{ pair: string; status: string; freqaimodel?: AiFreqaiModel; attemptsCompleted?: number; warning?: string }>; warnings?: string[] }>
@@ -563,10 +664,9 @@ export async function getBrokerPendingOrders(): Promise<BrokerPendingOrder[]> {
   return response.json() as Promise<BrokerPendingOrder[]>
 }
 
-export async function closeManualPosition(tradeId: string, userRole: 'viewer' | 'operator' | 'admin') {
+export async function closeManualPosition(tradeId: string) {
   const response = await fetch(buildApiUrl(`/api/v1/positions/${encodeURIComponent(tradeId)}/close`), {
     method: 'POST',
-    headers: { 'X-User-Role': userRole, 'X-CSRF-Token': 'manual-close' },
   })
   if (!response.ok) {
     let detail = 'Position close rejected by broker'
@@ -579,11 +679,10 @@ export async function closeManualPosition(tradeId: string, userRole: 'viewer' | 
 export async function modifyManualPosition(
   tradeId: string,
   prices: { stopLoss: string; takeProfit: string; trailingStopLossDistance?: string | null },
-  userRole: 'viewer' | 'operator' | 'admin',
 ) {
   const response = await fetch(buildApiUrl(`/api/v1/positions/${encodeURIComponent(tradeId)}/modify`), {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-User-Role': userRole, 'X-CSRF-Token': 'manual-modify' },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       stopLoss: prices.stopLoss || null,
       takeProfit: prices.takeProfit || null,
@@ -601,7 +700,7 @@ export async function modifyManualPosition(
 async function brokerAction<T>(path: string, payload: Record<string, string | null>): Promise<T> {
   const response = await fetch(buildApiUrl(path), {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-User-Role': 'operator', 'X-CSRF-Token': 'risk-control' },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   })
   if (!response.ok) {
@@ -635,11 +734,10 @@ export function createAverageEntryOrder(
 export async function modifyPendingOrder(
   orderId: string,
   details: { price: string; units: string },
-  userRole: 'viewer' | 'operator' | 'admin',
 ) {
   const response = await fetch(buildApiUrl(`/api/v1/orders/${encodeURIComponent(orderId)}/modify`), {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-User-Role': userRole, 'X-CSRF-Token': 'pending-order-modify' },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(details),
   })
   if (!response.ok) {
@@ -675,7 +773,7 @@ export async function getRiskConfig(pair = 'EUR/USD'): Promise<RiskConfig> {
 }
 
 export async function saveRiskConfig(config: RiskConfig): Promise<RiskConfig> {
-  const response = await fetch(buildApiUrl('/api/v1/account/risk/config'), { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-User-Role': 'operator', 'X-CSRF-Token': 'risk-config' }, body: JSON.stringify(config) })
+  const response = await fetch(buildApiUrl('/api/v1/account/risk/config'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(config) })
   if (!response.ok) throw new Error('Risk config rejected')
   return response.json() as Promise<RiskConfig>
 }
@@ -935,11 +1033,7 @@ export async function getAiStatus(pair = 'EUR/USD'): Promise<AiStatus> {
 export async function saveAiConfig(config: AiConfig, pair = 'EUR/USD') {
   const response = await fetch(buildApiUrl(`/api/v1/ai/config?pair=${encodeURIComponent(pair)}`), {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-User-Role': 'admin',
-      'X-CSRF-Token': 'ui-config-save',
-    },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(config),
   })
 
@@ -953,11 +1047,7 @@ export async function saveAiConfig(config: AiConfig, pair = 'EUR/USD') {
 export async function saveAiReview(review: { status: 'pending' | 'approved' | 'rejected'; notes: string; pair?: string; timeframe?: string; strategyClass?: string; requireOptimization?: boolean; guardrails?: string[] }) {
   const response = await fetch(buildApiUrl('/api/v1/ai/review'), {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-User-Role': 'operator',
-      'X-CSRF-Token': 'review-approval',
-    },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(review),
   })
 
@@ -1000,6 +1090,7 @@ export type BacktestRunResult = {
     modelReused?: boolean | null
     modelTraining?: Record<string, unknown> | null
     strategyParameters?: Record<string, string | number | boolean>
+    minimalRoi?: Record<string, number>
     backtestReport?: Record<string, unknown> | null
     [key: string]: unknown
   }
@@ -1023,7 +1114,7 @@ export async function clearAiResearchCache(payload: { pair: string; timeframe: s
 }> {
   const response = await fetch(buildApiUrl('/api/v1/ai/research-cache/clear'), {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-User-Role': 'operator', 'X-CSRF-Token': 'ai-research-cache-clear' },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   })
   if (!response.ok) {
@@ -1043,11 +1134,7 @@ export async function clearAiResearchCache(payload: { pair: string; timeframe: s
 export async function runBacktest(payload: { pair: string; timeframe: string; strategyClass?: string; freqaimodel?: string; steps: number; historyMode?: 'candles' | 'days'; historyValue?: number }): Promise<BacktestRunResult> {
   const response = await fetch(buildApiUrl('/api/v1/backtests/run'), {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-User-Role': 'operator',
-      'X-CSRF-Token': 'demo-backtest',
-    },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ...payload, trackProgress: true }),
   })
 
@@ -1069,25 +1156,18 @@ export async function submitMarketOrder(
     clientOrderId?: string
     riskPercent?: number
   },
-  userRole: 'viewer' | 'operator' | 'admin' = 'operator',
 ) {
   const payload = {
     ...order,
     units: order.units ?? order.volume,
     clientOrderId: order.clientOrderId ?? `ui-${Date.now()}`,
-    role: userRole,
-    csrf_token: 'demo-token',
     stopLoss: order.stopLoss,
     takeProfit: order.takeProfit,
   }
 
   const response = await fetch(buildApiUrl('/api/v1/orders/market'), {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-User-Role': userRole,
-      'X-CSRF-Token': 'demo-token',
-    },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   })
 
@@ -1115,15 +1195,10 @@ export async function submitLimitOrder(
     takeProfit?: string
     clientOrderId?: string
   },
-  userRole: 'viewer' | 'operator' | 'admin' = 'operator',
 ) {
   const response = await fetch(buildApiUrl('/api/v1/orders/limit'), {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'X-User-Role': userRole,
-      'X-CSRF-Token': 'manual-limit-order',
-    },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       ...order,
       clientOrderId: order.clientOrderId ?? createManualClientOrderId(),

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -219,6 +220,7 @@ def _clear_cached_ai_models(pair: str) -> list[str]:
 def format_hyperopt_report(report: dict) -> str:
     """Format baseline and generic strategy Hyperopt results."""
     best_parameters = report.get("bestParameters") or {}
+    best_minimal_roi = report.get("bestMinimalRoi") or {}
     parameter_text = lambda parameters: " ".join(
         f"{name}={value}{'%' if name == 'maxSpreadPct' else ''}"
         for name, value in parameters.items()
@@ -235,6 +237,14 @@ def format_hyperopt_report(report: dict) -> str:
         f"  Strategy: {report.get('strategy', 'ForexAIStrategyBaseline')}",
         f"  Loss function: {report.get('hyperoptLoss', 'ProfitDrawDownHyperOptLoss')}",
         f"  Best parameters: {parameter_text(best_parameters)}",
+        f"  Best minimal ROI: {parameter_text(best_minimal_roi)}",
+        (
+            f"  ROI volatility: {report['bestRoiVolatilityRegime']} "
+            f"({float(report['bestRoiVolatilityPer5m']) * 100:.4f}% typical range per 5m)"
+            if report.get("bestRoiVolatilityRegime") is not None
+            and report.get("bestRoiVolatilityPer5m") is not None
+            else "  ROI volatility: not available"
+        ),
         f"  Objective: {report['objective']}",
         f"  Train:      net P/L {report['train']['netPl']}  drawdown {report['train']['drawdown']}  trades {report['train']['trades']}",
         f"  Validation: net P/L {report['validation']['netPl']}  drawdown {report['validation']['drawdown']}  trades {report['validation']['trades']}",
@@ -250,6 +260,7 @@ def format_hyperopt_report(report: dict) -> str:
         }
         lines.append(
             f"    #{candidate['rank']} {parameter_text(parameters)}"
+            f" minimal_roi={parameter_text(candidate.get('minimal_roi') or {})}"
             f" objective={candidate['objective']} val P/L={sign}{candidate['validationNetPl']}"
             f" trades={candidate['validationTrades']}"
         )
@@ -292,12 +303,34 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         allow_headers=["*"],
     )
     ledger = PaperLedger(ledger_path)
-    SESSION_USERS = {
-        "viewer": {"username": "viewer", "password": "viewer", "role": "viewer"},
-        "operator": {"username": "operator", "password": "operator", "role": "operator"},
-        "admin": {"username": "admin", "password": "admin", "role": "admin"},
-    }
+    configured_users = os.environ.get("FOREX_API_USERS_JSON", "")
+    try:
+        raw_users = json.loads(configured_users) if configured_users else {}
+    except json.JSONDecodeError as exc:
+        raise ValueError("FOREX_API_USERS_JSON must contain a JSON object") from exc
+    if not isinstance(raw_users, dict):
+        raise ValueError("FOREX_API_USERS_JSON must contain a JSON object")
+    SESSION_USERS: dict[str, dict[str, str]] = {}
+    for username, user_config in raw_users.items():
+        if (
+            not isinstance(username, str)
+            or not username.strip()
+            or not isinstance(user_config, dict)
+        ):
+            raise ValueError("FOREX_API_USERS_JSON entries must map usernames to user objects")
+        password = user_config.get("password")
+        role = user_config.get("role")
+        if not isinstance(password, str) or len(password) < 12:
+            raise ValueError("configured API user passwords must be at least 12 characters")
+        if not isinstance(role, str) or role not in {"viewer", "operator", "admin"}:
+            raise ValueError("configured API user role must be viewer, operator, or admin")
+        SESSION_USERS[username] = {
+            "username": username,
+            "password": password,
+            "role": str(role),
+        }
     ACTIVE_SESSIONS: dict[str, dict[str, str]] = {}
+    session_lifetime = timedelta(hours=8)
     AUDIT_LOGS: list[dict] = []
     ORDER_HISTORY: list[dict] = []
     chart_cache: dict[tuple[str, str, int, str], tuple[float, dict]] = {}
@@ -348,7 +381,18 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
     def resolve_session_user(session_token: str | None) -> dict[str, str] | None:
         if not session_token:
             return None
-        return ACTIVE_SESSIONS.get(session_token)
+        session_user = ACTIVE_SESSIONS.get(session_token)
+        if session_user is None:
+            return None
+        try:
+            expires_at = float(session_user["expiresAt"])
+        except (KeyError, ValueError):
+            ACTIVE_SESSIONS.pop(session_token, None)
+            return None
+        if datetime.now(timezone.utc).timestamp() >= expires_at:
+            ACTIVE_SESSIONS.pop(session_token, None)
+            return None
+        return session_user
 
     def validate_write_access(
         user_role: str | None,
@@ -356,23 +400,17 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         session_token: str | None = None,
     ) -> None:
         session_user = resolve_session_user(session_token)
-        if user_role is not None and session_user is not None and user_role != session_user["role"]:
-            raise HTTPException(status_code=403, detail="Forbidden: session role does not match request role")
         if session_user is None:
-            if user_role == "viewer":
-                raise HTTPException(status_code=403, detail="Forbidden: viewer role cannot submit orders")
-            if not csrf_token:
-                raise HTTPException(status_code=403, detail="Missing CSRF token")
-            if user_role not in {"operator", "admin"}:
-                raise HTTPException(status_code=403, detail="Forbidden: invalid role for write actions")
-            return
-
-        if user_role is None:
-            raise HTTPException(status_code=403, detail="Forbidden: user role required for write actions")
-        if not csrf_token:
-            raise HTTPException(status_code=403, detail="Missing CSRF token")
+            raise HTTPException(status_code=401, detail="Missing or invalid session token")
+        if user_role != session_user["role"]:
+            raise HTTPException(status_code=403, detail="Forbidden: session role does not match request role")
         if user_role not in {"operator", "admin"}:
             raise HTTPException(status_code=403, detail="Forbidden: invalid role for write actions")
+        expected_csrf = session_user.get("csrfToken", "")
+        if not csrf_token:
+            raise HTTPException(status_code=403, detail="Missing CSRF token")
+        if not hmac.compare_digest(csrf_token, expected_csrf):
+            raise HTTPException(status_code=403, detail="Invalid CSRF token")
 
     def resolve_setup_paths() -> tuple[Path, Path]:
         config_path = Path(os.environ.get("OANDA_CONFIG_PATH", "user_data/config.json"))
@@ -1358,8 +1396,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         payload: dict,
         user_role: str | None = Header(default=None, alias="X-User-Role"),
         csrf_token: str | None = Header(default=None, alias="X-CSRF-Token"),
+        session_token: str | None = Header(default=None, alias="X-Session-Token"),
     ) -> dict:
-        validate_write_access(user_role, csrf_token)
+        validate_write_access(user_role, csrf_token, session_token)
         pair = str(payload.get("pair", "EUR/USD"))
         current = risk_config_for_pair(pair)
         candidate = dict(current)
@@ -1588,6 +1627,15 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                         freqtrade_timeframe(approved_timeframe),
                         normalized_pair,
                         parameter_values=parameters if isinstance(parameters, dict) else None,
+                        minimal_roi=(
+                            hyperopt.get("minimal_roi", hyperopt.get("bestMinimalRoi"))
+                            if isinstance(hyperopt, dict)
+                            and isinstance(
+                                hyperopt.get("minimal_roi", hyperopt.get("bestMinimalRoi")),
+                                dict,
+                            )
+                            else None
+                        ),
                     )
                     informative_candles = {}
                     for informative_timeframe in strategy_informative_timeframes(strategy, normalized_pair):
@@ -1684,6 +1732,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         csrf_token: str | None = Header(default=None, alias="X-CSRF-Token"),
         session_token: str | None = Header(default=None, alias="X-Session-Token"),
     ) -> dict:
+        validate_write_access(user_role, csrf_token, session_token)
         session_user = resolve_session_user(session_token)
         environment_name = str(payload.get("environment", "practice")).lower()
         execution_mode = str(payload.get("executionMode", "Practice")).lower()
@@ -1736,13 +1785,26 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
     @app.post("/api/v1/auth/login")
     async def login(payload: dict) -> dict:
         username = str(payload.get("username", "")).strip()
-        password = str(payload.get("password", "")).strip()
+        password = payload.get("password")
+        if not SESSION_USERS:
+            raise HTTPException(status_code=503, detail="No API users are configured")
         user = SESSION_USERS.get(username)
-        if not user or user["password"] != password:
+        if (
+            not user
+            or not isinstance(password, str)
+            or not hmac.compare_digest(user["password"], password)
+        ):
             raise HTTPException(status_code=401, detail="Invalid username or password")
 
         session_token = create_session_token()
-        ACTIVE_SESSIONS[session_token] = {"username": username, "role": user["role"]}
+        csrf_token = create_session_token()
+        expires_at = datetime.now(timezone.utc) + session_lifetime
+        ACTIVE_SESSIONS[session_token] = {
+            "username": username,
+            "role": user["role"],
+            "csrfToken": csrf_token,
+            "expiresAt": str(expires_at.timestamp()),
+        }
         record_audit_event(
             "auth.login",
             details={"username": username, "role": user["role"], "sessionCreated": True},
@@ -1753,7 +1815,8 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         return {
             "user": {"username": username, "role": user["role"]},
             "sessionToken": session_token,
-            "expiresIn": 3600,
+            "csrfToken": csrf_token,
+            "expiresIn": int(session_lifetime.total_seconds()),
         }
 
     @app.get("/api/v1/auth/session")
@@ -1779,6 +1842,26 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             "role": session_user["role"],
             "sessionToken": token,
         }
+
+    @app.post("/api/v1/auth/logout")
+    async def logout(
+        session_token: str | None = Header(default=None, alias="X-Session-Token"),
+        csrf_token: str | None = Header(default=None, alias="X-CSRF-Token"),
+    ) -> dict:
+        session_user = resolve_session_user(session_token)
+        if session_user is None:
+            raise HTTPException(status_code=401, detail="Missing or invalid session token")
+        expected_csrf = session_user.get("csrfToken", "")
+        if not csrf_token or not hmac.compare_digest(csrf_token, expected_csrf):
+            raise HTTPException(status_code=403, detail="Invalid CSRF token")
+        ACTIVE_SESSIONS.pop(session_token, None)
+        record_audit_event(
+            "auth.logout",
+            username=session_user["username"],
+            role=session_user["role"],
+            allowed=True,
+        )
+        return {"loggedOut": True}
 
     @app.post("/api/v1/orders/market")
     async def submit_market_order(
@@ -2523,7 +2606,13 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         return {"environment": env.value, "accountId": account_value, "instruments": items}
 
     @app.post("/api/v1/setup/discover")
-    async def setup_discover(payload: dict) -> dict:
+    async def setup_discover(
+        payload: dict,
+        user_role: str | None = Header(default=None, alias="X-User-Role"),
+        csrf_token: str | None = Header(default=None, alias="X-CSRF-Token"),
+        session_token: str | None = Header(default=None, alias="X-Session-Token"),
+    ) -> dict:
+        validate_write_access(user_role, csrf_token, session_token)
         token = str(payload.get("token", "")).strip()
         environment_name = str(payload.get("environment", "practice")).strip().lower()
         if not token:
@@ -2541,7 +2630,13 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         return {"environment": environment.value, **result}
 
     @app.post("/api/v1/setup")
-    async def save_setup(payload: dict) -> dict:
+    async def save_setup(
+        payload: dict,
+        user_role: str | None = Header(default=None, alias="X-User-Role"),
+        csrf_token: str | None = Header(default=None, alias="X-CSRF-Token"),
+        session_token: str | None = Header(default=None, alias="X-Session-Token"),
+    ) -> dict:
+        validate_write_access(user_role, csrf_token, session_token)
         token = str(payload.get("token", "")).strip()
         account_id = str(payload.get("accountId", "")).strip()
         environment = str(payload.get("environment", "practice")).strip().lower()
@@ -2691,7 +2786,13 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         }
 
     @app.post("/api/v1/setup/runtime")
-    async def control_setup_runtime(payload: dict) -> dict:
+    async def control_setup_runtime(
+        payload: dict,
+        user_role: str | None = Header(default=None, alias="X-User-Role"),
+        csrf_token: str | None = Header(default=None, alias="X-CSRF-Token"),
+        session_token: str | None = Header(default=None, alias="X-Session-Token"),
+    ) -> dict:
+        validate_write_access(user_role, csrf_token, session_token)
         action = str(payload.get("action", "")).strip().lower()
         actions = {
             "reload": ("running", True, "Configuration reload requested; the worker must reload before its next cycle."),
@@ -2911,7 +3012,14 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         )
 
     @app.post("/api/v1/setup/files/{file_kind}")
-    async def upload_setup_file(file_kind: str, payload: dict) -> dict:
+    async def upload_setup_file(
+        file_kind: str,
+        payload: dict,
+        user_role: str | None = Header(default=None, alias="X-User-Role"),
+        csrf_token: str | None = Header(default=None, alias="X-CSRF-Token"),
+        session_token: str | None = Header(default=None, alias="X-Session-Token"),
+    ) -> dict:
+        validate_write_access(user_role, csrf_token, session_token)
         config_path, strategy_path = resolve_setup_paths()
         paths = {
             "config": config_path,
@@ -3088,6 +3196,14 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                         normalized_pair,
                         parameter_values=(
                             parameter_values if isinstance(parameter_values, dict) else None
+                        ),
+                        minimal_roi=(
+                            hyperopt.get("minimal_roi", hyperopt.get("bestMinimalRoi"))
+                            if isinstance(
+                                hyperopt.get("minimal_roi", hyperopt.get("bestMinimalRoi")),
+                                dict,
+                            )
+                            else None
                         ),
                     )
                     informative_candles = {}
@@ -3268,6 +3384,10 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 candidates = [
                     {
                         "parameters": item.get("parameters", {}),
+                        "minimal_roi": item.get("minimal_roi"),
+                        "roi_parameters": item.get("roi_parameters", {}),
+                        "roi_volatility_per_5m": item.get("roi_volatility_per_5m"),
+                        "roi_volatility_regime": item.get("roi_volatility_regime"),
                         "objective": str(item.get("objective", "0")),
                         "trainNetPl": str(item.get("trainNetPl", "0")),
                         "validationNetPl": str(item.get("validationNetPl", item.get("validation_net_pl", "0"))),
@@ -3331,6 +3451,10 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "entryThreshold": str(best.get("entryThreshold", "")),
                 "maxSpreadPct": str(best.get("maxSpreadPct", "")),
                 "parameters": best.get("parameters", {}),
+                "minimal_roi": best.get("minimal_roi"),
+                "roi_parameters": best.get("roi_parameters", {}),
+                "roi_volatility_per_5m": best.get("roi_volatility_per_5m"),
+                "roi_volatility_regime": best.get("roi_volatility_regime"),
                 "objective": str(best["objective"]),
                 "updatedAt": completed_at,
                 "dataRevision": completed_at,
@@ -3372,6 +3496,10 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     "entryThreshold": str(best.get("entryThreshold", "")),
                     "maxSpreadPct": str(best.get("maxSpreadPct", "")),
                 }),
+                "bestMinimalRoi": dict(best.get("minimal_roi") or {}),
+                "roiParameters": dict(best.get("roi_parameters") or {}),
+                "bestRoiVolatilityPer5m": best.get("roi_volatility_per_5m"),
+                "bestRoiVolatilityRegime": best.get("roi_volatility_regime"),
                 "objective": str(best["objective"]),
                 "train": {
                     "netPl": str(best.get("trainNetPl", "0")),
@@ -3383,7 +3511,6 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     "drawdown": str(best["validationDrawdown"]),
                     "trades": int(best["validationTrades"]),
                 },
-                "trainingContext": training_context,
                 "candidates": [{"rank": rank, **candidate} for rank, candidate in enumerate(candidates, start=1)],
             }
             report["reportText"] = format_hyperopt_report(report)
@@ -3401,8 +3528,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         payload: dict,
         user_role: str | None = Header(default=None, alias="X-User-Role"),
         csrf_token: str | None = Header(default=None, alias="X-CSRF-Token"),
+        session_token: str | None = Header(default=None, alias="X-Session-Token"),
     ) -> dict:
-        validate_write_access(user_role, csrf_token)
+        validate_write_access(user_role, csrf_token, session_token)
         pair = normalize_pair(str(payload.get("pair", "EUR/USD")))
         timeframe = str(payload.get("timeframe", "M5")).upper()
         clear_candles = bool(payload.get("candles", True))
@@ -3442,8 +3570,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         payload: dict,
         user_role: str | None = Header(default=None, alias="X-User-Role"),
         csrf_token: str | None = Header(default=None, alias="X-CSRF-Token"),
+        session_token: str | None = Header(default=None, alias="X-Session-Token"),
     ) -> dict:
-        validate_write_access(user_role, csrf_token)
+        validate_write_access(user_role, csrf_token, session_token)
         pairs = [str(item) for item in payload.get("pairs", [payload.get("pair", "EUR/USD")])]
         pairs = list(dict.fromkeys(pairs))
         normalized_pair = pairs[0].replace("_", "/").upper()
@@ -3502,9 +3631,12 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 name: value
                 for strategy_type in reversed(type(candidate_strategy).__mro__)
                 for name, value in vars(strategy_type).items()
-                if isinstance(value, BaseParameter) and value.optimize
+                if isinstance(value, BaseParameter)
+                and value.optimize
+                and value.space not in {"sell", "exit"}
+                and not name.startswith(("sell_", "exit_"))
             }
-            if not optimizable_parameters:
+            if not optimizable_parameters and not candidate_strategy.minimal_roi:
                 raise HTTPException(status_code=400, detail=f"{strategy_class_name} has no optimizable Freqtrade parameters")
         if strategy_class_name != "ForexAIStrategyBaseline" and len(pairs) != 1:
             raise HTTPException(status_code=400, detail="Custom strategy Hyperopt currently runs one pair per job")
@@ -3666,8 +3798,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         payload: dict,
         user_role: str | None = Header(default=None, alias="X-User-Role"),
         csrf_token: str | None = Header(default=None, alias="X-CSRF-Token"),
+        session_token: str | None = Header(default=None, alias="X-Session-Token"),
     ) -> dict:
-        validate_write_access(user_role, csrf_token)
+        validate_write_access(user_role, csrf_token, session_token)
         normalized_pair = normalize_pair(str(payload.get("pair", "EUR/USD")))
         pair_config = ai_config_for_pair(normalized_pair)
         strategy_class = str(payload.get("strategyClass") or pair_config.get("strategyClass", "ForexAIStrategyBaseline"))
@@ -3804,7 +3937,23 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     "hyperoptLoss": hyperopt.get("hyperoptLoss", "ProfitDrawDownHyperOptLoss"),
                     "resetPrevious": False,
                 }
-                started_job = await ai_hyperopt_start(payload, user_role="operator", csrf_token="scheduled-hyperopt")
+                system_session_token = create_session_token()
+                system_csrf_token = create_session_token()
+                ACTIVE_SESSIONS[system_session_token] = {
+                    "username": "scheduled-hyperopt",
+                    "role": "operator",
+                    "csrfToken": system_csrf_token,
+                    "expiresAt": str((datetime.now(timezone.utc) + session_lifetime).timestamp()),
+                }
+                try:
+                    started_job = await ai_hyperopt_start(
+                        payload,
+                        user_role="operator",
+                        csrf_token=system_csrf_token,
+                        session_token=system_session_token,
+                    )
+                finally:
+                    ACTIVE_SESSIONS.pop(system_session_token, None)
                 warning = str(started_job.get("warning") or "")
                 if warning:
                     warnings.append(warning)
@@ -3861,8 +4010,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         payload: dict,
         user_role: str | None = Header(default=None, alias="X-User-Role"),
         csrf_token: str | None = Header(default=None, alias="X-CSRF-Token"),
+        session_token: str | None = Header(default=None, alias="X-Session-Token"),
     ) -> dict:
-        validate_write_access(user_role, csrf_token)
+        validate_write_access(user_role, csrf_token, session_token)
         pairs = list(dict.fromkeys(normalize_pair(str(pair)) for pair in payload.get("pairs", [])))
         strategy_class = str(payload.get("strategyClass", AI_HYPEROPT_SCHEDULER["strategyClass"]))
         freqaimodel = str(
@@ -3917,8 +4067,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
     async def run_ai_hyperopt_scheduler_now(
         user_role: str | None = Header(default=None, alias="X-User-Role"),
         csrf_token: str | None = Header(default=None, alias="X-CSRF-Token"),
+        session_token: str | None = Header(default=None, alias="X-Session-Token"),
     ) -> dict:
-        validate_write_access(user_role, csrf_token)
+        validate_write_access(user_role, csrf_token, session_token)
         return await run_scheduled_hyperopt()
 
     @app.get("/api/v1/ai/review")
@@ -3933,11 +4084,11 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         payload: dict,
         user_role: str | None = Header(default=None, alias="X-User-Role"),
         csrf_token: str | None = Header(default=None, alias="X-CSRF-Token"),
+        session_token: str | None = Header(default=None, alias="X-Session-Token"),
     ) -> dict:
+        validate_write_access(user_role, csrf_token, session_token)
         if user_role not in {"operator", "admin"}:
             raise HTTPException(status_code=403, detail="Forbidden: invalid role for strategy approval")
-        if not csrf_token:
-            raise HTTPException(status_code=403, detail="Missing CSRF token")
 
         status = str(payload.get("status", "pending")).lower()
         pair = str(payload.get("pair", "EUR/USD")).replace("_", "/").upper()
@@ -3964,6 +4115,24 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     "entryThreshold": str(report_parameters.get("entryThreshold", "")),
                     "maxSpreadPct": str(report_parameters.get("maxSpreadPct", "")),
                     "parameters": report_parameters,
+                    "minimal_roi": report.get("bestMinimalRoi")
+                    or next(
+                        (
+                            candidate.get("minimal_roi")
+                            for candidate in report.get("candidates", [])
+                            if candidate.get("rank") == 1
+                        ),
+                        None,
+                    ),
+                    "roi_parameters": report.get("roiParameters")
+                    or next(
+                        (
+                            candidate.get("roi_parameters")
+                            for candidate in report.get("candidates", [])
+                            if candidate.get("rank") == 1
+                        ),
+                        {},
+                    ),
                     "objective": str(report.get("objective", "0")),
                     "updatedAt": str(stored_report.get("completedAt")),
                     "dataHash": report.get("dataHash"),
@@ -4137,7 +4306,14 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         return fallback_ai_review(pair, requested_timeframe, strategy_class)
 
     @app.post("/api/v1/ai/config")
-    async def save_ai_config(payload: dict, pair: str = "EUR/USD") -> dict:
+    async def save_ai_config(
+        payload: dict,
+        pair: str = "EUR/USD",
+        user_role: str | None = Header(default=None, alias="X-User-Role"),
+        csrf_token: str | None = Header(default=None, alias="X-CSRF-Token"),
+        session_token: str | None = Header(default=None, alias="X-Session-Token"),
+    ) -> dict:
+        validate_write_access(user_role, csrf_token, session_token)
         pair = str(payload.get("pair", pair))
         target_config = ai_config_for_pair(pair)
         candidate = dict(target_config)
@@ -4337,6 +4513,17 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 normalized_pair,
                 parameter_values=approved_run.get("parameters") if isinstance(approved_run, dict) else None,
                 config_overrides=strategy_config_overrides,
+                minimal_roi=(
+                    approved_run.get("minimal_roi", approved_run.get("bestMinimalRoi"))
+                    if isinstance(approved_run, dict)
+                    and isinstance(
+                        approved_run.get(
+                            "minimal_roi", approved_run.get("bestMinimalRoi")
+                        ),
+                        dict,
+                    )
+                    else None
+                ),
             )
             informative_timeframes = strategy_informative_timeframes(strategy_instance, normalized_pair)
         except ValueError as exc:
@@ -4425,6 +4612,26 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                         freqai_config=normalized_freqai_config,
                         informative_candles=informative_frames,
                         optimize_strategy=False,
+                        approved_strategy_parameters=(
+                            approved_run.get("parameters")
+                            if isinstance(approved_run, dict)
+                            and isinstance(approved_run.get("parameters"), dict)
+                            else None
+                        ),
+                        approved_minimal_roi=(
+                            approved_run.get(
+                                "minimal_roi", approved_run.get("bestMinimalRoi")
+                            )
+                            if isinstance(approved_run, dict)
+                            and isinstance(
+                                approved_run.get(
+                                    "minimal_roi",
+                                    approved_run.get("bestMinimalRoi"),
+                                ),
+                                dict,
+                            )
+                            else None
+                        ),
                         on_progress=update_model_backtest_progress,
                     )
                     result = model_backtest_report.pop("_backtest_result")
@@ -4568,6 +4775,11 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                             if model_backtest_report else None
                         ),
                         "strategyParameters": strategy_parameters,
+                        "minimalRoi": (
+                            model_backtest_report.get("minimal_roi")
+                            if model_backtest_report
+                            else dict(getattr(strategy_instance, "minimal_roi", {}))
+                        ),
                         "backtestReport": (
                             {
                                 key: value

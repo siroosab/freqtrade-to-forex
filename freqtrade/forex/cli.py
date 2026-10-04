@@ -124,7 +124,9 @@ def build_parser() -> argparse.ArgumentParser:
         "backtest", help="Run a read-only AI or EMA historical forex backtest"
     )
     backtest.add_argument("--pair", default="EUR/USD")
-    backtest.add_argument("--timeframe", default="5m", choices=("5m", "1h"))
+    backtest.add_argument(
+        "--timeframe", default="5m", choices=("1m", "5m", "15m", "1h")
+    )
     backtest.add_argument("--count", type=int, default=500)
     backtest.add_argument("--start", default=None, help="UTC ISO start for cached historical data")
     backtest.add_argument("--end", default=None, help="UTC ISO end for cached historical data")
@@ -150,7 +152,9 @@ def build_parser() -> argparse.ArgumentParser:
     backtest.add_argument("--financing-rate-per-day", type=Decimal, default=Decimal("0"))
     hyperopt = subparsers.add_parser("hyperopt", help="Optimize AI strategy parameters read-only")
     hyperopt.add_argument("--pair", default="EUR/USD")
-    hyperopt.add_argument("--timeframe", default="5m", choices=("5m", "1h"))
+    hyperopt.add_argument(
+        "--timeframe", default="5m", choices=("1m", "5m", "15m", "1h")
+    )
     hyperopt.add_argument("--count", type=int, default=500)
     hyperopt.add_argument("--start", default=None, help="UTC ISO start for cached historical data")
     hyperopt.add_argument("--end", default=None, help="UTC ISO end for cached historical data")
@@ -181,7 +185,9 @@ def build_parser() -> argparse.ArgumentParser:
         "download-data", help="Download and cache OANDA historical candles"
     )
     download.add_argument("--pair", default="EUR/USD")
-    download.add_argument("--timeframe", default="5m", choices=("5m", "1h"))
+    download.add_argument(
+        "--timeframe", default="5m", choices=("1m", "5m", "1h")
+    )
     download.add_argument("--count", type=int, default=500)
     download.add_argument("--start", default=None)
     download.add_argument("--end", default=None)
@@ -193,7 +199,9 @@ def build_parser() -> argparse.ArgumentParser:
         "cache-clear", help="Clear all or selected cached OANDA candles"
     )
     clear_cache.add_argument("--pair", default=None)
-    clear_cache.add_argument("--timeframe", default=None, choices=("5m", "1h"))
+    clear_cache.add_argument(
+        "--timeframe", default=None, choices=("1m", "5m", "1h")
+    )
     clear_cache.add_argument("--data-cache", default="user_data/data/oanda/candles.json")
     hyperopt.add_argument("--slippage", type=Decimal, default=Decimal("0"))
     hyperopt.add_argument("--financing-rate-per-day", type=Decimal, default=Decimal("0"))
@@ -913,7 +921,8 @@ async def run_hyperopt(settings: OandaSettings, args: argparse.Namespace) -> int
                 print(
                     f"Epoch {done}/{total} | objective={candidate['objective']} "
                     f"| validation_pl={candidate['validationNetPl']} "
-                    f"| params={candidate['parameters']}",
+                    f"| params={candidate['parameters']} "
+                    f"| minimal_roi={candidate.get('minimal_roi') or {}}",
                     flush=True,
                 )
 
@@ -947,6 +956,7 @@ async def run_hyperopt(settings: OandaSettings, args: argparse.Namespace) -> int
                     "hyperopt_loss": args.hyperopt_loss,
                     "candidates_tested": len(candidates),
                     "best": candidates[0],
+                    "best_minimal_roi": candidates[0].get("minimal_roi") or {},
                     "candidates": candidates,
                 }, indent=2, default=str),
                 encoding="utf-8",
@@ -965,6 +975,7 @@ async def run_hyperopt(settings: OandaSettings, args: argparse.Namespace) -> int
                 "freqaimodel": None,
                 "candidates_tested": len(candidates),
                 "best_parameters": candidates[0]["parameters"],
+                "best_minimal_roi": candidates[0].get("minimal_roi") or {},
                 "report_path": str(strategy_report_path),
             }, indent=2, default=str))
             return 0
@@ -1136,6 +1147,8 @@ def _run_lightgbm_hyperopt(
     freqai_config: dict[str, object] | None = None,
     informative_candles: dict[str, pd.DataFrame] | None = None,
     optimize_strategy: bool = True,
+    approved_strategy_parameters: dict[str, object] | None = None,
+    approved_minimal_roi: dict[str, object] | None = None,
     on_progress: Callable[[str, int, int], None] | None = None,
 ) -> tuple[Path, Path, dict[str, object]]:
     try:
@@ -1285,6 +1298,9 @@ def _run_lightgbm_hyperopt(
         )
     if cache_is_valid:
         model_reused = True
+        model_classes = [
+            str(item) for item in cache_metadata.get("classes", [])
+        ]
         if on_progress is not None:
             on_progress("model_reuse", 0, epochs)
         print(
@@ -1467,27 +1483,35 @@ def _run_lightgbm_hyperopt(
         )
         if classifier:
             class_names = model_classes
-            strategy_predictions = {}
             if all_predictions.ndim == 1:
-                for date, probability in zip(dataset["date"], all_predictions, strict=True):
-                    class_index = int(float(probability) >= 0.5)
-                    strategy_predictions[int(pd.Timestamp(date).value)] = {
-                        target_column: class_names[class_index],
-                        "do_predict": int(
-                            optimize_strategy
-                            or pd.Timestamp(date) >= oos_start_time
-                        ),
-                    }
+                strategy_classes = [
+                    class_names[int(float(probability) >= 0.5)]
+                    for probability in all_predictions
+                ]
+                strategy_confidence = np.maximum(
+                    all_predictions, 1.0 - all_predictions
+                )
             else:
-                for date, probabilities in zip(dataset["date"], all_predictions, strict=True):
-                    class_index = int(probabilities.argmax())
-                    strategy_predictions[int(pd.Timestamp(date).value)] = {
-                        target_column: class_names[class_index],
-                        "do_predict": int(
-                            optimize_strategy
-                            or pd.Timestamp(date) >= oos_start_time
-                        ),
-                    }
+                class_indices = all_predictions.argmax(axis=1)
+                strategy_classes = [
+                    class_names[int(index)] for index in class_indices
+                ]
+                strategy_confidence = all_predictions.max(axis=1)
+            strategy_predictions = {
+                int(pd.Timestamp(date).value): {
+                    target_column: selected_class,
+                    "freqai_confidence": float(confidence),
+                    "do_predict": int(
+                        optimize_strategy or pd.Timestamp(date) >= oos_start_time
+                    ),
+                }
+                for date, selected_class, confidence in zip(
+                    dataset["date"],
+                    strategy_classes,
+                    strategy_confidence,
+                    strict=True,
+                )
+            }
         else:
             strategy_predictions = {
                 int(pd.Timestamp(date).value): {
@@ -1504,8 +1528,8 @@ def _run_lightgbm_hyperopt(
             on_progress("strategy_hyperopt" if optimize_strategy else "backtest_oos", 0, epochs if optimize_strategy else 1)
         if not optimize_strategy:
             parameter_report_path = model_dir / f"{stem}.json"
-            strategy_parameters: dict[str, object] = {}
-            if parameter_report_path.is_file():
+            strategy_parameters = dict(approved_strategy_parameters or {})
+            if approved_strategy_parameters is None and parameter_report_path.is_file():
                 parameter_report = json.loads(
                     parameter_report_path.read_text(encoding="utf-8")
                 )
@@ -1523,6 +1547,7 @@ def _run_lightgbm_hyperopt(
                 pair,
                 parameter_values=strategy_parameters,
                 config_overrides={"freqai": freqai_config},
+                minimal_roi=approved_minimal_roi,
             )
             backtest_strategy.freqai_info = freqai_config
             from freqtrade.forex.strategy_execution import (
@@ -1531,10 +1556,12 @@ def _run_lightgbm_hyperopt(
             )
 
             backtest_strategy.freqai = CachedFreqAIPredictions(strategy_predictions)
+            backtest_adapter = FreqtradeStrategyAdapter(
+                backtest_strategy, pair, informative_candles
+            )
+            backtest_adapter.prepare_backtest(candles)
             backtest_result = ForexBacktester(
-                FreqtradeStrategyAdapter(
-                    backtest_strategy, pair, informative_candles
-                ),
+                backtest_adapter,
                 instrument,
                 starting_balance=starting_balance,
                 risk_fraction=risk_fraction,
@@ -1552,6 +1579,7 @@ def _run_lightgbm_hyperopt(
                 "strategy": strategy_class,
                 "model_reused": model_reused,
                 "strategy_parameters": strategy_parameters,
+                "minimal_roi": dict(backtest_strategy.minimal_roi),
                 "pair": pair.upper(),
                 "timeframe": timeframe,
                 "training_context_hash": training_context_hash,

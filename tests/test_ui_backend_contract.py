@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -15,6 +16,25 @@ from freqtrade.forex.models import OandaInstrument
 
 
 client = TestClient(app)
+
+
+def _auth_headers(test_client, role='operator'):
+    password = {
+        'viewer': 'test-viewer-password',
+        'operator': 'test-operator-password',
+        'admin': 'test-admin-password',
+    }[role]
+    response = test_client.post(
+        '/api/v1/auth/login',
+        json={'username': role, 'password': password},
+    )
+    assert response.status_code == 200, response.text
+    session = response.json()
+    return {
+        'X-Session-Token': session['sessionToken'],
+        'X-User-Role': role,
+        'X-CSRF-Token': session['csrfToken'],
+    }
 
 
 def test_freqai_minimum_history_uses_seven_days_and_feature_warmup():
@@ -230,7 +250,7 @@ def test_risk_protection_is_applied_to_the_open_oanda_trade(monkeypatch):
 
     response = client.post(
         '/api/v1/positions/risk-trade-1/risk-protection',
-        headers={'X-User-Role': 'operator', 'X-CSRF-Token': 'risk-control'},
+        headers=_auth_headers(client),
         json={'stopLoss': '1.0800', 'takeProfit': '1.1200'},
     )
 
@@ -296,7 +316,7 @@ def test_average_entry_creates_adverse_limit_order_linked_to_parent_trade(monkey
 
     response = client.post(
         '/api/v1/positions/parent-trade-1/average-entry',
-        headers={'X-User-Role': 'operator', 'X-CSRF-Token': 'risk-control'},
+        headers=_auth_headers(client),
         json={'units': '1500', 'price': '1.0800', 'stopLoss': '1.0700', 'takeProfit': '1.1200'},
     )
 
@@ -347,7 +367,7 @@ def test_average_entry_rejects_trade_not_currently_at_a_loss(monkeypatch):
 
     response = client.post(
         '/api/v1/positions/parent-trade-2/average-entry',
-        headers={'X-User-Role': 'operator', 'X-CSRF-Token': 'risk-control'},
+        headers=_auth_headers(client),
         json={'units': '1000', 'price': '1.0700'},
     )
 
@@ -402,7 +422,7 @@ def test_average_entry_uses_sell_units_and_adverse_price_for_losing_short(monkey
 
     response = client.post(
         '/api/v1/positions/parent-short-1/average-entry',
-        headers={'X-User-Role': 'operator', 'X-CSRF-Token': 'risk-control'},
+        headers=_auth_headers(client),
         json={'units': '500', 'price': '1.1000'},
     )
 
@@ -414,7 +434,7 @@ def test_risk_config_accepts_pips_for_post_trade_controls(tmp_path):
     with TestClient(create_app(tmp_path / 'risk-config.sqlite')) as scoped_client:
         response = scoped_client.post(
             '/api/v1/account/risk/config',
-            headers={'X-User-Role': 'operator', 'X-CSRF-Token': 'risk-config'},
+            headers=_auth_headers(scoped_client),
             json={
                 'pair': 'CHF/JPY',
                 'stopLoss': '15',
@@ -483,9 +503,26 @@ def test_orders_chart_accepts_supported_timeframe_and_requested_count(monkeypatc
     monkeypatch.setattr('freqtrade.forex.api.OandaSettings.from_environment', lambda: settings)
     monkeypatch.setattr('freqtrade.forex.api.ForexAIStrategyBaseline', FakeStrategy)
 
+    configured = client.post(
+        '/api/v1/ai/config?pair=EUR%2FUSD',
+        json={'timeframe': 'H1', 'strategyClass': 'ForexAIStrategyBaseline'},
+        headers=_auth_headers(client),
+    )
+    approved = client.post(
+        '/api/v1/ai/review',
+        json={
+            'status': 'approved',
+            'pair': 'EUR/USD',
+            'timeframe': 'H1',
+            'strategyClass': 'ForexAIStrategyBaseline',
+        },
+        headers=_auth_headers(client),
+    )
     response = client.get('/api/v1/orders/chart?pair=EUR%2FUSD&timeframe=H4&count=1000')
     repeated_response = client.get('/api/v1/orders/chart?pair=EUR%2FUSD&timeframe=H4&count=1000')
 
+    assert configured.status_code == 200, configured.text
+    assert approved.status_code == 200, approved.text
     assert response.status_code == 200, response.text
     assert response.json()['timeframe'] == 'H4'
     chart_trades = response.json()['trades']
@@ -557,15 +594,17 @@ def test_orders_chart_uses_approved_strategy_and_timeframe_after_config_change(t
         configured = scoped_client.post(
             '/api/v1/ai/config?pair=EUR%2FUSD',
             json={'timeframe': 'H1', 'strategyClass': 'FakeApprovedStrategy'},
+            headers=_auth_headers(scoped_client),
         )
         approved = scoped_client.post(
             '/api/v1/ai/review',
             json={'status': 'approved', 'pair': 'EUR/USD', 'timeframe': 'H1', 'strategyClass': 'FakeApprovedStrategy'},
-            headers={'X-User-Role': 'operator', 'X-CSRF-Token': 'review-approval'},
+            headers=_auth_headers(scoped_client),
         )
         changed = scoped_client.post(
             '/api/v1/ai/config?pair=EUR%2FUSD',
             json={'timeframe': 'M5', 'strategyClass': 'ForexAIStrategyBaseline'},
+            headers=_auth_headers(scoped_client),
         )
         chart = scoped_client.get('/api/v1/orders/chart?pair=EUR%2FUSD&timeframe=H4&count=120')
 
@@ -667,7 +706,7 @@ def test_backtest_run_warns_and_clears_old_cache_before_refresh(monkeypatch):
         def __init__(self, *args, **kwargs):
             pass
 
-        def run(self, frame):
+        def run(self, frame, **kwargs):
             return FakeResult()
 
     monkeypatch.setattr('freqtrade.forex.api._clear_cached_historical_data', fake_clear)
@@ -675,13 +714,14 @@ def test_backtest_run_warns_and_clears_old_cache_before_refresh(monkeypatch):
     monkeypatch.setattr('freqtrade.forex.api.OandaSettings.from_environment', lambda: type('Settings', (), {'token': 't', 'account_id': 'a', 'environment': type('Env', (), {'value': 'practice'})(), 'execution_mode': 'practice', 'risk_fraction': '0.01'})())
     monkeypatch.setattr('freqtrade.forex.api.ForexBacktester', FakeBacktester)
 
-    login = client.post('/api/v1/auth/login', json={'username': 'operator', 'password': 'operator'})
+    login = client.post('/api/v1/auth/login', json={'username': 'operator', 'password': 'test-operator-password'})
     token = login.json()['sessionToken']
+    csrf_token = login.json()['csrfToken']
 
     response = client.post(
         '/api/v1/backtests/run',
         json={'pair': 'EUR/USD', 'timeframe': 'M5', 'historyMode': 'candles', 'historyValue': 2},
-        headers={'X-Session-Token': token, 'X-User-Role': 'operator', 'X-CSRF-Token': 'demo-token'},
+        headers={'X-Session-Token': token, 'X-User-Role': 'operator', 'X-CSRF-Token': csrf_token},
     )
 
     assert response.status_code == 200, response.text
@@ -740,13 +780,14 @@ def test_hyperopt_start_warns_and_clears_old_cache_before_refresh(monkeypatch):
     monkeypatch.setattr('freqtrade.forex.ai_hyperopt.run_ai_hyperopt', fake_hyperopt)
     monkeypatch.setattr('freqtrade.forex.ai_hyperopt.run_ai_hyperopt_robust', lambda *args, **kwargs: [])
 
-    login = client.post('/api/v1/auth/login', json={'username': 'operator', 'password': 'operator'})
+    login = client.post('/api/v1/auth/login', json={'username': 'operator', 'password': 'test-operator-password'})
     token = login.json()['sessionToken']
+    csrf_token = login.json()['csrfToken']
 
     response = client.post(
         '/api/v1/ai/hyperopt/start',
         json={'pair': 'EUR/USD', 'timeframe': 'M5', 'historyMode': 'candles', 'historyValue': 2, 'attempts': 2},
-        headers={'X-Session-Token': token, 'X-User-Role': 'operator', 'X-CSRF-Token': 'demo-token'},
+        headers={'X-Session-Token': token, 'X-User-Role': 'operator', 'X-CSRF-Token': csrf_token},
     )
 
     assert response.status_code == 200, response.text
@@ -789,7 +830,7 @@ def test_ai_research_cache_clear_is_scoped_and_preserves_reports(tmp_path, monke
     response = client.post(
         '/api/v1/ai/research-cache/clear',
         json={'pair': 'CAD/JPY', 'timeframe': 'M5'},
-        headers={'X-User-Role': 'operator', 'X-CSRF-Token': 'ai-research-cache-clear'},
+        headers=_auth_headers(client),
     )
 
     assert response.status_code == 200, response.text
@@ -809,14 +850,14 @@ def test_order_submit_requires_operator_role_and_csrf_token():
     denied = client.post(
         '/api/v1/orders/market',
         json={'symbol': 'EUR/USD', 'side': 'BUY', 'volume': '1200'},
-        headers={'X-User-Role': 'viewer', 'X-CSRF-Token': 'demo-token'},
+        headers=_auth_headers(client, 'viewer'),
     )
     assert denied.status_code == 403, denied.text
 
     allowed = client.post(
         '/api/v1/orders/market',
         json={'symbol': 'EUR/USD', 'side': 'BUY', 'volume': '1200'},
-        headers={'X-User-Role': 'operator', 'X-CSRF-Token': 'demo-token'},
+        headers=_auth_headers(client),
     )
     assert allowed.status_code == 200, allowed.text
     payload = allowed.json()
@@ -852,7 +893,7 @@ def test_live_order_surfaces_shared_preflight_validation_error(monkeypatch):
             'stopLoss': '3470.32', 'takeProfit': '3416.82264',
             'clientOrderId': 'manual-ui-test',
         },
-        headers={'X-User-Role': 'operator', 'X-CSRF-Token': 'demo-token'},
+        headers=_auth_headers(client),
     )
 
     assert response.status_code == 400
@@ -888,7 +929,7 @@ def test_close_endpoint_closes_manual_trade_only(monkeypatch):
         'Settings', (), {'token': 'token', 'account_id': 'account', 'environment': environment}
     )()
     monkeypatch.setattr('freqtrade.forex.api.OandaSettings.from_environment', lambda: settings)
-    headers = {'X-User-Role': 'operator', 'X-CSRF-Token': 'test-token'}
+    headers = _auth_headers(client)
 
     manual = client.post('/api/v1/positions/manual-1/close', headers=headers)
     strategy = client.post('/api/v1/positions/strategy-1/close', headers=headers)
@@ -944,7 +985,7 @@ def test_modify_endpoint_updates_manual_trade_protection_only(monkeypatch):
         }
     )()
     monkeypatch.setattr('freqtrade.forex.api.OandaSettings.from_environment', lambda: settings)
-    headers = {'X-User-Role': 'operator', 'X-CSRF-Token': 'test-token'}
+    headers = _auth_headers(client)
 
     manual = client.post(
         '/api/v1/positions/manual-1/modify',
@@ -985,7 +1026,7 @@ def test_modify_endpoint_updates_manual_trade_protection_only(monkeypatch):
     assert conflict.status_code == 400
     assert 'cannot be set simultaneously' in conflict.json()['detail']
     assert invalid_distance.status_code == 400
-    assert unauthorized.status_code == 403
+    assert unauthorized.status_code == 401
     assert strategy.status_code == 403
     assert modified == [
         ('manual-1', '1.0900', '1.1100', None),
@@ -1052,7 +1093,7 @@ def test_pending_orders_are_broker_sourced_and_manual_modification_keeps_side(mo
         }
     )()
     monkeypatch.setattr('freqtrade.forex.api.OandaSettings.from_environment', lambda: settings)
-    headers = {'X-User-Role': 'operator', 'X-CSRF-Token': 'test-token'}
+    headers = _auth_headers(client)
 
     response = client.get('/api/v1/orders/pending')
     changed = client.post(
@@ -1110,7 +1151,7 @@ def test_limit_order_endpoint_creates_manual_practice_order(monkeypatch):
             'price': '1.0800', 'stopLoss': '1.0900', 'takeProfit': '1.0600',
             'clientOrderId': 'manual-ui-limit-1',
         },
-        headers={'X-User-Role': 'operator', 'X-CSRF-Token': 'test-token'},
+        headers=_auth_headers(client),
     )
 
     assert response.status_code == 200, response.text
@@ -1122,7 +1163,7 @@ def test_limit_order_endpoint_creates_manual_practice_order(monkeypatch):
 def test_login_returns_session_and_session_validation_works():
     login = client.post(
         '/api/v1/auth/login',
-        json={'username': 'operator', 'password': 'operator'},
+        json={'username': 'operator', 'password': 'test-operator-password'},
     )
     assert login.status_code == 200, login.text
     payload = login.json()
@@ -1139,29 +1180,100 @@ def test_login_returns_session_and_session_validation_works():
     denied = client.post(
         '/api/v1/orders/market',
         json={'symbol': 'EUR/USD', 'side': 'BUY', 'volume': '1200'},
-        headers={'X-Session-Token': payload['sessionToken'], 'X-CSRF-Token': 'demo-token'},
+        headers={'X-Session-Token': payload['sessionToken'], 'X-CSRF-Token': payload['csrfToken']},
     )
     assert denied.status_code == 403, denied.text
 
     allowed = client.post(
-        '/api/v1/orders/market',
-        json={'symbol': 'EUR/USD', 'side': 'BUY', 'volume': '1200'},
-        headers={'X-Session-Token': payload['sessionToken'], 'X-User-Role': 'operator', 'X-CSRF-Token': 'demo-token'},
+        '/api/v1/ops/validation',
+        json={'environment': 'practice', 'executionMode': 'Practice', 'instrument': 'EUR/USD'},
+        headers={
+            'X-Session-Token': payload['sessionToken'],
+            'X-User-Role': 'operator',
+            'X-CSRF-Token': payload['csrfToken'],
+        },
     )
     assert allowed.status_code == 200, allowed.text
+
+
+def test_logout_revokes_session_and_expired_sessions_are_rejected(monkeypatch):
+    login = client.post(
+        '/api/v1/auth/login',
+        json={'username': 'operator', 'password': 'test-operator-password'},
+    )
+    assert login.status_code == 200, login.text
+    payload = login.json()
+    assert payload['expiresIn'] == 8 * 60 * 60
+    headers = {
+        'X-Session-Token': payload['sessionToken'],
+        'X-CSRF-Token': payload['csrfToken'],
+    }
+    invalid_logout = client.post(
+        '/api/v1/auth/logout',
+        headers={**headers, 'X-CSRF-Token': 'invalid-token'},
+    )
+    assert invalid_logout.status_code == 403, invalid_logout.text
+    logged_out = client.post('/api/v1/auth/logout', headers=headers)
+    assert logged_out.status_code == 200, logged_out.text
+    revoked = client.get('/api/v1/auth/session', headers=headers)
+    assert revoked.status_code == 401, revoked.text
+
+    renewed_login = client.post(
+        '/api/v1/auth/login',
+        json={'username': 'operator', 'password': 'test-operator-password'},
+    )
+    renewed = renewed_login.json()
+    headers = {
+        'X-Session-Token': renewed['sessionToken'],
+        'X-CSRF-Token': renewed['csrfToken'],
+    }
+
+    from freqtrade.forex import api as api_module
+
+    real_datetime = datetime
+
+    class FutureDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return real_datetime.now(tz) + timedelta(hours=9)
+
+    monkeypatch.setattr(api_module, 'datetime', FutureDatetime)
+    expired = client.get('/api/v1/auth/session', headers=headers)
+    assert expired.status_code == 401, expired.text
+
+
+def test_setup_mutations_require_authenticated_session():
+    requests = (
+        client.post('/api/v1/setup/discover', json={'token': 'not-used'}),
+        client.post('/api/v1/setup', json={'token': 'not-used'}),
+        client.post('/api/v1/setup/runtime', json={'action': 'pause'}),
+        client.post('/api/v1/setup/files/config', json={'content': '{}'}),
+        client.post('/api/v1/ai/config', json={'strategyClass': 'ForexAIStrategyBaseline'}),
+    )
+    assert [response.status_code for response in requests] == [401, 401, 401, 401, 401]
+
+
+def test_login_fails_closed_when_no_api_users_are_configured(monkeypatch, tmp_path):
+    monkeypatch.delenv('FOREX_API_USERS_JSON', raising=False)
+    with TestClient(create_app(tmp_path / 'no-api-users.sqlite')) as unconfigured_client:
+        response = unconfigured_client.post(
+            '/api/v1/auth/login',
+            json={'username': 'operator', 'password': 'test-operator-password'},
+        )
+    assert response.status_code == 503, response.text
 
 
 def test_operation_preflight_validation_accepts_valid_session_and_rejects_invalid_role():
     login = client.post(
         '/api/v1/auth/login',
-        json={'username': 'operator', 'password': 'operator'},
+        json={'username': 'operator', 'password': 'test-operator-password'},
     )
     token = login.json()['sessionToken']
 
     valid = client.post(
         '/api/v1/ops/validation',
         json={'environment': 'practice', 'executionMode': 'Practice', 'instrument': 'EUR/USD'},
-        headers={'X-Session-Token': token, 'X-User-Role': 'operator', 'X-CSRF-Token': 'demo-token'},
+        headers={'X-Session-Token': token, 'X-User-Role': 'operator', 'X-CSRF-Token': login.json()['csrfToken']},
     )
     assert valid.status_code == 200, valid.text
     payload = valid.json()
@@ -1173,7 +1285,7 @@ def test_operation_preflight_validation_accepts_valid_session_and_rejects_invali
     invalid = client.post(
         '/api/v1/ops/validation',
         json={'environment': 'live', 'executionMode': 'Live', 'instrument': 'EUR/USD'},
-        headers={'X-Session-Token': token, 'X-User-Role': 'viewer', 'X-CSRF-Token': 'demo-token'},
+        headers={'X-Session-Token': token, 'X-User-Role': 'viewer', 'X-CSRF-Token': login.json()['csrfToken']},
     )
     assert invalid.status_code == 403, invalid.text
 
@@ -1247,8 +1359,9 @@ def test_practice_order_submit_uses_real_oanda_gateway(monkeypatch):
         )(),
     )
 
-    login = client.post('/api/v1/auth/login', json={'username': 'operator', 'password': 'operator'})
+    login = client.post('/api/v1/auth/login', json={'username': 'operator', 'password': 'test-operator-password'})
     token = login.json()['sessionToken']
+    csrf_token = login.json()['csrfToken']
 
     response = client.post(
         '/api/v1/orders/market',
@@ -1263,7 +1376,7 @@ def test_practice_order_submit_uses_real_oanda_gateway(monkeypatch):
         headers={
             'X-Session-Token': token,
             'X-User-Role': 'operator',
-            'X-CSRF-Token': 'demo-token',
+            'X-CSRF-Token': csrf_token,
         },
     )
 
@@ -1320,13 +1433,14 @@ def test_market_order_exposes_oanda_cancel_reason(monkeypatch):
         )(),
     )
 
-    login = client.post('/api/v1/auth/login', json={'username': 'operator', 'password': 'operator'})
+    login = client.post('/api/v1/auth/login', json={'username': 'operator', 'password': 'test-operator-password'})
     token = login.json()['sessionToken']
+    csrf_token = login.json()['csrfToken']
 
     response = client.post(
         '/api/v1/orders/market',
         json={'symbol': 'EUR/USD', 'side': 'BUY', 'units': 1200},
-        headers={'X-Session-Token': token, 'X-User-Role': 'operator', 'X-CSRF-Token': 'demo-token'},
+        headers={'X-Session-Token': token, 'X-User-Role': 'operator', 'X-CSRF-Token': csrf_token},
     )
 
     assert response.status_code == 200, response.text
@@ -1383,13 +1497,14 @@ def test_market_order_rejects_non_tradeable_instrument(monkeypatch):
         )(),
     )
 
-    login = client.post('/api/v1/auth/login', json={'username': 'operator', 'password': 'operator'})
+    login = client.post('/api/v1/auth/login', json={'username': 'operator', 'password': 'test-operator-password'})
     token = login.json()['sessionToken']
+    csrf_token = login.json()['csrfToken']
 
     response = client.post(
         '/api/v1/orders/market',
         json={'symbol': 'EUR/USD', 'side': 'BUY', 'units': 1200},
-        headers={'X-Session-Token': token, 'X-User-Role': 'operator', 'X-CSRF-Token': 'demo-token'},
+        headers={'X-Session-Token': token, 'X-User-Role': 'operator', 'X-CSRF-Token': csrf_token},
     )
 
     assert response.status_code == 409, response.text
@@ -1401,7 +1516,7 @@ def test_market_order_rejects_non_tradeable_instrument(monkeypatch):
 def test_audit_log_redacts_tokens_and_exposes_only_metadata():
     login = client.post(
         '/api/v1/auth/login',
-        json={'username': 'operator', 'password': 'operator'},
+        json={'username': 'operator', 'password': 'test-operator-password'},
     )
     assert login.status_code == 200, login.text
 
@@ -1422,21 +1537,21 @@ def test_audit_log_redacts_tokens_and_exposes_only_metadata():
 def test_live_release_gate_requires_explicit_approval():
     login = client.post(
         '/api/v1/auth/login',
-        json={'username': 'admin', 'password': 'admin'},
+        json={'username': 'admin', 'password': 'test-admin-password'},
     )
     token = login.json()['sessionToken']
 
     denied = client.post(
         '/api/v1/ops/validation',
         json={'environment': 'live', 'executionMode': 'Live', 'instrument': 'EUR/USD'},
-        headers={'X-Session-Token': token, 'X-User-Role': 'admin', 'X-CSRF-Token': 'demo-token'},
+        headers={'X-Session-Token': token, 'X-User-Role': 'admin', 'X-CSRF-Token': login.json()['csrfToken']},
     )
     assert denied.status_code == 403, denied.text
 
     allowed = client.post(
         '/api/v1/ops/validation',
         json={'environment': 'live', 'executionMode': 'Live', 'instrument': 'EUR/USD', 'releaseGate': 'approved'},
-        headers={'X-Session-Token': token, 'X-User-Role': 'admin', 'X-CSRF-Token': 'demo-token'},
+        headers={'X-Session-Token': token, 'X-User-Role': 'admin', 'X-CSRF-Token': login.json()['csrfToken']},
     )
     assert allowed.status_code == 200, allowed.text
     assert allowed.json()['allowed'] is True
@@ -1507,6 +1622,7 @@ def test_setup_runtime_and_file_endpoints_work_with_configured_paths(monkeypatch
             'riskFraction': '0.01',
             'configPath': str(config_path),
         },
+            headers=_auth_headers(client),
     )
     assert setup.status_code == 200, setup.text
     payload = setup.json()
@@ -1528,7 +1644,11 @@ def test_setup_discovery_returns_only_supported_accounts_and_never_token(monkeyp
         }
 
     monkeypatch.setattr('freqtrade.forex.api.discover_oanda_accounts', discover)
-    response = client.post('/api/v1/setup/discover', json={'token': 'private-token', 'environment': 'live'})
+    response = client.post(
+        '/api/v1/setup/discover',
+        json={'token': 'private-token', 'environment': 'live'},
+        headers=_auth_headers(client),
+    )
     assert response.status_code == 200, response.text
     payload = response.json()
     assert payload['accounts'][0]['accountTypeCode'] == '002'
@@ -1552,6 +1672,7 @@ def test_live_setup_requires_server_side_confirmation_flag(monkeypatch, tmp_path
             'riskFraction': '0.01',
             'configPath': str(tmp_path / 'live-config.json'),
         },
+        headers=_auth_headers(client),
     )
     assert response.status_code == 403
     assert 'OANDA_LIVE_CONFIRM=1' in response.json()['detail']
@@ -1591,6 +1712,7 @@ def test_live_mode_maps_environment_to_live_execution(monkeypatch, tmp_path):
             'riskFraction': '0.01',
             'configPath': str(tmp_path / 'live-config.json'),
         },
+        headers=_auth_headers(client),
     )
 
     assert response.status_code == 200, response.text
@@ -1634,6 +1756,7 @@ def test_untagged_practice_v20_account_can_be_confirmed(monkeypatch, tmp_path):
             'riskFraction': '0.01',
             'configPath': str(tmp_path / 'practice-config.json'),
         },
+        headers=_auth_headers(client),
     )
 
     assert response.status_code == 200, response.text
@@ -1644,11 +1767,19 @@ def test_untagged_practice_v20_account_can_be_confirmed(monkeypatch, tmp_path):
     assert runtime.status_code == 200, runtime.text
     assert runtime.json()['state'] in {'running', 'paused', 'stopped'}
 
-    paused = client.post('/api/v1/setup/runtime', json={'action': 'pause'})
+    paused = client.post(
+        '/api/v1/setup/runtime',
+        json={'action': 'pause'},
+        headers=_auth_headers(client),
+    )
     assert paused.status_code == 200, paused.text
     assert paused.json()['state'] == 'paused'
 
-    resume = client.post('/api/v1/setup/runtime', json={'action': 'resume'})
+    resume = client.post(
+        '/api/v1/setup/runtime',
+        json={'action': 'resume'},
+        headers=_auth_headers(client),
+    )
     assert resume.status_code == 200, resume.text
     assert resume.json()['state'] == 'running'
 
@@ -1663,6 +1794,7 @@ def test_untagged_practice_v20_account_can_be_confirmed(monkeypatch, tmp_path):
     uploaded_config = client.post(
         '/api/v1/setup/files/config',
         json={'content': json.dumps({'schema_version': 2, 'exchange': {'name': 'oanda'}}, indent=2)},
+        headers=_auth_headers(client),
     )
     assert uploaded_config.status_code == 200, uploaded_config.text
     assert uploaded_config.json()['uploaded'] is True
@@ -1674,6 +1806,7 @@ def test_untagged_practice_v20_account_can_be_confirmed(monkeypatch, tmp_path):
             'fileName': 'ForexUploadTestStrategy.py',
             'content': 'from freqtrade.strategy import IStrategy\nclass ForexUploadTestStrategy(IStrategy):\n    pass\n',
         },
+        headers=_auth_headers(client),
     )
     assert uploaded_strategy.status_code == 200, uploaded_strategy.text
     assert uploaded_strategy.json()['uploaded'] is True
@@ -1686,12 +1819,14 @@ def test_untagged_practice_v20_account_can_be_confirmed(monkeypatch, tmp_path):
             'fileName': 'AnotherStrategy.py',
             'content': 'from freqtrade.strategy import IStrategy\nclass ForexUploadTestStrategy(IStrategy):\n    pass\n',
         },
+        headers=_auth_headers(client),
     )
     assert duplicate_strategy.status_code == 400
 
     invalid_strategy = client.post(
         '/api/v1/setup/files/strategy',
         json={'fileName': 'NotAStrategy.py', 'content': 'class NotAStrategy: pass\n'},
+        headers=_auth_headers(client),
     )
     assert invalid_strategy.status_code == 400
 
@@ -1707,7 +1842,7 @@ def test_ai_hyperopt_days_history_resolves_timeframe_before_loss_validation():
             'attempts': 1,
             'hyperoptLoss': 'NotARealLoss',
         },
-        headers={'X-User-Role': 'operator', 'X-CSRF-Token': 'ai-hyperopt'},
+        headers=_auth_headers(client),
     )
 
     assert response.status_code == 400
@@ -1726,6 +1861,8 @@ def test_hyperopt_report_formats_generic_strategy_parameters():
         'periodsTested': 2,
         'coverage': 2,
         'bestParameters': {'fast_period_opt': 12, 'slow_period_opt': 26},
+        'bestRoiVolatilityPer5m': 0.0002,
+        'bestRoiVolatilityRegime': 'medium',
         'objective': '100.00',
         'train': {'netPl': '50.00', 'drawdown': '0.00', 'trades': 1},
         'validation': {'netPl': '50.00', 'drawdown': '0.00', 'trades': 1},
@@ -1742,3 +1879,4 @@ def test_hyperopt_report_formats_generic_strategy_parameters():
 
     assert 'Strategy: ForexEmaStrategy' in formatted
     assert 'fast_period_opt=12 slow_period_opt=26' in formatted
+    assert 'ROI volatility: medium (0.0200% typical range per 5m)' in formatted

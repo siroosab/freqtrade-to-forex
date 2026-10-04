@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import math
 import random
-from copy import deepcopy
 from collections import defaultdict
+from collections.abc import Callable
+from copy import deepcopy
 from dataclasses import dataclass
 from decimal import Decimal
 from itertools import product
@@ -15,8 +16,14 @@ import pandas as pd
 from freqtrade.forex.ai_strategy import ForexAIStrategyBaseline
 from freqtrade.forex.backtest import BacktestResult, ForexBacktester
 from freqtrade.forex.models import OandaInstrument
-from freqtrade.forex.strategy_execution import FreqtradeStrategyAdapter, load_strategy, strategy_informative_timeframes
+from freqtrade.forex.strategy_execution import (
+    FreqtradeStrategyAdapter,
+    load_strategy,
+    strategy_informative_timeframes,
+)
 from freqtrade.strategy.parameters import BaseParameter
+from freqtrade.timeframe import timeframe_to_minutes
+
 
 # Mirrors freqtrade's --hyperopt-loss / --hyperoptloss NAME options; every
 # value below is computed from the actual validation BacktestResult, not a
@@ -36,6 +43,130 @@ HYPEROPT_LOSS_FUNCTIONS: tuple[str, ...] = (
     "MultiMetricHyperOptLoss",
 )
 DEFAULT_HYPEROPT_LOSS = "ProfitDrawDownHyperOptLoss"
+_REFERENCE_ROI_VOLATILITY_PER_5M = 0.0002
+_MIN_ROI_PROFIT_RATE = 0.00001
+_MAX_ROI_PROFIT_INCREMENT = 0.05
+
+
+def _estimate_roi_volatility_per_5m(
+    candles: pd.DataFrame, timeframe: str
+) -> float:
+    """Estimate typical true-range volatility and normalize it to a five-minute bar."""
+    required = {"high", "low", "close"}
+    if not required.issubset(candles.columns) or candles.empty:
+        return _REFERENCE_ROI_VOLATILITY_PER_5M
+    high = pd.to_numeric(candles["high"], errors="coerce")
+    low = pd.to_numeric(candles["low"], errors="coerce")
+    close = pd.to_numeric(candles["close"], errors="coerce")
+    previous_close = close.shift(1)
+    true_range = pd.concat(
+        (
+            high - low,
+            (high - previous_close).abs(),
+            (low - previous_close).abs(),
+        ),
+        axis=1,
+    ).max(axis=1)
+    volatility = (
+        true_range / close.where(close > 0)
+    ).replace([float("inf"), float("-inf")], float("nan")).dropna()
+    if volatility.empty:
+        return _REFERENCE_ROI_VOLATILITY_PER_5M
+
+    timeframe_minutes = timeframe_to_minutes(timeframe)
+    volatility_per_5m = float(volatility.median()) / math.sqrt(
+        max(timeframe_minutes, 1) / 5
+    )
+    return min(max(volatility_per_5m, 0.00001), 0.002)
+
+
+def _roi_regime(volatility_per_5m: float) -> str:
+    relative_volatility = volatility_per_5m / _REFERENCE_ROI_VOLATILITY_PER_5M
+    if relative_volatility < 0.75:
+        return "low"
+    if relative_volatility > 1.5:
+        return "high"
+    return "medium"
+
+
+def _roi_profit_bounds(
+    duration_minutes: int, volatility_per_5m: float
+) -> tuple[float, float]:
+    expected_move = volatility_per_5m * math.sqrt(max(duration_minutes, 5) / 5)
+    lower = max(_MIN_ROI_PROFIT_RATE, expected_move * 0.5)
+    upper = max(lower, min(_MAX_ROI_PROFIT_INCREMENT, expected_move * 2.5))
+    return lower, upper
+
+
+def _roi_space(
+    timeframe: str,
+    volatility_per_5m: float = _REFERENCE_ROI_VOLATILITY_PER_5M,
+) -> dict[str, tuple[int, int] | tuple[float, float]]:
+    timeframe_minutes = timeframe_to_minutes(timeframe)
+    relative_volatility = volatility_per_5m / _REFERENCE_ROI_VOLATILITY_PER_5M
+    time_volatility_scale = min(max(math.sqrt(1 / relative_volatility), 0.5), 2.0)
+    time_scale = (timeframe_minutes / 5) * time_volatility_scale
+    time_bounds = {
+        "roi_t1": (int(10 * time_scale), int(120 * time_scale)),
+        "roi_t2": (int(10 * time_scale), int(60 * time_scale)),
+        "roi_t3": (int(10 * time_scale), int(40 * time_scale)),
+    }
+    bounds: dict[str, tuple[int, int] | tuple[float, float]] = dict(time_bounds)
+    for profit_name, time_name in (
+        ("roi_p1", "roi_t1"),
+        ("roi_p2", "roi_t2"),
+        ("roi_p3", "roi_t3"),
+    ):
+        low_time, high_time = time_bounds[time_name]
+        bounds[profit_name] = _roi_profit_bounds(
+            max((low_time + high_time) // 2, timeframe_minutes),
+            volatility_per_5m,
+        )
+    return bounds
+
+
+def _sample_roi_parameters(
+    rng: random.Random,
+    timeframe: str,
+    volatility_per_5m: float = _REFERENCE_ROI_VOLATILITY_PER_5M,
+) -> dict[str, int | float]:
+    space = _roi_space(timeframe, volatility_per_5m)
+    sampled: dict[str, int | float] = {}
+    for name in ("roi_t1", "roi_t2", "roi_t3"):
+        bounds = space[name]
+        low, high = bounds
+        sampled[name] = rng.randint(int(low), int(high))
+    for profit_name, time_name in (
+        ("roi_p1", "roi_t1"),
+        ("roi_p2", "roi_t2"),
+        ("roi_p3", "roi_t3"),
+    ):
+        low, high = _roi_profit_bounds(
+            int(sampled[time_name]), volatility_per_5m
+        )
+        sampled[profit_name] = round(rng.uniform(low, high), 6)
+    return sampled
+
+
+def _generate_roi_table(parameters: dict[str, int | float]) -> dict[str, float]:
+    roi_p1 = float(parameters["roi_p1"])
+    roi_p2 = float(parameters["roi_p2"])
+    roi_p3 = float(parameters["roi_p3"])
+    roi_t1 = int(parameters["roi_t1"])
+    roi_t2 = int(parameters["roi_t2"])
+    roi_t3 = int(parameters["roi_t3"])
+    return {
+        "0": round(roi_p1 + roi_p2 + roi_p3, 6),
+        str(roi_t3): round(roi_p1 + roi_p2, 6),
+        str(roi_t3 + roi_t2): round(roi_p1, 6),
+        str(roi_t3 + roi_t2 + roi_t1): 0.0,
+    }
+
+
+def _is_exit_parameter(name: str, parameter: BaseParameter) -> bool:
+    if parameter.space is not None:
+        return parameter.space in {"sell", "exit"}
+    return name.startswith(("sell_", "exit_"))
 
 
 def _average_trade_duration_minutes(result: BacktestResult) -> Decimal:
@@ -134,7 +265,7 @@ def run_strategy_hyperopt(
     indicator_context: pd.DataFrame | None = None,
     should_stop: Callable[[], bool] | None = None,
 ) -> list[dict[str, object]]:
-    """Sample declared Freqtrade parameter spaces and score each on held-out candles."""
+    """Optimize entry parameters and the Freqtrade-style ROI space on held-out candles."""
     if len(candles) < 40:
         raise ValueError("strategy hyperopt requires at least 40 candles")
     strategy = load_strategy(
@@ -149,36 +280,58 @@ def run_strategy_hyperopt(
     parameters = {
         name: value
         for name, value in class_attributes.items()
-        if isinstance(value, BaseParameter) and value.optimize
+        if isinstance(value, BaseParameter)
+        and value.optimize
+        and not _is_exit_parameter(name, value)
     }
-    freqai_parameter_names = getattr(strategy, "freqai_hyperopt_parameters", None)
-    if freqai_parameter_names is not None:
-        selected_names = set(freqai_parameter_names)
-        if freqai_predictions is not None:
-            parameters = {
-                name: parameter
-                for name, parameter in parameters.items()
-                if name in selected_names
-            }
-        else:
-            parameters = {
-                name: parameter
-                for name, parameter in parameters.items()
-                if name not in selected_names
-            }
-    if not parameters:
+    regression_parameter_names = set(
+        getattr(strategy, "freqai_hyperopt_parameters", ())
+    )
+    classifier_parameter_names = set(
+        getattr(strategy, "freqai_classifier_hyperopt_parameters", ())
+    )
+    all_freqai_parameter_names = (
+        regression_parameter_names | classifier_parameter_names
+    )
+    prediction_is_classifier = (
+        freqai_predictions is not None
+        and freqai_target_column is not None
+        and any(
+            isinstance(row.get(freqai_target_column), str)
+            for row in freqai_predictions.values()
+        )
+    )
+    if prediction_is_classifier:
+        inactive_names = regression_parameter_names
+    elif freqai_predictions is not None:
+        inactive_names = classifier_parameter_names
+    else:
+        inactive_names = all_freqai_parameter_names
+    parameters = {
+        name: parameter
+        for name, parameter in parameters.items()
+        if name not in inactive_names
+    }
+    original_minimal_roi = getattr(strategy, "minimal_roi", {})
+    if not isinstance(original_minimal_roi, dict):
+        raise ValueError("strategy minimal_roi must be a mapping of minutes to returns")
+    optimize_roi = bool(original_minimal_roi)
+    if not parameters and not optimize_roi:
         raise ValueError(f"{strategy_class} has no optimizable Freqtrade parameters")
     informative_timeframes = strategy_informative_timeframes(strategy, pair)
     missing_timeframes = set(informative_timeframes) - set(informative_candles)
     if missing_timeframes:
         raise ValueError(f"Missing informative candles for: {', '.join(sorted(missing_timeframes))}")
+    split_index = max(20, min(len(candles) - 20, len(candles) // 2))
+    roi_volatility_per_5m = _estimate_roi_volatility_per_5m(
+        candles.iloc[:split_index], timeframe
+    )
     if freqai_predictions is not None:
         if freqai_config is None or freqai_target_column is None:
             raise ValueError("cached FreqAI predictions require their config and target column")
         train = candles.iloc[:0]
         validation = candles
     else:
-        split_index = max(20, min(len(candles) - 20, len(candles) // 2))
         train = candles.iloc[:split_index]
         validation = candles.iloc[split_index:]
     rng = random.Random()
@@ -201,11 +354,20 @@ def run_strategy_hyperopt(
         if should_stop is not None and should_stop():
             break
         values = {name: sample(parameter) for name, parameter in parameters.items()}
+        roi_parameters = (
+            _sample_roi_parameters(rng, timeframe, roi_volatility_per_5m)
+            if optimize_roi else {}
+        )
+        minimal_roi = (
+            _generate_roi_table(roi_parameters) if roi_parameters else None
+        )
 
         def evaluate(
             data: pd.DataFrame,
             *,
             indicator_context: pd.DataFrame | None = None,
+            candidate_values: dict[str, object] = values,
+            candidate_minimal_roi: dict[str, float] | None = minimal_roi,
         ) -> BacktestResult:
             candidate_strategy = load_strategy(
                 strategy_class,
@@ -215,10 +377,12 @@ def run_strategy_hyperopt(
                     "freqai": freqai_config
                 } if freqai_config is not None else None,
             )
-            for name, value in values.items():
+            for name, value in candidate_values.items():
                 parameter = deepcopy(parameters[name])
                 parameter.value = value
                 setattr(candidate_strategy, name, parameter)
+            if candidate_minimal_roi is not None:
+                candidate_strategy.minimal_roi = candidate_minimal_roi
             if freqai_predictions is not None:
                 from freqtrade.forex.strategy_execution import CachedFreqAIPredictions
 
@@ -256,6 +420,14 @@ def run_strategy_hyperopt(
         objective = compute_hyperopt_objective(validation_result, hyperopt_loss)
         row = {
             "parameters": values,
+            "minimal_roi": minimal_roi,
+            "roi_parameters": roi_parameters,
+            "roi_volatility_per_5m": (
+                roi_volatility_per_5m if optimize_roi else None
+            ),
+            "roi_volatility_regime": (
+                _roi_regime(roi_volatility_per_5m) if optimize_roi else None
+            ),
             "objective": format(objective, ".2f"),
             "trainNetPl": format(train_result.net_pl, ".2f"),
             "validationNetPl": format(validation_result.net_pl, ".2f"),

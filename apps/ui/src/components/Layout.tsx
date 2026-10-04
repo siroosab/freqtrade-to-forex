@@ -1,4 +1,5 @@
-import { NavLink, Outlet } from 'react-router-dom'
+import { NavLink, Outlet, useNavigate } from 'react-router-dom'
+import { logoutUser } from '../api/mockApi'
 import { useUiStore } from '../store/useUiStore'
 
 type NavItem = {
@@ -19,6 +20,7 @@ const navItems: NavItem[] = [
 ]
 
 export function Layout() {
+  const navigate = useNavigate()
   const executionMode = useUiStore((state) => state.executionMode)
   const environment = useUiStore((state) => state.environment)
   const connectionState = useUiStore((state) => state.connectionState)
@@ -26,6 +28,20 @@ export function Layout() {
   const setUserRole = useUiStore((state) => state.setUserRole)
   const setExecutionMode = useUiStore((state) => state.setExecutionMode)
   const setEnvironment = useUiStore((state) => state.setEnvironment)
+  const signOut = async () => {
+    let warning: string | undefined
+    try {
+      await logoutUser()
+    } catch {
+      warning = 'The server session could not be revoked; this browser session was cleared.'
+    } finally {
+      setUserRole('viewer')
+      navigate('/login', {
+        replace: true,
+        state: { logoutWarning: warning },
+      })
+    }
+  }
 
   return (
     <div className="app-shell">
@@ -36,15 +52,6 @@ export function Layout() {
             <p className="eyebrow">FOREX OPERATIONS</p>
             <h1>FX Control</h1>
           </div>
-        </div>
-
-        <div className="role-switcher">
-          <label htmlFor="role-select">Current role</label>
-          <select id="role-select" value={userRole} onChange={(event) => setUserRole(event.target.value as typeof userRole)}>
-            <option value="viewer">Viewer</option>
-            <option value="operator">Operator</option>
-            <option value="admin">Admin</option>
-          </select>
         </div>
 
         <nav className="nav">
@@ -103,6 +110,9 @@ export function Layout() {
             <span>Role</span>
             <strong>{userRole}</strong>
           </div>
+          <button className="secondary-button" onClick={() => void signOut()} type="button">
+            Sign out
+          </button>
         </div>
       </aside>
 

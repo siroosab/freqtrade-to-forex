@@ -429,6 +429,8 @@ class ForexBacktester:
 
         trades: list[BacktestTrade] = []
         position: tuple[Signal, int, Decimal, object, object] | None = None
+        minimal_roi = self._minimal_roi_for(strategy)
+        use_exit_signal = bool(getattr(strategy, "use_exit_signal", True))
         for index in range(len(candles)):
             window = candles.iloc[: index + 1]
             signal = strategy.signal(window)
@@ -447,6 +449,7 @@ class ForexBacktester:
                     start=position[4],
                     end=candle["date"],
                     instrument=instrument,
+                    minimal_roi=minimal_roi,
                 )
                 if trigger is not None:
                     trade = self._close_at_trigger(position, trigger, instrument=instrument)
@@ -456,7 +459,24 @@ class ForexBacktester:
                     intrabar_closed = True
                     if not portfolio_mode:
                         open_symbols.discard(instrument.name)
-            if position and self._opposite(position[0], signal):
+            elif position is not None:
+                trigger = self._roi_trigger(
+                    position,
+                    timestamp=candle["date"],
+                    high=Decimal(str(candle["high"])),
+                    low=Decimal(str(candle["low"])),
+                    instrument=instrument,
+                    minimal_roi=minimal_roi,
+                )
+                if trigger is not None:
+                    trade = self._close_at_trigger(position, trigger, instrument=instrument)
+                    trades.append(trade)
+                    balance += trade.net_pl
+                    position = None
+                    intrabar_closed = True
+                    if not portfolio_mode:
+                        open_symbols.discard(instrument.name)
+            if position and use_exit_signal and self._opposite(position[0], signal):
                 trade = self._close(position, candle, instrument=instrument)
                 trades.append(trade)
                 balance += trade.net_pl
@@ -465,6 +485,7 @@ class ForexBacktester:
                     open_symbols.discard(instrument.name)
             explicit_exit = bool(
                 position
+                and use_exit_signal
                 and getattr(type(strategy), "supports_explicit_exit", False) is True
                 and callable(getattr(strategy, "exit_signal", None))
                 and strategy.exit_signal(window, position[0])
@@ -519,6 +540,7 @@ class ForexBacktester:
                                 start=position[4],
                                 end=candles.iloc[index + 2]["date"],
                                 instrument=instrument,
+                                minimal_roi=minimal_roi,
                             )
                             if trigger is not None:
                                 trade = self._close_at_trigger(position, trigger, instrument=instrument)
@@ -537,6 +559,7 @@ class ForexBacktester:
                     start=position[4],
                     end=pd.Timestamp.max.tz_localize("UTC"),
                     instrument=instrument,
+                    minimal_roi=minimal_roi,
                 )
             trade = self._close_at_trigger(position, trigger, instrument=instrument) if trigger is not None else self._close(
                 position, candles.iloc[-1], instrument=instrument
@@ -546,6 +569,29 @@ class ForexBacktester:
             if not portfolio_mode:
                 open_symbols.discard(instrument.name)
         return balance, trades, open_symbols
+
+    @staticmethod
+    def _minimal_roi_for(strategy: CandleStrategy) -> dict[int, Decimal]:
+        strategy_attributes = getattr(strategy, "__dict__", {})
+        if (
+            "minimal_roi" not in strategy_attributes
+            and not hasattr(type(strategy), "minimal_roi")
+        ):
+            return {}
+        schedule = getattr(strategy, "minimal_roi", {})
+        if not isinstance(schedule, dict):
+            raise ValueError("strategy minimal_roi must be a mapping of minutes to returns")
+        result: dict[int, Decimal] = {}
+        for minute, rate in schedule.items():
+            try:
+                parsed_minute = int(minute)
+                parsed_rate = Decimal(str(rate))
+            except (TypeError, ValueError, ArithmeticError) as exc:
+                raise ValueError("strategy minimal_roi contains an invalid minute or return") from exc
+            if parsed_minute < 0 or not parsed_rate.is_finite() or parsed_rate < 0:
+                raise ValueError("strategy minimal_roi minutes and returns must be non-negative")
+            result[parsed_minute] = parsed_rate
+        return result
 
     def _finalize_result(self, balance: Decimal, trades: tuple[BacktestTrade, ...]) -> BacktestResult:
         converted_trades = tuple(self._convert_trade_to_account_currency(trade) for trade in trades)
@@ -734,8 +780,9 @@ class ForexBacktester:
         start: object,
         end: object,
         instrument: OandaInstrument,
+        minimal_roi: dict[int, Decimal] | None = None,
     ) -> tuple[object, Decimal] | None:
-        direction, _, entry, _, _ = position
+        direction, _, entry, _, entry_time = position
         stop = self._protection_price(
             entry, direction, instrument, self.stop_pips, stop=True
         )
@@ -772,6 +819,51 @@ class ForexBacktester:
                     return detail.date, stop
                 if target is not None and low <= target:
                     return detail.date, target
+            if minimal_roi:
+                roi_trigger = self._roi_trigger(
+                    position,
+                    timestamp=detail.date,
+                    high=high,
+                    low=low,
+                    instrument=instrument,
+                    minimal_roi=minimal_roi,
+                )
+                if roi_trigger is not None:
+                    return roi_trigger
+        return None
+
+    def _roi_trigger(
+        self,
+        position: tuple[Signal, int, Decimal, object, object],
+        *,
+        timestamp: object,
+        high: Decimal,
+        low: Decimal,
+        instrument: OandaInstrument,
+        minimal_roi: dict[int, Decimal],
+    ) -> tuple[object, Decimal] | None:
+        if not minimal_roi:
+            return None
+        direction, _, entry, _, entry_time = position
+        elapsed_minutes = int(
+            (
+                self._utc_timestamp(timestamp) - self._utc_timestamp(entry_time)
+            ).total_seconds()
+            // 60
+        )
+        eligible_minutes = [minute for minute in minimal_roi if minute <= elapsed_minutes]
+        if not eligible_minutes:
+            return None
+        roi = minimal_roi[max(eligible_minutes)]
+        spread = self._spread_for(timestamp)
+        if direction is Signal.LONG:
+            roi_trigger = entry * (Decimal("1") + roi) + spread / 2 + self.slippage
+            if high >= roi_trigger:
+                return timestamp, roi_trigger - spread / 2 - self.slippage
+        else:
+            roi_trigger = entry * (Decimal("1") - roi) - spread / 2 - self.slippage
+            if low <= roi_trigger:
+                return timestamp, roi_trigger + spread / 2 + self.slippage
         return None
 
     @staticmethod

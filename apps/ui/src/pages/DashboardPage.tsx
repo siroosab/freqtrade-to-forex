@@ -68,7 +68,7 @@ export function DashboardPage() {
   const userRole = useUiStore((state) => state.userRole)
   const setOrdersFeed = useUiStore((state) => state.setOrdersFeed)
   const autoExecutionMutation = useMutation({
-    mutationFn: (enabled: boolean) => setAutoExecution(enabled, userRole),
+    mutationFn: (enabled: boolean) => setAutoExecution(enabled),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['strategy-auto-execution'] })
     },
@@ -197,8 +197,8 @@ export function DashboardPage() {
         clientOrderId: createManualClientOrderId(),
       }
       const result = orderType === 'limit'
-        ? await submitLimitOrder({ ...order, price: limitPrice || activeEntryPrice.toFixed(pricePrecision) }, userRole)
-        : await submitMarketOrder(order, userRole)
+        ? await submitLimitOrder({ ...order, price: limitPrice || activeEntryPrice.toFixed(pricePrecision) })
+        : await submitMarketOrder(order)
       const fillPrice = 'fillPrice' in result ? result.fillPrice : null
       const reason = 'reason' in result ? result.reason ?? result.cancelReason ?? null : null
       const nextOrder = {
@@ -247,7 +247,7 @@ export function DashboardPage() {
     setIsClosing(true)
     setCloseError(null)
     try {
-      await closeManualPosition(closeTarget.id, userRole)
+      await closeManualPosition(closeTarget.id)
       await queryClient.invalidateQueries({ queryKey: ['broker-positions'] })
       setCloseTarget(null)
     } catch (error) {
@@ -274,7 +274,6 @@ export function DashboardPage() {
             takeProfit: modifyTakeProfit,
             trailingStopLossDistance: modifyTrailingStopLossDistance,
           },
-          userRole,
         )
         await queryClient.invalidateQueries({ queryKey: ['broker-positions'] })
         setModifyPositionTarget(null)
@@ -282,7 +281,6 @@ export function DashboardPage() {
         await modifyPendingOrder(
           modifyPendingTarget.id,
           { price: modifyPendingPrice, units: modifyPendingUnits },
-          userRole,
         )
         await queryClient.invalidateQueries({ queryKey: ['broker-pending-orders'] })
         setModifyPendingTarget(null)

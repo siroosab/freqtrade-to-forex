@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import inspect
+import math
 import sys
 from copy import deepcopy
 from pathlib import Path
@@ -30,12 +31,15 @@ _OANDA_TIMEFRAMES = {
 
 
 def freqtrade_timeframe(timeframe: str) -> str:
-    normalized = timeframe.strip().upper()
+    raw_timeframe = timeframe.strip()
+    if raw_timeframe == "1m":
+        return "1m"
+    normalized = raw_timeframe.upper()
     if normalized in {"M", "MN1", "1M", "1MO"}:
         return "1M"
     if normalized in _OANDA_TIMEFRAMES:
         return _OANDA_TIMEFRAMES[normalized]
-    return timeframe.strip().lower()
+    return raw_timeframe.lower()
 
 
 def oanda_granularity(timeframe: str) -> str:
@@ -55,6 +59,7 @@ def load_strategy(
     pair: str,
     parameter_values: dict[str, object] | None = None,
     config_overrides: dict[str, object] | None = None,
+    minimal_roi: dict[str, object] | None = None,
 ) -> IStrategy:
     selected = next((item for item in discover_strategy_files() if item.name == strategy_name), None)
     if selected is None:
@@ -109,8 +114,29 @@ def load_strategy(
             setattr(strategy, name, parameter)
         else:
             setattr(strategy, name, value)
+    if minimal_roi is not None:
+        strategy.minimal_roi = _validated_minimal_roi(minimal_roi)
     strategy_informative_timeframes(strategy, pair)
     return strategy
+
+
+def _validated_minimal_roi(schedule: dict[str, object]) -> dict[str, float]:
+    if not isinstance(schedule, dict):
+        raise ValueError("strategy minimal_roi must be a mapping of minutes to returns")
+    normalized: dict[str, float] = {}
+    for minute, rate in schedule.items():
+        try:
+            parsed_minute = int(minute)
+            parsed_rate = float(rate)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("strategy minimal_roi contains an invalid minute or return") from exc
+        if parsed_minute < 0 or not math.isfinite(parsed_rate) or parsed_rate < 0:
+            raise ValueError("strategy minimal_roi minutes and returns must be non-negative")
+        key = str(parsed_minute)
+        if key in normalized:
+            raise ValueError("strategy minimal_roi contains duplicate minute thresholds")
+        normalized[key] = parsed_rate
+    return normalized
 
 
 def strategy_informative_timeframes(strategy: IStrategy, pair: str) -> tuple[str, ...]:
@@ -156,6 +182,14 @@ class FreqtradeStrategyAdapter:
         self._cached_frame: pd.DataFrame | None = None
         self._prepared_frame: pd.DataFrame | None = None
         self._prepared_positions: dict[pd.Timestamp, int] = {}
+
+    @property
+    def minimal_roi(self) -> dict[str, float]:
+        return self.strategy.minimal_roi
+
+    @property
+    def use_exit_signal(self) -> bool:
+        return self.strategy.use_exit_signal
 
     def update_informative_candles(
         self,

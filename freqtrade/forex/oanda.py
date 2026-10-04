@@ -211,9 +211,10 @@ class OandaClient:
         if count is None:
             count = 500
 
-        if count <= 5000:
+        bounded_range = from_time is not None and to_time is not None
+        if bounded_range or count <= 5000:
             params: dict[str, Any] = {"granularity": granularity, "price": price}
-            if count is not None:
+            if count is not None and not bounded_range:
                 params["count"] = count
             if from_time is not None:
                 params["from"] = self._normalize_time(from_time)

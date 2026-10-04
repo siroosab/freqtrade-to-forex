@@ -43,6 +43,25 @@ from freqtrade.forex.risk_limits import (
     aggregate_currency_exposure,
 )
 from freqtrade.forex.config import OandaSettings, execution_mode_for_native_runmode, validate_native_forex_config
+
+
+def _auth_headers(client, role: str = "operator") -> dict[str, str]:
+    passwords = {
+        "viewer": "test-viewer-password",
+        "operator": "test-operator-password",
+        "admin": "test-admin-password",
+    }
+    response = client.post(
+        "/api/v1/auth/login",
+        json={"username": role, "password": passwords[role]},
+    )
+    assert response.status_code == 200, response.text
+    session = response.json()
+    return {
+        "X-Session-Token": session["sessionToken"],
+        "X-User-Role": session["user"]["role"],
+        "X-CSRF-Token": session["csrfToken"],
+    }
 from freqtrade.forex.cli import run_dry_run
 from freqtrade.forex.costs import ForexFillModel, financing_cost
 from freqtrade.forex.execution import (
@@ -91,6 +110,7 @@ from freqtrade.forex.strategy_loop import (
 from freqtrade.forex.strategies.ema_cross import ForexEmaStrategy
 from freqtrade.forex.strategy_state import ForexStrategyState, ForexStrategyStateStore
 from freqtrade.forex.runner import DryRunWorker, WorkerConfig
+from freqtrade.forex.strategy_execution import load_strategy
 from freqtrade.forex.cli import (
     build_parser,
     paper_report_to_json,
@@ -687,6 +707,7 @@ def test_fx_candle_and_market_session_model_timezones_and_completion() -> None:
 def test_market_data_provider_maps_timeframes_and_filters_incomplete_candles() -> None:
     from freqtrade.forex.models import OandaCandle
 
+    assert OandaMarketDataProvider.to_oanda_granularity("1m") == "M1"
     assert OandaMarketDataProvider.to_oanda_granularity("5m") == "M5"
     assert OandaMarketDataProvider.to_oanda_granularity("15m") == "M15"
     assert OandaMarketDataProvider.to_oanda_granularity("1h") == "H1"
@@ -774,6 +795,35 @@ def test_market_data_provider_maps_timeframes_and_filters_incomplete_candles() -
         timeframe="5m",
     )
     assert gaps == ["2026-09-17T00:05:00Z"]
+
+
+@pytest.mark.asyncio
+async def test_oanda_historical_range_request_omits_conflicting_count() -> None:
+    captured_params: dict[str, str] = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured_params.update(dict(request.url.params))
+        return httpx.Response(200, json={"candles": []})
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(handler),
+        base_url="https://api-fxpractice.oanda.com",
+    ) as http_client:
+        client = OandaClient("token", "account", http_client=http_client)
+        candles = await client.get_candles(
+            "EUR_USD",
+            "M15",
+            from_time="2026-08-25T08:41:26Z",
+            to_time="2026-10-04T08:41:26Z",
+        )
+
+    assert candles == []
+    assert captured_params == {
+        "granularity": "M15",
+        "price": "M",
+        "from": "2026-08-25T08:41:26Z",
+        "to": "2026-10-04T08:41:26Z",
+    }
 
 
 async def test_market_data_provider_can_fetch_only_forming_candles() -> None:
@@ -1103,6 +1153,31 @@ def test_forex_research_cli_parses_cache_and_ai_options(tmp_path: Path) -> None:
         "hyperopt", "--strategy", "ForexEmaStrategy"
     ])
     assert selected_strategy.strategy == "ForexEmaStrategy"
+    forex_sample_strategy = build_parser().parse_args([
+        "hyperopt", "--timeframe", "15m", "--strategy", "ForexSampleStrategy"
+    ])
+    assert forex_sample_strategy.timeframe == "15m"
+    assert forex_sample_strategy.strategy == "ForexSampleStrategy"
+    forex_sample_backtest = build_parser().parse_args([
+        "backtest", "--timeframe", "15m", "--strategy", "ForexSampleStrategy"
+    ])
+    assert forex_sample_backtest.timeframe == "15m"
+    one_minute_hyperopt = build_parser().parse_args([
+        "hyperopt", "--timeframe", "1m", "--strategy", "ForexSampleStrategy"
+    ])
+    one_minute_backtest = build_parser().parse_args([
+        "backtest", "--timeframe", "1m", "--strategy", "ForexSampleStrategy"
+    ])
+    one_minute_download = build_parser().parse_args([
+        "download-data", "--timeframe", "1m"
+    ])
+    one_minute_cache_clear = build_parser().parse_args([
+        "cache-clear", "--timeframe", "1m"
+    ])
+    assert one_minute_hyperopt.timeframe == "1m"
+    assert one_minute_backtest.timeframe == "1m"
+    assert one_minute_download.timeframe == "1m"
+    assert one_minute_cache_clear.timeframe == "1m"
 
     download = build_parser().parse_args(["download-data", "--count", "250"])
     clear = build_parser().parse_args(["cache-clear", "--pair", "EUR/USD"])
@@ -1578,6 +1653,59 @@ async def test_historical_provider_caches_exact_range_and_normalized_data(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_historical_provider_pages_ranges_larger_than_oanda_candle_limit() -> None:
+    from freqtrade.forex.models import OandaCandle
+
+    start = datetime(2026, 9, 1, tzinfo=UTC)
+    page_boundary = start + timedelta(minutes=4999)
+    end = start + timedelta(minutes=5000)
+
+    def candle(timestamp: datetime) -> OandaCandle:
+        return OandaCandle(
+            time=timestamp.isoformat().replace("+00:00", "Z"),
+            complete=True,
+            open=Decimal("1.10000"),
+            high=Decimal("1.10100"),
+            low=Decimal("1.09900"),
+            close=Decimal("1.10050"),
+            volume=42,
+        )
+
+    client = AsyncMock()
+    client.get_candles.side_effect = [
+        [candle(start), candle(page_boundary)],
+        [candle(page_boundary), candle(end)],
+    ]
+    provider = OandaMarketDataProvider(client, OandaSettings("token", "account"))
+
+    result = await provider.fetch_historical(
+        "EUR/USD",
+        "1m",
+        start=start.isoformat().replace("+00:00", "Z"),
+        end=end.isoformat().replace("+00:00", "Z"),
+    )
+
+    assert len(result) == 2
+    assert result["date"].tolist() == [
+        pd.Timestamp(start),
+        pd.Timestamp(page_boundary),
+    ]
+    assert client.get_candles.await_count == 2
+    assert client.get_candles.await_args_list[0].kwargs["from_time"] == (
+        start.isoformat().replace("+00:00", "Z")
+    )
+    assert client.get_candles.await_args_list[0].kwargs["to_time"] == (
+        page_boundary.isoformat().replace("+00:00", "Z")
+    )
+    assert client.get_candles.await_args_list[1].kwargs["from_time"] == (
+        page_boundary.isoformat().replace("+00:00", "Z")
+    )
+    assert client.get_candles.await_args_list[1].kwargs["to_time"] == (
+        end.isoformat().replace("+00:00", "Z")
+    )
+
+
+@pytest.mark.asyncio
 async def test_historical_provider_rejects_reversed_range() -> None:
     provider = OandaMarketDataProvider(AsyncMock(), OandaSettings("token", "account"))
 
@@ -1873,6 +2001,7 @@ def test_freqaimodel_trains_and_hyperopts_selected_strategy(tmp_path: Path, monk
 
 class PredictionThresholdStrategy(IStrategy):
     can_short = True
+    minimal_roi = {"0": 0.0005}
     entry_limit = DecimalParameter(0.00001, 0.001, default=0.0001, decimals=5, space='buy')
 
     def feature_engineering_expand_all(self, dataframe, period, metadata, **kwargs):
@@ -1960,6 +2089,9 @@ class PredictionThresholdStrategy(IStrategy):
     assert report["predictions_file"].endswith(".predictions.json")
     assert "entry_limit" in report["strategy_parameters"]
     assert len(report["candidates"]) == 2
+    assert report["best"]["minimal_roi"]
+    assert report["best"]["roi_parameters"]
+    assert report["candidates"][0]["minimal_roi"] == report["best"]["minimal_roi"]
     captured = capsys.readouterr().out
     assert "AI TRAINING COMPLETE" in captured
     assert "STRATEGY HYPEROPT" in captured
@@ -2007,11 +2139,18 @@ class PredictionThresholdStrategy(IStrategy):
         strategy_class="PredictionThresholdStrategy",
         freqai_config=freqai_config,
         optimize_strategy=False,
+        approved_strategy_parameters={"entry_limit": 0.0003},
+        approved_minimal_roi={"0": 0.02, "45": 0.005, "120": 0.0},
     )
     assert backtest_path.is_file()
     assert backtest_weights == weights_path
     assert backtest_report["backtest_window"] == "out_of_sample"
-    assert backtest_report["strategy_parameters"] == latest_hyperopt_report["strategy_parameters"]
+    assert backtest_report["strategy_parameters"] == {"entry_limit": 0.0003}
+    assert backtest_report["minimal_roi"] == {
+        "0": 0.02,
+        "45": 0.005,
+        "120": 0.0,
+    }
     assert "_backtest_result" in backtest_report
 
 
@@ -2559,7 +2698,7 @@ def test_ai_review_workflow_is_exposed_and_approvable(tmp_path, monkeypatch) -> 
         updated = client.post(
             "/api/v1/ai/review",
             json={"status": "approved", "notes": "Approved in Practice-safe dry-run mode."},
-            headers={"X-User-Role": "operator", "X-CSRF-Token": "review-approval"},
+            headers=_auth_headers(client),
         )
 
     assert initial.status_code == 200
@@ -2578,12 +2717,12 @@ def test_ai_review_is_scoped_by_pair_and_timeframe(tmp_path, monkeypatch) -> Non
         eur = client.post(
             "/api/v1/ai/review",
             json={"status": "approved", "pair": "EUR/USD", "timeframe": "M5", "notes": "EUR M5 approved"},
-            headers={"X-User-Role": "operator", "X-CSRF-Token": "review-approval"},
+            headers=_auth_headers(client),
         )
         gbp = client.post(
             "/api/v1/ai/review",
             json={"status": "rejected", "pair": "GBP/USD", "timeframe": "H1", "notes": "GBP H1 rejected"},
-            headers={"X-User-Role": "operator", "X-CSRF-Token": "review-approval"},
+            headers=_auth_headers(client),
         )
         eur_read = client.get("/api/v1/ai/review?pair=EUR%2FUSD&timeframe=M5")
         gbp_read = client.get("/api/v1/ai/review?pair=GBP%2FUSD&timeframe=H1")
@@ -2603,12 +2742,12 @@ def test_rejecting_approval_revokes_runtime_pair_scope(tmp_path, monkeypatch) ->
         approved = client.post(
             "/api/v1/ai/review",
             json={"status": "approved", "pair": "EUR/USD", "timeframe": "M5"},
-            headers={"X-User-Role": "operator", "X-CSRF-Token": "review-approval"},
+            headers=_auth_headers(client),
         )
         rejected = client.post(
             "/api/v1/ai/review",
             json={"status": "rejected", "pair": "EUR/USD", "timeframe": "M5"},
-            headers={"X-User-Role": "operator", "X-CSRF-Token": "review-approval"},
+            headers=_auth_headers(client),
         )
 
     assert approved.status_code == 200
@@ -2625,7 +2764,7 @@ def test_ai_scope_review_survives_api_restart(tmp_path, monkeypatch) -> None:
         response = client.post(
             "/api/v1/ai/review",
             json={"status": "approved", "pair": "EUR/USD", "timeframe": "M5", "notes": "persisted"},
-            headers={"X-User-Role": "operator", "X-CSRF-Token": "review-approval"},
+            headers=_auth_headers(client),
         )
         assert response.status_code == 200
 
@@ -2648,6 +2787,15 @@ def test_approval_restores_exact_hyperopt_report_after_restart(tmp_path, monkeyp
         "historyValue": 500,
         "attemptsRequested": 30,
         "bestParameters": {"entryThreshold": "0.25", "maxSpreadPct": "0.4"},
+        "bestMinimalRoi": {"0": 0.015, "30": 0.005, "90": 0.0},
+        "roiParameters": {
+            "roi_t1": 60,
+            "roi_t2": 20,
+            "roi_t3": 10,
+            "roi_p1": 0.005,
+            "roi_p2": 0.005,
+            "roi_p3": 0.005,
+        },
         "objective": "12.50",
         "dataHash": "data-hash",
         "featureSchemaHash": "feature-hash",
@@ -2664,7 +2812,7 @@ def test_approval_restores_exact_hyperopt_report_after_restart(tmp_path, monkeyp
         response = client.post(
             "/api/v1/ai/review",
             json={"status": "approved", "pair": "GBP/USD", "timeframe": "H1", "requireOptimization": True},
-            headers={"X-User-Role": "operator", "X-CSRF-Token": "review-approval"},
+            headers=_auth_headers(client),
         )
 
     assert response.status_code == 200
@@ -2672,10 +2820,22 @@ def test_approval_restores_exact_hyperopt_report_after_restart(tmp_path, monkeyp
     assert approved["timeframe"] == "H1"
     assert approved["hyperopt"]["entryThreshold"] == "0.25"
     assert approved["hyperopt"]["maxSpreadPct"] == "0.4"
+    assert approved["hyperopt"]["minimal_roi"] == {
+        "0": 0.015,
+        "30": 0.005,
+        "90": 0.0,
+    }
+    assert approved["hyperopt"]["roi_parameters"]["roi_t1"] == 60
     runtime_config = json.loads((tmp_path / "config.json").read_text())
     assert runtime_config["pair_timeframes"]["GBP_USD"] == "1h"
     assert runtime_config["pair_strategies"]["GBP_USD"] == "ForexAIStrategyBaseline"
-    assert runtime_config["pair_approved_revisions"]["GBP_USD"] == approved
+    saved_revision = runtime_config["pair_approved_revisions"]["GBP_USD"]
+    assert saved_revision == approved
+    assert saved_revision["hyperopt"]["minimal_roi"] == {
+        "0": 0.015,
+        "30": 0.005,
+        "90": 0.0,
+    }
 
 
 def test_signal_endpoints_reject_unapproved_pair_timeframes(tmp_path, monkeypatch) -> None:
@@ -2696,7 +2856,7 @@ def test_hyperopt_scheduler_requires_approved_pairs_and_staggers_all_pairs(tmp_p
         blocked = client.post(
             "/api/v1/ai/hyperopt/scheduler",
             json={"enabled": True, "intervalMinutes": 60, "pairs": ["EUR/USD"]},
-            headers={"X-User-Role": "operator", "X-CSRF-Token": "hyperopt-scheduler"},
+            headers=_auth_headers(client),
         )
         approved_pairs = []
         pair_timeframes = {}
@@ -2707,13 +2867,13 @@ def test_hyperopt_scheduler_requires_approved_pairs_and_staggers_all_pairs(tmp_p
                 configured = client.post(
                     f"/api/v1/ai/config?pair={pair.replace('/', '%2F')}",
                     json=config,
-                    headers={"X-User-Role": "admin", "X-CSRF-Token": "ui-config-save"},
+                    headers=_auth_headers(client, "admin"),
                 )
                 assert configured.status_code == 200
             response = client.post(
                 "/api/v1/ai/review",
                     json={"status": "approved", "pair": pair, "timeframe": timeframe, "requireOptimization": True, "notes": "approved"},
-                headers={"X-User-Role": "operator", "X-CSRF-Token": "review-approval"},
+                headers=_auth_headers(client),
             )
             assert response.status_code == 200
             approved_pairs.append(pair)
@@ -2728,7 +2888,7 @@ def test_hyperopt_scheduler_requires_approved_pairs_and_staggers_all_pairs(tmp_p
                 "pairStrategies": {pair: "ForexAIStrategyBaseline" for pair in approved_pairs},
                 "pairTimeframes": pair_timeframes,
             },
-            headers={"X-User-Role": "operator", "X-CSRF-Token": "hyperopt-scheduler"},
+            headers=_auth_headers(client),
         )
 
     assert blocked.status_code == 409
@@ -2789,12 +2949,15 @@ def test_backtest_api_runs_real_backtest_and_persists_history(monkeypatch, tmp_p
         async def get_prices(self, instruments):
             return [DummyPrice()]
 
+        async def get_pending_orders(self):
+            return []
+
     class DummyBacktester:
         def __init__(self, *args, **kwargs):
             self.args = args
             self.kwargs = kwargs
 
-        def run(self, frame):
+        def run(self, frame, **kwargs):
             return SimpleNamespace(
                 starting_balance=Decimal("10000"),
                 ending_balance=Decimal("11000"),
@@ -2834,16 +2997,16 @@ def test_backtest_api_runs_real_backtest_and_persists_history(monkeypatch, tmp_p
         response = client.post(
             "/api/v1/backtests/run",
             json={"pair": "EUR/USD", "timeframe": "M5", "steps": 120},
-            headers={"X-User-Role": "operator", "X-CSRF-Token": "demo-backtest"},
+            headers=_auth_headers(client),
         )
         second_strategy = client.post(
             "/api/v1/backtests/run",
             json={"pair": "EUR/USD", "timeframe": "M5", "strategyClass": "ForexEmaStrategy", "steps": 120},
-            headers={"X-User-Role": "operator", "X-CSRF-Token": "demo-backtest"},
+            headers=_auth_headers(client),
         )
         history = client.get("/api/v1/backtests")
 
-    assert response.status_code == 200
+    assert response.status_code == 200, response.text
     assert response.json()["status"] == "completed"
     assert response.json()["netPl"] == "1000.00"
     assert response.json()["trades"] == 2
@@ -3614,6 +3777,65 @@ def test_backtester_applies_spread_once_and_reports_trade() -> None:
     assert result.ending_balance == Decimal("9980.01000")
 
 
+def test_backtester_uses_roi_and_ignores_exit_signals_when_disabled() -> None:
+    approved_strategy = load_strategy(
+        "ForexSampleStrategy",
+        "15m",
+        "EUR/USD",
+        minimal_roi={"0": 0.001},
+    )
+
+    class RoiStrategy:
+        minimal_roi = approved_strategy.minimal_roi
+        use_exit_signal = False
+        supports_explicit_exit = True
+
+        @staticmethod
+        def signal(candles):
+            if len(candles) == 1:
+                return Signal.LONG
+            if len(candles) == 2:
+                return Signal.SHORT
+            return Signal.FLAT
+
+        @staticmethod
+        def exit_signal(candles, direction):
+            return True
+
+    instrument = OandaInstrument(
+        name="EUR_USD",
+        display_name="EUR/USD",
+        pip_location=-4,
+        display_precision=5,
+        trade_units_precision=0,
+        minimum_trade_size=Decimal("1"),
+    )
+    dates = pd.date_range("2026-01-01", periods=4, freq="15min", tz="UTC")
+    candles = pd.DataFrame(
+        {
+            "date": dates,
+            "open": [1.1000, 1.1000, 1.1000, 1.1000],
+            "high": [1.1005, 1.1008, 1.1020, 1.1005],
+            "low": [1.0995, 1.0995, 1.0995, 1.0995],
+            "close": [1.1000, 1.1000, 1.1010, 1.1000],
+        }
+    )
+
+    result = ForexBacktester(
+        RoiStrategy(),
+        instrument,
+        starting_balance=Decimal("10000"),
+        risk_fraction=Decimal("0.01"),
+        stop_pips=Decimal("50"),
+        spread=Decimal("0"),
+    ).run(candles)
+
+    assert len(result.trades) == 1
+    assert result.trades[0].exit_time == dates[2]
+    assert result.trades[0].exit_price == Decimal("1.101100")
+    assert result.trades[0].net_pl > 0
+
+
 def test_backtester_applies_slippage_and_financing_costs() -> None:
     instrument = OandaInstrument(
         name="EUR_USD",
@@ -4080,7 +4302,9 @@ def test_hyperopt_runs_independent_validation_split() -> None:
     )
     candles = pd.DataFrame(
         {
-            "date": [f"2026-01-{day:02d}T00:00:00Z" for day in range(1, 61)],
+            "date": pd.date_range("2026-01-01", periods=60, freq="D").strftime(
+                "%Y-%m-%dT00:00:00Z"
+            ),
             "open": [1.1000 + day * 0.00005 for day in range(1, 61)],
             "high": [1.1010 + day * 0.00005 for day in range(1, 61)],
             "low": [1.0990 + day * 0.00005 for day in range(1, 61)],

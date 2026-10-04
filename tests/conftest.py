@@ -1,6 +1,7 @@
 # pragma pylint: disable=missing-docstring
 import json
 import logging
+import os
 import platform
 import re
 from copy import deepcopy
@@ -45,6 +46,13 @@ from tests.conftest_trades_usdt import (
     mock_trade_usdt_7,
 )
 
+os.environ["FOREX_API_USERS_JSON"] = json.dumps(
+    {
+        "viewer": {"password": "test-viewer-password", "role": "viewer"},
+        "operator": {"password": "test-operator-password", "role": "operator"},
+        "admin": {"password": "test-admin-password", "role": "admin"},
+    }
+)
 
 logging.getLogger("").setLevel(logging.INFO)
 
