@@ -262,14 +262,45 @@ function config() {
         echo "No project virtual environment found. Run ./setup.sh --install first."
         return 1
     fi
-    if [ -f user_data/config.json ]; then
-        echo "Config already exists at user_data/config.json; keeping it unchanged."
-        return 0
+    if [ ! -f user_data/config.json ]; then
+        if ! .venv/bin/python -m freqtrade.forex setup --userdir user_data --config user_data/config.json; then
+            echo "Failed to create the forex config skeleton."
+            return 1
+        fi
     fi
-    if ! .venv/bin/python -m freqtrade.forex setup --userdir user_data --config user_data/config.json; then
-        echo "Failed to create the forex config skeleton."
+
+    if ! .venv/bin/python - user_data/config.json <<'PY'
+import json
+import sys
+from pathlib import Path
+
+config_path = Path(sys.argv[1])
+config = json.loads(config_path.read_text(encoding="utf-8"))
+if not isinstance(config, dict):
+    raise TypeError(f"{config_path} must contain a JSON object")
+
+api_users = config.setdefault("api_users", {})
+if not isinstance(api_users, dict):
+    raise TypeError(f"'api_users' in {config_path} must be a JSON object")
+
+default_users = {
+    "admin": {"password": "1234", "role": "admin"},
+    "operator": {"password": "abcd", "role": "operator"},
+}
+for username, defaults in default_users.items():
+    user = api_users.setdefault(username, {})
+    if not isinstance(user, dict):
+        raise TypeError(f"'api_users.{username}' in {config_path} must be a JSON object")
+    for key, value in defaults.items():
+        user.setdefault(key, value)
+
+config_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+PY
+    then
+        echo "Failed to add the default API users to user_data/config.json."
         return 1
     fi
+    echo "Default API users are available; change their passwords before exposing the API."
     echo "Start the API and open /setup to enter OANDA Practice credentials."
 }
 

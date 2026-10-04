@@ -1334,7 +1334,7 @@ def test_setup_mutations_require_authenticated_session():
 
 def test_login_fails_closed_when_no_api_users_are_configured(monkeypatch, tmp_path):
     monkeypatch.delenv('FOREX_API_USERS_JSON', raising=False)
-    monkeypatch.delenv('OANDA_CONFIG_PATH', raising=False)
+    monkeypatch.setenv('OANDA_CONFIG_PATH', str(tmp_path / 'no-api-users.json'))
     with TestClient(create_app(tmp_path / 'no-api-users.sqlite')) as unconfigured_client:
         response = unconfigured_client.post(
             '/api/v1/auth/login',
