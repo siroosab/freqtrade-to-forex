@@ -1,6 +1,6 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
-import { clearAiResearchCache, getAiConfig, getAiHyperoptLossFunctions, getAiHyperoptReport, getAiHyperoptScheduler, getAiHyperoptStatus, getAiModelComparison, getAiReview, getAiSignals, getAiStatus, getAvailableStrategies, getBacktestJob, runAiHyperoptSchedulerNow, runBacktest, saveAiConfig, saveAiHyperoptScheduler, saveAiReview, startAiHyperopt, stopAiHyperopt, type AiConfig, type AiFreqaiModel, type BacktestRunResult } from '../api/mockApi'
+import { clearAiResearchCache, getAiConfig, getAiHyperoptLossFunctions, getAiHyperoptReport, getAiHyperoptScheduler, getAiHyperoptStatus, getAiModelComparison, getAiReview, getAiSignals, getAiStatus, getAvailableStrategies, getBacktestJob, inspectAiResearchCache, runAiHyperoptSchedulerNow, runBacktest, saveAiConfig, saveAiHyperoptScheduler, saveAiReview, startAiHyperopt, stopAiHyperopt, type AiConfig, type AiFreqaiModel, type BacktestRunResult } from '../api/mockApi'
 import { useUiStore } from '../store/useUiStore'
 
 const FEATURE_OPTIONS = ['trend', 'spread', 'session', 'volatility']
@@ -114,6 +114,7 @@ export function AiPage() {
     onError: (error) => setBacktestMessage(error.message),
   })
   const cacheClearMutation = useMutation({ mutationFn: clearAiResearchCache })
+  const cacheInspectMutation = useMutation({ mutationFn: inspectAiResearchCache })
   const isHyperoptRunning = hyperoptStatusQuery.data?.status === 'running'
   const isBacktestRunning = Boolean(
     backtestJobId
@@ -121,7 +122,8 @@ export function AiPage() {
     && backtestResult?.status !== 'failed',
   )
   const isResearchBusy = backtestMutation.isPending || isBacktestRunning
-    || startHyperoptMutation.isPending || isHyperoptRunning || cacheClearMutation.isPending
+    || startHyperoptMutation.isPending || isHyperoptRunning
+    || cacheInspectMutation.isPending || cacheClearMutation.isPending
   const completedBacktest = backtestResult?.result
     ?? (backtestResult?.status === 'completed' ? backtestResult : null)
   const backtestSummary = completedBacktest?.summary
@@ -141,6 +143,10 @@ export function AiPage() {
         + (configuredPeriods.length ? Math.max(...configuredPeriods) : 14)
         + (Number(freqaiForm.includeShiftedCandles) || 0),
     )
+  const requestedHistoryCandles = historyMode === 'days'
+    ? Math.ceil((historyValue * 86400) / selectedSeconds)
+    : historyValue
+  const effectiveHistoryCandles = Math.max(requestedHistoryCandles, minimumModelHistory, 30)
   useEffect(() => {
     if (!schedulerQuery.data) return
     setSchedulerPairs((current) => {
@@ -247,7 +253,8 @@ export function AiPage() {
     if (effectiveCandles > maximumResearchCandles) {
       return { error: `This research window needs ${effectiveCandles.toLocaleString()} candles, above the ${maximumResearchCandles.toLocaleString()}-candle limit for ${selectedFreqaiModel}. Reduce the requested history or use a larger timeframe.` }
     }
-    if (effectiveCandles > requestedCandles) {
+    const wasRaised = effectiveCandles > requestedCandles
+    if (wasRaised) {
       setHistoryMode('candles')
       setHistoryValue(effectiveCandles)
       setHyperoptWarning(
@@ -256,8 +263,8 @@ export function AiPage() {
     }
     return {
       steps: effectiveCandles,
-      historyMode: 'candles' as const,
-      historyValue: effectiveCandles,
+      historyMode: wasRaised ? 'candles' as const : historyMode,
+      historyValue: wasRaised ? effectiveCandles : historyValue,
     }
   }
 
@@ -296,13 +303,38 @@ export function AiPage() {
     })
   }
   const handleClearResearchCaches = (context: 'backtest' | 'hyperopt') => {
-    const confirmed = window.confirm(
-      `Clear downloaded candles for ${selectedPair} (${selectedTimeframe}) and all cached AI models for this pair? Hyperopt reports will be kept.`,
-    )
-    if (!confirmed) return
+    const history = resolveResearchHistory()
+    if ('error' in history) {
+      if (context === 'backtest') setBacktestMessage(history.error ?? 'History settings exceed the supported data range.')
+      else setHyperoptWarning(history.error ?? 'History settings exceed the supported data range.')
+      return
+    }
+    const pair = selectedPair
+    const timeframe = selectedTimeframe
     setCacheClearContext(context)
+    cacheInspectMutation.reset()
     cacheClearMutation.reset()
-    cacheClearMutation.mutate({ pair: selectedPair, timeframe: selectedTimeframe, candles: true, models: true })
+    cacheInspectMutation.mutate(
+      { pair, timeframe },
+      {
+        onSuccess: (cache) => {
+          const coverage = cache.oldestCandle && cache.newestCandle
+            ? ` Cached candle coverage: ${cache.oldestCandle} to ${cache.newestCandle}.`
+            : ''
+          const confirmed = window.confirm(
+            `Clear research caches for ${cache.pair} (${cache.timeframe})?\n\nSelected history: ${history.historyValue} ${history.historyMode} (up to ${history.steps.toLocaleString()} candles).\nCached history: ${cache.storedCandleCount.toLocaleString()} candles in ${cache.candleRangeCount} range(s), across ${cache.candleFileCount} file(s).${coverage}\nCandle cache files: ${cache.candleFiles.join(', ') || 'none'}.\nCached AI model files: ${cache.modelFiles.join(', ') || 'none'}.${cache.hyperoptReportsPreserved ? ' Hyperopt reports will be kept.' : ''}\n\nThis will remove matching candle data and cached AI model files.`,
+          )
+          if (confirmed) {
+            cacheClearMutation.mutate({
+              pair,
+              timeframe,
+              candles: true,
+              models: true,
+            })
+          }
+        },
+      },
+    )
   }
   const toggleSchedulerPair = (pair: string) => setSchedulerPairs((current) => current.includes(pair) ? current.filter((item) => item !== pair) : [...current, pair])
   const saveScheduler = (enabled: boolean) => {
@@ -422,7 +454,9 @@ export function AiPage() {
               <label className="field-block"><span>History unit</span><select value={historyMode} onChange={(event) => setHistoryMode(event.target.value as 'candles' | 'days')}><option value="candles">Candles</option><option value="days">Days</option></select></label>
               <label className="field-block"><span>History value</span><input type="number" min="1" max={historyMode === 'candles' ? maximumResearchCandles : Math.max(1, Math.floor(maximumResearchCandles * selectedSeconds / 86400))} value={historyValue} onChange={(event) => setHistoryValue(Number(event.target.value) || 1)} /></label>
             </div>
+            <p className="ai-history-hint">Requested target: {historyValue.toLocaleString()} {historyMode} ({effectiveHistoryCandles.toLocaleString()} candles after minimum-history requirements). Backtest progress reports how many candles OANDA actually returns.</p>
             <p className="ai-history-hint">Maximum for {selectedFreqaiModel}: {maximumResearchCandles.toLocaleString()} candles.{selectedFreqaiModel !== 'ForexAIStrategyBaseline' && ` Minimum: ${minimumModelHistory.toLocaleString()} candles for ${selectedTimeframe} (at least 7 days, including model warm-up); smaller requests are raised automatically.`}</p>
+            {cacheClearContext === 'backtest' && cacheInspectMutation.error && <p className="ai-error-message" aria-live="polite">Cache inspection failed: {cacheInspectMutation.error.message}</p>}
             {cacheClearContext === 'backtest' && cacheClearMutation.data && <p className="ai-job-message" aria-live="polite">Cleared {cacheClearMutation.data.candleItemsRemoved} candle cache item(s) and {cacheClearMutation.data.modelFilesRemoved} cached AI model file(s) for {cacheClearMutation.data.pair}. Hyperopt reports were kept.</p>}
             {cacheClearContext === 'backtest' && cacheClearMutation.error && <p className="ai-error-message" aria-live="polite">Cache clear failed: {cacheClearMutation.error.message}</p>}
             {backtestMessage && <p className="ai-job-message" aria-live="polite">{backtestMessage}</p>}
@@ -503,6 +537,7 @@ export function AiPage() {
           <div className="panel ai-research-panel ai-manual-hyperopt-panel">
             <div className="panel-header compact"><div><p className="eyebrow">02 · Manual Hyperopt</p><h3>Optimize strategy parameters</h3></div><div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}><button className="secondary-action" onClick={() => handleClearResearchCaches('hyperopt')} disabled={isResearchBusy}>Clear caches</button><button className="primary-action" onClick={handleHyperopt} disabled={isResearchBusy}>{isHyperoptRunning ? 'Running…' : 'Run hyperopt'}</button><button className="secondary-action" onClick={handleStopHyperopt} disabled={!isHyperoptRunning || stopHyperoptMutation.isPending}>{stopHyperoptMutation.isPending ? 'Stopping…' : 'Stop'}</button></div></div>
             {cacheClearContext === 'hyperopt' && cacheClearMutation.data && <p className="ai-job-message" aria-live="polite">Cleared {cacheClearMutation.data.candleItemsRemoved} candle cache item(s) and {cacheClearMutation.data.modelFilesRemoved} cached AI model file(s) for {cacheClearMutation.data.pair}. Hyperopt reports were kept.</p>}
+            {cacheClearContext === 'hyperopt' && cacheInspectMutation.error && <p className="ai-error-message" aria-live="polite">Cache inspection failed: {cacheInspectMutation.error.message}</p>}
             {cacheClearContext === 'hyperopt' && cacheClearMutation.error && <p className="ai-error-message" aria-live="polite">Cache clear failed: {cacheClearMutation.error.message}</p>}
             <div className="settings-grid">
               <label className="field-block"><span>Pair</span><select value={selectedPair} onChange={(event) => setSelectedPair(event.target.value)}>{(availablePairs.length ? availablePairs : ['EUR/USD', 'GBP/USD', 'USD/JPY']).map((item) => <option key={item} value={item}>{item}</option>)}</select></label>
@@ -512,6 +547,7 @@ export function AiPage() {
               <label className="field-block"><span>Attempts</span><input type="number" min="1" max="900" value={attempts} onChange={(event) => setAttempts(Number(event.target.value) || 24)} /></label>
               <label className="field-block"><span>Hyperopt loss</span><select value={hyperoptLoss} onChange={(event) => setHyperoptLoss(event.target.value)} disabled={hyperoptLossFunctionsQuery.isLoading}><option value="">{hyperoptLossFunctionsQuery.isLoading ? 'Loading loss functions…' : 'Select loss function'}</option>{hyperoptLossFunctionsQuery.data?.options.map((loss) => <option key={loss} value={loss}>{loss}</option>)}</select></label>
             </div>
+            <p className="ai-history-hint">Requested target: {historyValue.toLocaleString()} {historyMode} ({effectiveHistoryCandles.toLocaleString()} candles after minimum-history requirements). The Hyperopt report shows how many candles OANDA returned.</p>
             <p className="ai-history-hint">Maximum for {selectedFreqaiModel}: {maximumResearchCandles.toLocaleString()} candles.{selectedFreqaiModel !== 'ForexAIStrategyBaseline' && ` Minimum: ${minimumModelHistory.toLocaleString()} candles for ${selectedTimeframe} (at least 7 days, including model warm-up); smaller requests are raised automatically.`}</p>
                         {schedulerQuery.data && <div className="bullet-list"><div><span>Status</span><strong>{schedulerQuery.data.enabled ? 'enabled' : 'disabled'}{schedulerQuery.data.running ? ' • running' : ''}</strong></div><div><span>FreqAI model</span><strong>{schedulerQuery.data.freqaimodel ?? schedulerFreqaiModel}</strong></div><div><span>Scheduled scopes</span><strong>{schedulerPairs.map((pair) => `${pair} (${schedulerScopes[pair]?.strategyClass ?? 'unselected'} · ${schedulerScopes[pair]?.timeframe ?? '-'})`).join(' • ') || 'none'}</strong></div>{Object.entries(schedulerQuery.data.nextRuns ?? {}).map(([pair, scheduledAt]) => <div key={pair}><span>Next {pair}</span><strong>{new Date(scheduledAt).toLocaleString()}</strong></div>)}{schedulerQuery.data.lastError && <div><span>Last scheduler error</span><strong>{schedulerQuery.data.lastError}</strong></div>}</div>}
             <label className="field-block ai-model-select"><span>FreqAI model</span><select value={selectedFreqaiModel} onChange={(event) => setSelectedFreqaiModel(event.target.value as AiFreqaiModel)}>{FREQAI_MODELS.map((model) => <option key={model} value={model}>{model}</option>)}</select></label>
@@ -547,6 +583,7 @@ export function AiPage() {
                 </div>
                 <div className="bullet-list">
                   <div><span>FreqAI model</span><strong>{hyperoptReportQuery.data.report.freqaimodel ?? 'ForexAIStrategyBaseline'}{hyperoptReportQuery.data.report.modelReused === true ? ' · reused' : hyperoptReportQuery.data.report.modelReused === false ? ' · trained' : ''}</strong></div>
+                  <div><span>History used</span><strong>{hyperoptReportQuery.data.report.historyValue ?? '-'} {hyperoptReportQuery.data.report.historyMode ?? 'candles'} requested · {hyperoptReportQuery.data.report.steps ?? '-'} candle(s) returned</strong></div>
                   <div><span>Loss function</span><strong>{hyperoptReportQuery.data.report.hyperoptLoss ?? hyperoptLoss}</strong></div>
                   <div><span>Best parameters</span><strong>{Object.entries(hyperoptReportQuery.data.report.bestParameters ?? {}).map(([key, value]) => `${key}=${value}`).join(' • ') || 'not available'}</strong></div>
                   <div><span>Best minimal ROI (minute: return)</span><strong>{Object.entries(hyperoptReportQuery.data.report.bestMinimalRoi ?? {}).map(([minute, rate]) => `${minute}: ${rate}`).join(' • ') || 'not optimized for this model'}</strong></div>

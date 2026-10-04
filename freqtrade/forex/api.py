@@ -156,6 +156,43 @@ def _render_ui_index(ui_index: Path) -> str:
     return html
 
 
+def _matching_cached_candle_files(data_dir: Path, instrument: str, timeframe: str) -> list[Path]:
+    timeframe_tokens = {timeframe.upper(), freqtrade_timeframe(timeframe).upper()}
+    try:
+        timeframe_tokens.add(oanda_granularity(freqtrade_timeframe(timeframe)).upper())
+    except ValueError:
+        pass
+    candle_extensions = (".feather", ".parquet", ".csv")
+    return [
+        candidate
+        for candidate in data_dir.rglob("*")
+        if candidate.is_file()
+        and candidate.name.upper().startswith(instrument)
+        and any(candidate.name.upper().endswith(extension.upper()) for extension in candle_extensions)
+        and any(
+            candidate.name.upper().startswith(f"{instrument}{separator}{token}")
+            and candidate.name.upper()[len(instrument) + 1 + len(token):len(instrument) + 2 + len(token)] in {".", "-", "_"}
+            for token in timeframe_tokens
+            for separator in ("-", "_")
+        )
+    ]
+
+
+def _matching_cached_ai_model_files(pair: str) -> list[Path]:
+    model_dir = Path("user_data/hyperopt_results")
+    if not model_dir.exists():
+        return []
+    instrument = pair.replace("/", "_").upper()
+    cache_suffixes = (".txt", ".model.json", ".predictions.json")
+    return [
+        candidate
+        for candidate in model_dir.rglob("*")
+        if candidate.is_file()
+        and candidate.name.upper().startswith(f"{instrument}_")
+        and candidate.name.lower().endswith(cache_suffixes)
+    ]
+
+
 def _clear_cached_historical_data(pair: str | None = None, timeframe: str | None = None) -> list[str]:
     if not pair or not timeframe:
         return []
@@ -175,45 +212,56 @@ def _clear_cached_historical_data(pair: str | None = None, timeframe: str | None
     if cleared_ranges:
         removed.append(f"{store_path} ({cleared_ranges} ranges)")
 
-    timeframe_tokens = {timeframe.upper(), normalized_timeframe.upper()}
-    try:
-        timeframe_tokens.add(oanda_granularity(normalized_timeframe).upper())
-    except ValueError:
-        pass
-    candle_extensions = (".feather", ".parquet", ".csv")
-    for candidate in data_dir.rglob("*"):
-        if not candidate.is_file() or not candidate.name.upper().startswith(instrument):
-            continue
-        filename = candidate.name.upper()
-        if not any(filename.endswith(extension.upper()) for extension in candle_extensions):
-            continue
-        if any(
-            filename.startswith(f"{instrument}{separator}{token}")
-            and filename[len(instrument) + 1 + len(token):len(instrument) + 2 + len(token)] in {".", "-", "_"}
-            for token in timeframe_tokens
-            for separator in ("-", "_")
-        ):
-            candidate.unlink(missing_ok=True)
-            removed.append(str(candidate))
+    for candidate in _matching_cached_candle_files(data_dir, instrument, timeframe):
+        candidate.unlink(missing_ok=True)
+        removed.append(str(candidate))
     return removed
 
 
-def _clear_cached_ai_models(pair: str) -> list[str]:
-    model_dir = Path("user_data/hyperopt_results")
-    if not model_dir.exists():
-        return []
-
+def _cached_research_summary(pair: str, timeframe: str) -> dict[str, object]:
+    data_dir = Path("user_data/data")
     instrument = pair.replace("/", "_").upper()
-    cache_suffixes = (".txt", ".model.json", ".predictions.json")
+    normalized_timeframe = freqtrade_timeframe(timeframe)
+    store_path = data_dir / "oanda" / "candles.json"
+    records: list[dict[str, object]] = []
+    if store_path.exists():
+        payload = json.loads(store_path.read_text(encoding="utf-8"))
+        records = [
+            record
+            for record in payload.get("ranges", {}).values()
+            if record.get("instrument", "").upper() == instrument
+            and record.get("timeframe") == normalized_timeframe
+        ]
+
+    candle_files = _matching_cached_candle_files(data_dir, instrument, timeframe) if data_dir.exists() else []
+    model_files = _matching_cached_ai_model_files(pair)
+    candle_times = [
+        str(candle["time"])
+        for record in records
+        for candle in record.get("raw", [])
+        if isinstance(candle, dict) and candle.get("time")
+    ]
+    return {
+        "pair": pair,
+        "timeframe": timeframe.upper(),
+        "candleRangeCount": len(records),
+        "storedCandleCount": sum(len(record.get("raw", [])) for record in records),
+        "candleFileCount": len(candle_files) + int(bool(records)),
+        "candleFiles": ([store_path.name] if records else [])
+        + [candidate.name for candidate in candle_files],
+        "oldestCandle": min(candle_times, default=None),
+        "newestCandle": max(candle_times, default=None),
+        "modelFileCount": len(model_files),
+        "modelFiles": [candidate.name for candidate in model_files],
+        "hyperoptReportsPreserved": True,
+    }
+
+
+def _clear_cached_ai_models(pair: str) -> list[str]:
     removed: list[str] = []
-    for candidate in model_dir.rglob("*"):
-        if (
-            candidate.is_file()
-            and candidate.name.upper().startswith(f"{instrument}_")
-            and candidate.name.lower().endswith(cache_suffixes)
-        ):
-            candidate.unlink(missing_ok=True)
-            removed.append(str(candidate))
+    for candidate in _matching_cached_ai_model_files(pair):
+        candidate.unlink(missing_ok=True)
+        removed.append(str(candidate))
     return removed
 
 
@@ -3360,6 +3408,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         informative_candles: dict[str, pd.DataFrame],
         history_mode: str,
         history_value: int,
+        history_steps: int,
         attempts: int,
         hyperopt_loss: str,
         freqaimodel: str,
@@ -3518,6 +3567,10 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             if not candidates:
                 raise ValueError("Hyperopt was stopped before completing any attempt")
             best = candidates[0]
+            actual_history_steps = max(
+                (len(candle_frame) for candle_frame in candles_by_pair.values()),
+                default=0,
+            )
             normalized_pair = pairs[0].replace("_", "/").upper()
             scope_key = hyperopt_scope(normalized_pair, strategy_class, timeframe)
             completed_at = datetime.now(timezone.utc).isoformat()
@@ -3526,7 +3579,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "pair": normalized_pair,
                 "timeframe": timeframe.upper(),
                 "strategyClass": strategy_class,
-                "steps": history_value,
+                "steps": actual_history_steps,
                 "historyMode": history_mode,
                 "historyValue": history_value,
                 "attempts": attempts,
@@ -3566,6 +3619,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "modelTraining": model_training,
                 "historyMode": history_mode,
                 "historyValue": history_value,
+                "steps": actual_history_steps,
                 "trainCandles": (
                     int(training_context.get("train_rows", 0))
                     if training_context else max(len(candle_frame) // 2 for candle_frame in candles_by_pair.values())
@@ -3605,6 +3659,22 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         except Exception as exc:  # pragma: no cover - background worker boundary
             job["status"] = "failed"
             job["error"] = str(exc)
+
+    @app.post("/api/v1/ai/research-cache/inspect")
+    async def inspect_ai_research_cache(
+        payload: dict,
+        user_role: str | None = Header(default=None, alias="X-User-Role"),
+        csrf_token: str | None = Header(default=None, alias="X-CSRF-Token"),
+        session_token: str | None = Header(default=None, alias="X-Session-Token"),
+    ) -> dict:
+        validate_write_access(user_role, csrf_token, session_token)
+        pair = normalize_pair(str(payload.get("pair", "EUR/USD")))
+        timeframe = str(payload.get("timeframe", "M5")).upper()
+        try:
+            freqtrade_timeframe(timeframe)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return _cached_research_summary(pair, timeframe)
 
     @app.post("/api/v1/ai/research-cache/clear")
     async def clear_ai_research_cache(
@@ -3685,6 +3755,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             timeframe,
             max_candles=50000 if freqaimodel != "ForexAIStrategyBaseline" else 10000,
         )
+        history_value = int(payload.get("historyValue", steps))
         if freqaimodel != "ForexAIStrategyBaseline":
             minimum_candles = minimum_freqai_history(freqai_config, timeframe)
             if minimum_candles > 50000:
@@ -3695,8 +3766,8 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             if steps < minimum_candles:
                 history_mode = "candles"
                 steps = minimum_candles
+                history_value = steps
             freqai_config = freqai_history_config(freqai_config, timeframe, steps)
-        history_value = steps
         attempts = max(1, min(int(payload.get("attempts", 24)), 900))
         from freqtrade.forex.ai_hyperopt import DEFAULT_HYPEROPT_LOSS, HYPEROPT_LOSS_FUNCTIONS
         hyperopt_loss = str(payload.get("hyperoptLoss", DEFAULT_HYPEROPT_LOSS))
@@ -3726,11 +3797,6 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         settings = OandaSettings.from_environment()
         if settings.execution_mode not in {"dry_run", "backtest", "practice"}:
             raise HTTPException(status_code=400, detail="AI hyperopt requires a safe execution mode")
-        history_warning = (
-            f"Clearing previous cached historical data for {normalized_pair} at {timeframe} "
-            "before downloading fresh OANDA candles."
-        )
-        _clear_cached_historical_data(pair=normalized_pair, timeframe=timeframe)
         try:
             granularity = oanda_granularity(freqtrade_timeframe(timeframe))
         except ValueError as exc:
@@ -3801,6 +3867,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             informative_candles,
             history_mode,
             history_value,
+            steps,
             attempts,
             hyperopt_loss,
             freqaimodel,
@@ -3820,7 +3887,6 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             "freqaimodel": freqaimodel,
             "status": "running",
             "attemptsTotal": job["attemptsTotal"],
-            "warning": history_warning,
         }
 
     @app.get("/api/v1/ai/hyperopt/loss-functions")
@@ -4510,23 +4576,25 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         configured_strategy = dict(persisted_setup.get("pair_strategies", {})).get(instrument_name)
         strategy_class_name = str(payload.get("strategyClass") or configured_strategy or pair_config.get("strategyClass") or "ForexAIStrategyBaseline")
         selected_timeframe = freqtrade_timeframe(timeframe)
-        history_notice = (
-            f"Clearing previous cached historical data for {normalized_pair} at {timeframe} "
-            "before downloading fresh OANDA candles."
-        )
-        update_backtest_job(job_id, status="running", phase="validating", message=history_notice)
-        _clear_cached_historical_data(pair=normalized_pair, timeframe=timeframe)
         history_mode, steps = resolve_history_request(
             payload,
             timeframe,
             max_candles=50000 if freqaimodel != "ForexAIStrategyBaseline" else 10000,
         )
+        history_value = int(payload.get("historyValue", steps))
         if freqaimodel != "ForexAIStrategyBaseline":
             minimum_candles = minimum_freqai_history(freqai_config, timeframe)
             if steps < minimum_candles:
                 history_mode = "candles"
                 steps = minimum_candles
+                history_value = steps
             freqai_config = freqai_history_config(freqai_config, timeframe, steps)
+        update_backtest_job(
+            job_id,
+            status="running",
+            phase="validating",
+            message=f"Preparing to download up to {steps} {timeframe} candles for {normalized_pair}.",
+        )
         BACKTEST_HISTORY[:] = [
             item for item in BACKTEST_HISTORY
             if not (
@@ -4554,7 +4622,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             strategy_matches = str(approved_run.get("strategyClass", "ForexAIStrategyBaseline")) == strategy_class_name
             history_matches = (
                 approved_run.get("historyMode", "candles") == history_mode
-                and int(approved_run.get("historyValue", steps)) == int(payload.get("historyValue", steps))
+                and int(approved_run.get("historyValue", steps)) == history_value
             )
             if pair_matches and timeframe_matches and strategy_matches:
                 # Hyperopt parameters remain valid for the same pair/timeframe;
@@ -4808,10 +4876,14 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     "updatedAt": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                     "dataRevision": data_revision,
                     "historyMode": history_mode,
-                    "historyValue": int(payload.get("historyValue", steps)),
+                    "historyValue": history_value,
                     "dataHash": data_hash,
                 }
                 BACKTEST_HISTORY.insert(0, summary)
+                history_summary = (
+                    f"Requested up to {steps} {timeframe} candles; "
+                    f"OANDA returned {len(frame)}."
+                )
                 response = {
                     "id": summary["id"],
                     "status": "completed",
@@ -4819,9 +4891,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     "timeframe": timeframe,
                     "steps": len(frame),
                     "historyMode": history_mode,
-                    "historyValue": int(payload.get("historyValue", steps)),
-                    "message": history_notice + (" " + backtest_warning if backtest_warning else "") + f". Real OANDA historical backtest completed using {strategy_class_name}.",
-                    "warning": history_notice + (" " + backtest_warning if backtest_warning else ""),
+                    "historyValue": history_value,
+                    "message": history_summary + (" " + backtest_warning if backtest_warning else "") + f" Real OANDA historical backtest completed using {strategy_class_name}.",
+                    "warning": history_summary + (" " + backtest_warning if backtest_warning else ""),
                     "netPl": format_decimal(result.net_pl),
                     "trades": len(result.trades),
                     "startingBalance": format_decimal(result.starting_balance),

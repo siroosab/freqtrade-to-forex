@@ -30,7 +30,7 @@ class ForexSampleStrategy(IStrategy):
         "360": 0.0002,
         "720": 0.0,
     }
-    stoploss = -0.10
+    stoploss = -0.30
     process_only_new_candles = True
     use_exit_signal = False
 

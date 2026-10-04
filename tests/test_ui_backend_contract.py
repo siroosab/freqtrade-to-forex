@@ -660,11 +660,12 @@ def test_app_starts_without_built_ui_assets(tmp_path, monkeypatch):
     assert created.state.ui_assets_available is False
 
 
-def test_backtest_run_warns_and_clears_old_cache_before_refresh(monkeypatch):
-    calls = []
+def test_backtest_run_preserves_cache_and_uses_requested_candles(monkeypatch):
+    clear_calls = []
+    download_requests = []
 
     def fake_clear(pair: str, timeframe: str):
-        calls.append((pair, timeframe))
+        clear_calls.append((pair, timeframe))
 
     class FakeResult:
         net_pl = Decimal('123.45')
@@ -695,6 +696,7 @@ def test_backtest_run_warns_and_clears_old_cache_before_refresh(monkeypatch):
             return type('Account', (), {'balance': '10000', 'currency': 'USD'})()
 
         async def get_candles(self, instrument, granularity, count=None, **kwargs):
+            download_requests.append((instrument, granularity, count))
             return [
                 type('Candle', (), {'time': '2024-01-01T00:00:00Z', 'complete': True, 'open': '1.0', 'high': '1.1', 'low': '0.9', 'close': '1.05', 'volume': 1000})(),
                 type('Candle', (), {'time': '2024-01-01T00:05:00Z', 'complete': True, 'open': '1.05', 'high': '1.12', 'low': '1.0', 'close': '1.08', 'volume': 1000})(),
@@ -721,21 +723,24 @@ def test_backtest_run_warns_and_clears_old_cache_before_refresh(monkeypatch):
 
     response = client.post(
         '/api/v1/backtests/run',
-        json={'pair': 'EUR/USD', 'timeframe': 'M5', 'historyMode': 'candles', 'historyValue': 2},
+        json={'pair': 'EUR/USD', 'timeframe': 'M5', 'historyMode': 'candles', 'historyValue': 1234},
         headers={'X-Session-Token': token, 'X-User-Role': 'operator', 'X-CSRF-Token': csrf_token},
     )
 
     assert response.status_code == 200, response.text
     payload = response.json()
-    assert calls == [('EUR/USD', 'M5')]
-    assert 'clearing previous cached historical data' in payload['message'].lower()
+    assert clear_calls == []
+    assert download_requests[0] == ('EUR_USD', 'M5', 1234)
+    assert payload['steps'] == 2
+    assert 'OANDA returned 2' in payload['message']
 
 
-def test_hyperopt_start_warns_and_clears_old_cache_before_refresh(monkeypatch):
-    calls = []
+def test_hyperopt_start_preserves_cache_and_uses_requested_days(monkeypatch):
+    clear_calls = []
+    download_requests = []
 
     def fake_clear(pair: str, timeframe: str):
-        calls.append((pair, timeframe))
+        clear_calls.append((pair, timeframe))
 
     class FakeClient:
         def __init__(self, token, account_id, environment, **kwargs):
@@ -756,6 +761,7 @@ def test_hyperopt_start_warns_and_clears_old_cache_before_refresh(monkeypatch):
             return [type('Instrument', (), {'name': 'EUR_USD'})()]
 
         async def get_candles(self, instrument, granularity, count=None, **kwargs):
+            download_requests.append((instrument, granularity, count))
             return [
                 type('Candle', (), {'time': '2024-01-01T00:00:00Z', 'complete': True, 'open': '1.0', 'high': '1.1', 'low': '0.9', 'close': '1.05', 'volume': 1000})(),
                 type('Candle', (), {'time': '2024-01-01T00:05:00Z', 'complete': True, 'open': '1.05', 'high': '1.12', 'low': '1.0', 'close': '1.08', 'volume': 1000})(),
@@ -795,14 +801,14 @@ def test_hyperopt_start_warns_and_clears_old_cache_before_refresh(monkeypatch):
 
     response = client.post(
         '/api/v1/ai/hyperopt/start',
-        json={'pair': 'EUR/USD', 'timeframe': 'M5', 'historyMode': 'candles', 'historyValue': 2, 'attempts': 2},
+        json={'pair': 'EUR/USD', 'timeframe': 'M5', 'historyMode': 'days', 'historyValue': 2, 'attempts': 2},
         headers={'X-Session-Token': token, 'X-User-Role': 'operator', 'X-CSRF-Token': csrf_token},
     )
 
     assert response.status_code == 200, response.text
     payload = response.json()
-    assert calls == [('EUR/USD', 'M5')]
-    assert 'clearing previous cached historical data' in payload['warning'].lower()
+    assert clear_calls == []
+    assert download_requests[0] == ('EUR_USD', 'M5', 576)
     report_url = (
         '/api/v1/ai/hyperopt/report?pair=EUR%2FUSD'
         f'&strategy_class={payload["strategyClass"]}&timeframe=M5'
@@ -820,9 +826,53 @@ def test_hyperopt_start_warns_and_clears_old_cache_before_refresh(monkeypatch):
     assert report_response.status_code == 200, report_response.text
     assert report_response.json().get('available'), report_response.json()
     report = report_response.json()['report']
+    assert report['historyMode'] == 'days'
+    assert report['historyValue'] == 2
+    assert report['steps'] == 2
     assert report['bestMinimalRoi'] == FakeCandidate().minimal_roi
     assert report['roiParameters'] == FakeCandidate().roi_parameters
     assert report['candidates'][0]['minimal_roi'] == FakeCandidate().minimal_roi
+
+
+def test_ai_research_cache_inspection_reports_scope_before_clear(tmp_path, monkeypatch):
+    original_cwd = Path.cwd()
+    monkeypatch.chdir(tmp_path)
+    candle_cache = Path('user_data/data/oanda/candles.json')
+    candle_cache.parent.mkdir(parents=True)
+    candle_cache.write_text(json.dumps({
+        'version': 1,
+        'ranges': {
+            'CAD_JPY|5m|start|end': {
+                'instrument': 'CAD_JPY',
+                'timeframe': '5m',
+                'raw': [
+                    {'time': '2024-01-01T00:00:00Z'},
+                    {'time': '2024-01-01T00:05:00Z'},
+                ],
+            },
+            'GBP_USD|5m|start|end': {'instrument': 'GBP_USD', 'timeframe': '5m', 'raw': []},
+        },
+    }), encoding='utf-8')
+    model_dir = Path('user_data/hyperopt_results')
+    model_dir.mkdir(parents=True)
+    (model_dir / 'CAD_JPY_1h_cached.txt').write_text('cached model', encoding='utf-8')
+    (model_dir / 'CAD_JPY_1h_LightGBMRegressor.json').write_text('hyperopt report', encoding='utf-8')
+
+    response = client.post(
+        '/api/v1/ai/research-cache/inspect',
+        json={'pair': 'CAD/JPY', 'timeframe': 'M5'},
+        headers=_auth_headers(client),
+    )
+
+    assert response.status_code == 200, response.text
+    summary = response.json()
+    assert summary['candleRangeCount'] == 1
+    assert summary['storedCandleCount'] == 2
+    assert summary['oldestCandle'] == '2024-01-01T00:00:00Z'
+    assert summary['newestCandle'] == '2024-01-01T00:05:00Z'
+    assert summary['modelFileCount'] == 1
+    assert summary['hyperoptReportsPreserved'] is True
+    monkeypatch.chdir(original_cwd)
 
 
 def test_ai_research_cache_clear_is_scoped_and_preserves_reports(tmp_path, monkeypatch):

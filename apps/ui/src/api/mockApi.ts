@@ -298,6 +298,7 @@ export type AiHyperoptReport = {
   hyperoptLoss?: string
   historyMode?: 'candles' | 'days'
   historyValue?: number
+  steps?: number
   trainCandles: number
   validationCandles: number
   bestParameters: Record<string, string | number | boolean>
@@ -1103,6 +1104,34 @@ export async function getBacktestJob(jobId: string): Promise<BacktestRunResult> 
   const response = await fetch(buildApiUrl(`/api/v1/backtests/${jobId}`))
   if (!response.ok) throw new Error('Backtest job unavailable')
   return response.json() as Promise<BacktestRunResult>
+}
+
+export type AiResearchCacheSummary = {
+  pair: string
+  timeframe: string
+  candleRangeCount: number
+  storedCandleCount: number
+  candleFileCount: number
+  candleFiles: string[]
+  oldestCandle: string | null
+  newestCandle: string | null
+  modelFileCount: number
+  modelFiles: string[]
+  hyperoptReportsPreserved: boolean
+}
+
+export async function inspectAiResearchCache(payload: { pair: string; timeframe: string }): Promise<AiResearchCacheSummary> {
+  const response = await fetch(buildApiUrl('/api/v1/ai/research-cache/inspect'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!response.ok) {
+    let detail = `HTTP ${response.status}`
+    try { detail = ((await response.json()) as { detail?: string }).detail ?? detail } catch { /* status is enough */ }
+    throw new Error(`Cache inspection failed: ${detail}`)
+  }
+  return response.json() as Promise<AiResearchCacheSummary>
 }
 
 export async function clearAiResearchCache(payload: { pair: string; timeframe: string; candles?: boolean; models?: boolean }): Promise<{
