@@ -360,6 +360,7 @@ export async function downloadCandleDateRange(payload: {
   timeframe: string
   startDate: string
   endDate: string
+  effectiveEnd: string
   candles: number
   from: string | null
   to: string | null
@@ -376,6 +377,7 @@ export async function downloadCandleDateRange(payload: {
     timeframe: string
     startDate: string
     endDate: string
+    effectiveEnd: string
     candles: number
     from: string | null
     to: string | null

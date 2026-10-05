@@ -3455,7 +3455,15 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         if start_date > end_date:
             raise HTTPException(status_code=400, detail="startDate must not be after endDate")
         start = datetime.combine(start_date, datetime.min.time(), tzinfo=UTC)
-        end = datetime.combine(end_date + timedelta(days=1), datetime.min.time(), tzinfo=UTC)
+        requested_end = datetime.combine(
+            end_date + timedelta(days=1), datetime.min.time(), tzinfo=UTC
+        )
+        end = min(requested_end, datetime.now(UTC) - timedelta(minutes=1))
+        if start >= end:
+            raise HTTPException(
+                status_code=400,
+                detail="The selected range contains no completed candles before the current UTC time",
+            )
         settings = OandaSettings.from_environment()
         candle_store = get_candle_store()
         try:
@@ -3488,6 +3496,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "timeframe": normalized_timeframe,
                 "startDate": start_date.isoformat(),
                 "endDate": end_date.isoformat(),
+                "effectiveEnd": end.isoformat(),
                 "candles": len(frame),
             },
             role=user_role,
@@ -3498,6 +3507,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             "timeframe": normalized_timeframe,
             "startDate": start_date.isoformat(),
             "endDate": end_date.isoformat(),
+            "effectiveEnd": end.isoformat(),
             "candles": len(frame),
             "from": frame["date"].min().isoformat() if not frame.empty else None,
             "to": frame["date"].max().isoformat() if not frame.empty else None,

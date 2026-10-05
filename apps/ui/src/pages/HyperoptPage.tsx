@@ -335,7 +335,7 @@ export function HyperoptPage() {
           {downloadMutation.data && (
             <p aria-live="polite">
               Downloaded {downloadMutation.data.candles.toLocaleString()} {downloadMutation.data.timeframe} candles for {downloadMutation.data.pair}
-              {' '}({downloadMutation.data.startDate} through {downloadMutation.data.endDate}).
+              {' '}({downloadMutation.data.startDate} through {downloadMutation.data.endDate}; available through {formatUtcDateTime(downloadMutation.data.effectiveEnd)}).
             </p>
           )}
           {clearCacheMutation.error && <p role="alert">Cache clear failed: {clearCacheMutation.error.message}</p>}

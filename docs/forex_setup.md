@@ -97,7 +97,10 @@ The Hyperopt Scope panel accepts history in either candles or calendar days.
 It also reports cached candles for the selected pair/timeframe with their
 covered UTC dates, downloads a chosen inclusive start/end date range, and can
 clear that pair/timeframe's cached ranges. Downloaded date ranges are reusable
-by Backtest and Hyperopt when the cache contains enough candles.
+by Backtest and Hyperopt when the cache contains enough candles. Requests ending
+today are capped at one minute before the current UTC time so OANDA does not
+reject an end timestamp that is still in the future; the effective end is shown
+after the download.
 
 Inspect the currently selected pair settings and approval state without broker
 credentials:

@@ -615,6 +615,7 @@ def test_hyperopt_approval_flows_into_chart_strategy(tmp_path, monkeypatch):
 
 
 def test_hyperopt_date_download_reports_and_clears_cache(tmp_path, monkeypatch):
+    from datetime import UTC, datetime
     from types import SimpleNamespace
 
     database_path = tmp_path / "candle-cache.sqlite"
@@ -674,6 +675,16 @@ def test_hyperopt_date_download_reports_and_clears_cache(tmp_path, monkeypatch):
             },
         )
         inventory = scoped_client.get(inventory_url)
+        today_download = scoped_client.post(
+            "/api/v1/hyperopt/data-download",
+            headers=headers,
+            json={
+                "pair": "EUR/USD",
+                "timeframe": "M15",
+                "startDate": "2026-06-01",
+                "endDate": datetime.now(UTC).date().isoformat(),
+            },
+        )
         rejected = scoped_client.post(
             "/api/v1/hyperopt/data-download",
             headers=headers,
@@ -692,18 +703,28 @@ def test_hyperopt_date_download_reports_and_clears_cache(tmp_path, monkeypatch):
     assert empty_inventory.json()["candles"] == 0
     assert downloaded.status_code == 200, downloaded.text
     assert downloaded.json()["candles"] == 2
-    assert candles_requested == [
-        ("EUR_USD", "M15", "2026-06-01T00:00:00Z", "2026-06-03T00:00:00Z"),
-    ]
+    assert candles_requested[0] == (
+        "EUR_USD",
+        "M15",
+        "2026-06-01T00:00:00Z",
+        "2026-06-03T00:00:00Z",
+    )
     assert inventory.status_code == 200
     assert inventory.json()["candles"] == 2
     assert inventory.json()["cachedRanges"] == 1
     assert inventory.json()["ranges"][0]["from"].startswith("2026-06-01T12:00:00")
     assert inventory.json()["ranges"][0]["to"].startswith("2026-06-02T12:00:00")
+    assert today_download.status_code == 200, today_download.text
+    assert today_download.json()["effectiveEnd"]
+    assert datetime.fromisoformat(today_download.json()["effectiveEnd"]) <= datetime.now(UTC)
+    assert all(
+        datetime.fromisoformat(request[3].replace("Z", "+00:00")) <= datetime.now(UTC)
+        for request in candles_requested[1:]
+    )
     assert rejected.status_code == 400
     assert unauthorized_clear.status_code == 401
     assert cleared.status_code == 200
-    assert cleared.json()["removedRanges"] == 1
+    assert cleared.json()["removedRanges"] == 2
     assert cleared_inventory.json()["candles"] == 0
 
 
