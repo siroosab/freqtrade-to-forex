@@ -1,6 +1,9 @@
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import {
+  clearCandleCache,
+  downloadCandleDateRange,
+  getCandleCacheInventory,
   getAvailableStrategies,
   getBacktestJob,
   getHyperoptLossFunctions,
@@ -16,12 +19,32 @@ import { useUiStore } from '../store/useUiStore'
 
 const TIMEFRAMES = ['M1', 'M5', 'M15', 'M30', 'H1', 'H2', 'H4', 'H6', 'H8', 'H12', 'D1', 'W1', 'MN1']
 
+function initialDateRange(): { startDate: string; endDate: string } {
+  const end = new Date()
+  const start = new Date(end)
+  start.setDate(start.getDate() - 29)
+  const localDate = (value: Date) => (
+    `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`
+  )
+  return {
+    startDate: localDate(start),
+    endDate: localDate(end),
+  }
+}
+
+function formatUtcDateTime(value: string): string {
+  return `${new Date(value).toLocaleString(undefined, { timeZone: 'UTC' })} UTC`
+}
+
 export function HyperoptPage() {
+  const queryClient = useQueryClient()
   const pairs = useUiStore((state) => state.selectedInstruments)
   const [pair, setPair] = useState(pairs[0] ?? 'EUR/USD')
   const [timeframe, setTimeframe] = useState('M15')
   const [strategyClass, setStrategyClass] = useState('')
   const [historyValue, setHistoryValue] = useState(500)
+  const [historyMode, setHistoryMode] = useState<'candles' | 'days'>('candles')
+  const [dateRange, setDateRange] = useState(initialDateRange)
   const [attempts, setAttempts] = useState(30)
   const [lossFunction, setLossFunction] = useState('ProfitDrawDownHyperOptLoss')
   const [backtestJobId, setBacktestJobId] = useState<string | null>(null)
@@ -32,6 +55,11 @@ export function HyperoptPage() {
   const lossFunctionsQuery = useQuery({
     queryKey: ['hyperopt-loss-functions'],
     queryFn: getHyperoptLossFunctions,
+  })
+  const cacheQuery = useQuery({
+    queryKey: ['candle-cache', pair, timeframe],
+    queryFn: () => getCandleCacheInventory(pair, timeframe),
+    enabled: Boolean(pair && timeframe),
   })
 
   useEffect(() => {
@@ -88,6 +116,7 @@ export function HyperoptPage() {
       void statusQuery.refetch()
       void reportQuery.refetch()
       void reviewQuery.refetch()
+      void queryClient.invalidateQueries({ queryKey: ['candle-cache', pair, timeframe] })
     },
   })
   const stopMutation = useMutation({
@@ -105,6 +134,18 @@ export function HyperoptPage() {
     mutationFn: saveStrategyReview,
     onSuccess: () => void reviewQuery.refetch(),
   })
+  const downloadMutation = useMutation({
+    mutationFn: downloadCandleDateRange,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['candle-cache', pair, timeframe] })
+    },
+  })
+  const clearCacheMutation = useMutation({
+    mutationFn: () => clearCandleCache(pair, timeframe),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['candle-cache', pair, timeframe] })
+    },
+  })
 
   const report = statusQuery.data?.report ?? reportQuery.data?.report
   const backtest = backtestQuery.data?.result ?? backtestQuery.data
@@ -114,11 +155,27 @@ export function HyperoptPage() {
     && backtestQuery.data?.status !== 'completed'
     && backtestQuery.data?.status !== 'failed',
   )
-  const researchBusy = running || backtestRunning || hyperoptMutation.isPending || backtestMutation.isPending
+  const researchBusy = running
+    || backtestRunning
+    || hyperoptMutation.isPending
+    || backtestMutation.isPending
+    || downloadMutation.isPending
+    || clearCacheMutation.isPending
   const strategies = strategiesQuery.data ?? []
+  const historyValueValid = Number.isInteger(historyValue)
+    && historyValue >= (historyMode === 'candles' ? 40 : 1)
+    && historyValue <= 10000
+  const dateRangeValid = Boolean(dateRange.startDate && dateRange.endDate)
+    && dateRange.startDate <= dateRange.endDate
+
+  useEffect(() => {
+    if (backtestQuery.data?.status === 'completed') {
+      void queryClient.invalidateQueries({ queryKey: ['candle-cache', pair, timeframe] })
+    }
+  }, [backtestQuery.data?.status, pair, queryClient, timeframe])
 
   const runResearch = () => {
-    const history = { historyMode: 'candles' as const, historyValue, steps: historyValue }
+    const history = { historyMode, historyValue, steps: historyValue }
     backtestMutation.mutate({ pair, timeframe, strategyClass, ...history })
   }
 
@@ -128,7 +185,7 @@ export function HyperoptPage() {
       timeframe,
       strategyClass,
       steps: historyValue,
-      historyMode: 'candles',
+      historyMode,
       historyValue,
       attempts,
       hyperoptLoss: lossFunction,
@@ -146,6 +203,11 @@ export function HyperoptPage() {
         ? 'Hyperopt result approved for the selected pair, timeframe, and strategy.'
         : 'Hyperopt result rejected; it must not be used for signal generation.',
     })
+  }
+
+  const clearSelectedCache = () => {
+    if (!window.confirm(`Clear all cached ${timeframe} candles for ${pair}?`)) return
+    clearCacheMutation.mutate()
   }
 
   const timeframeOptions = TIMEFRAMES
@@ -185,10 +247,101 @@ export function HyperoptPage() {
               </select>
             </label>
             <label className="field-block">
-              <span>History (candles)</span>
-              <input type="number" min="40" max="10000" value={historyValue} onChange={(event) => setHistoryValue(Number(event.target.value))} />
+              <span>History unit</span>
+              <select
+                value={historyMode}
+                onChange={(event) => {
+                  const mode = event.target.value as 'candles' | 'days'
+                  setHistoryMode(mode)
+                  setHistoryValue(mode === 'days' ? 30 : 500)
+                }}
+              >
+                <option value="candles">Candles</option>
+                <option value="days">Days</option>
+              </select>
+            </label>
+            <label className="field-block">
+              <span>History ({historyMode})</span>
+              <input
+                type="number"
+                min={historyMode === 'candles' ? 40 : 1}
+                max="10000"
+                value={historyValue}
+                onChange={(event) => setHistoryValue(Number(event.target.value))}
+              />
             </label>
           </div>
+          <div className="settings-grid">
+            <label className="field-block">
+              <span>Download from (UTC)</span>
+              <input
+                type="date"
+                value={dateRange.startDate}
+                max={dateRange.endDate || undefined}
+                onChange={(event) => setDateRange((current) => ({ ...current, startDate: event.target.value }))}
+              />
+            </label>
+            <label className="field-block">
+              <span>Download through (UTC)</span>
+              <input
+                type="date"
+                value={dateRange.endDate}
+                min={dateRange.startDate || undefined}
+                onChange={(event) => setDateRange((current) => ({ ...current, endDate: event.target.value }))}
+              />
+            </label>
+            <div className="field-block">
+              <span>Cached {timeframe} candles for {pair}</span>
+              {cacheQuery.isLoading ? (
+                <strong>Loading cache inventory…</strong>
+              ) : cacheQuery.data ? (
+                <strong>
+                  {cacheQuery.data.candles.toLocaleString()} candles across {cacheQuery.data.cachedRanges} cached range(s)
+                  {cacheQuery.data.from && cacheQuery.data.to
+                    ? ` · ${formatUtcDateTime(cacheQuery.data.from)} – ${formatUtcDateTime(cacheQuery.data.to)}`
+                    : ''}
+                </strong>
+              ) : null}
+            </div>
+            <div className="summary-grid">
+              <button
+                className="primary-action"
+                type="button"
+                onClick={() => downloadMutation.mutate({ pair, timeframe, ...dateRange })}
+                disabled={!scopeEnabled || !dateRangeValid || researchBusy}
+              >
+                {downloadMutation.isPending ? 'Downloading…' : 'Download date range'}
+              </button>
+              <button
+                className="secondary-action"
+                type="button"
+                onClick={clearSelectedCache}
+                disabled={!cacheQuery.data?.cachedRanges || researchBusy}
+              >
+                {clearCacheMutation.isPending ? 'Clearing…' : 'Clear this pair/timeframe'}
+              </button>
+            </div>
+          </div>
+          {cacheQuery.data?.ranges.map((range) => (
+            <p className="muted" key={range.key}>
+              {range.kind === 'range' ? 'Date range' : 'Recent cache'} · {range.candles.toLocaleString()} candles
+              {range.from && range.to
+                ? ` · ${formatUtcDateTime(range.from)} – ${formatUtcDateTime(range.to)}`
+                : ''}
+            </p>
+          ))}
+          {cacheQuery.error && <p role="alert">Cache inventory unavailable: {cacheQuery.error.message}</p>}
+          {downloadMutation.error && <p role="alert">Data download failed: {downloadMutation.error.message}</p>}
+          {downloadMutation.data && (
+            <p aria-live="polite">
+              Downloaded {downloadMutation.data.candles.toLocaleString()} {downloadMutation.data.timeframe} candles for {downloadMutation.data.pair}
+              {' '}({downloadMutation.data.startDate} through {downloadMutation.data.endDate}).
+            </p>
+          )}
+          {clearCacheMutation.error && <p role="alert">Cache clear failed: {clearCacheMutation.error.message}</p>}
+          {clearCacheMutation.data && (
+            <p aria-live="polite">Removed {clearCacheMutation.data.removedRanges} cached range(s) for {clearCacheMutation.data.pair} · {clearCacheMutation.data.timeframe}.</p>
+          )}
           {(strategiesQuery.isError || lossFunctionsQuery.isError) && (
             <p role="alert">Optimization inputs could not be loaded from the API.</p>
           )}
@@ -200,7 +353,7 @@ export function HyperoptPage() {
         <div className="panel research-panel">
           <div className="panel-header compact">
             <div><p className="eyebrow">Research · 01</p><h3>Backtest</h3></div>
-            <button className="primary-action" type="button" onClick={runResearch} disabled={!scopeEnabled || researchBusy}>
+            <button className="primary-action" type="button" onClick={runResearch} disabled={!scopeEnabled || !historyValueValid || researchBusy}>
               {backtestMutation.isPending || backtestRunning ? 'Backtest running…' : 'Run backtest'}
             </button>
           </div>
@@ -226,7 +379,7 @@ export function HyperoptPage() {
           <div className="panel-header compact">
             <div><p className="eyebrow">02 · Manual Hyperopt</p><h3>Optimize strategy parameters</h3></div>
             <div className="summary-grid">
-              <button className="primary-action" type="button" onClick={runOptimization} disabled={!scopeEnabled || researchBusy || !strategies.length}>
+              <button className="primary-action" type="button" onClick={runOptimization} disabled={!scopeEnabled || !historyValueValid || researchBusy || !strategies.length}>
                 {running || hyperoptMutation.isPending ? 'Optimizing…' : 'Run hyperopt'}
               </button>
               <button className="secondary-action" type="button" onClick={() => stopMutation.mutate()} disabled={!running || stopMutation.isPending}>

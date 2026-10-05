@@ -186,6 +186,24 @@ export type HyperoptStatus = {
   hasLastReport?: boolean
 }
 
+export type CandleCacheInventory = {
+  instrument: string
+  timeframe: string
+  cachedRanges: number
+  candles: number
+  from: string | null
+  to: string | null
+  ranges: Array<{
+    key: string
+    kind: 'latest' | 'range'
+    requestedStart: string | null
+    requestedEnd: string | null
+    candles: number
+    from: string | null
+    to: string | null
+  }>
+}
+
 export type BacktestRunResult = {
   id: string
   status: string
@@ -308,6 +326,61 @@ export async function getHyperoptLossFunctions(): Promise<{ default: string; opt
   const response = await fetch(buildApiUrl('/api/v1/hyperopt/loss-functions'))
   if (!response.ok) return throwApiError(response, 'Hyperopt loss functions unavailable')
   return response.json() as Promise<{ default: string; options: string[] }>
+}
+
+export async function getCandleCacheInventory(
+  pair: string,
+  timeframe: string,
+): Promise<CandleCacheInventory> {
+  const params = new URLSearchParams({ pair, timeframe })
+  const response = await fetch(buildApiUrl(`/api/v1/hyperopt/data-cache?${params.toString()}`))
+  if (!response.ok) return throwApiError(response, 'Cached candle inventory unavailable')
+  return response.json() as Promise<CandleCacheInventory>
+}
+
+export async function clearCandleCache(
+  pair: string,
+  timeframe: string,
+): Promise<{ pair: string; timeframe: string; removedRanges: number }> {
+  const params = new URLSearchParams({ pair, timeframe })
+  const response = await fetch(buildApiUrl(`/api/v1/hyperopt/data-cache?${params.toString()}`), {
+    method: 'DELETE',
+  })
+  if (!response.ok) return throwApiError(response, 'Candle cache clear rejected')
+  return response.json() as Promise<{ pair: string; timeframe: string; removedRanges: number }>
+}
+
+export async function downloadCandleDateRange(payload: {
+  pair: string
+  timeframe: string
+  startDate: string
+  endDate: string
+}): Promise<{
+  pair: string
+  timeframe: string
+  startDate: string
+  endDate: string
+  candles: number
+  from: string | null
+  to: string | null
+  cache: CandleCacheInventory
+}> {
+  const response = await fetch(buildApiUrl('/api/v1/hyperopt/data-download'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!response.ok) return throwApiError(response, 'Historical candle download rejected')
+  return response.json() as Promise<{
+    pair: string
+    timeframe: string
+    startDate: string
+    endDate: string
+    candles: number
+    from: string | null
+    to: string | null
+    cache: CandleCacheInventory
+  }>
 }
 const fallbackData = {
   account: {

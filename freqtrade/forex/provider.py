@@ -1,5 +1,6 @@
 """OANDA market-data bridge for Freqtrade-compatible OHLCV data."""
 
+from calendar import monthrange
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -20,7 +21,8 @@ OANDA_GRANULARITIES = {
     "4h": "H4",
     "1d": "D1",
     "1w": "W1",
-    "1mo": "M1",
+    "1M": "M",
+    "1mo": "M",
 }
 MAX_HISTORICAL_CANDLES_PER_REQUEST = 5000
 
@@ -69,6 +71,7 @@ class OandaMarketDataProvider:
             "4h": timedelta(hours=4),
             "1d": timedelta(days=1),
             "1w": timedelta(weeks=1),
+            "1M": timedelta(days=31),
         }
         try:
             return mapping[timeframe]
@@ -76,16 +79,33 @@ class OandaMarketDataProvider:
             raise ValueError(f"Unsupported OANDA timeframe: {timeframe}") from exc
 
     @staticmethod
+    def _add_months(value: datetime, months: int) -> datetime:
+        month_index = value.year * 12 + value.month - 1 + months
+        year, month_offset = divmod(month_index, 12)
+        month = month_offset + 1
+        day = min(value.day, monthrange(year, month)[1])
+        return value.replace(year=year, month=month, day=day)
+
+    @staticmethod
     def detect_gaps(candles: list[OandaCandle], *, timeframe: str) -> list[str]:
         if not candles:
             return []
 
-        step = OandaMarketDataProvider._timeframe_delta(timeframe)
         ordered = sorted(candles, key=lambda candle: candle.time)
         missing_times: list[str] = []
         for previous, current in zip(ordered, ordered[1:]):
-            previous_dt = datetime.fromisoformat(previous.time.replace("Z", "+00:00")).astimezone(UTC)
+            previous_dt = datetime.fromisoformat(previous.time.replace("Z", "+00:00")).astimezone(
+                UTC
+            )
             current_dt = datetime.fromisoformat(current.time.replace("Z", "+00:00")).astimezone(UTC)
+            if timeframe == "1M":
+                previous_month = previous_dt.year * 12 + previous_dt.month
+                current_month = current_dt.year * 12 + current_dt.month
+                for offset in range(1, current_month - previous_month):
+                    missing_dt = OandaMarketDataProvider._add_months(previous_dt, offset)
+                    missing_times.append(missing_dt.isoformat().replace("+00:00", "Z"))
+                continue
+            step = OandaMarketDataProvider._timeframe_delta(timeframe)
             delta = current_dt - previous_dt
             if delta <= step:
                 continue
@@ -140,13 +160,15 @@ class OandaMarketDataProvider:
                 return self.candles_to_dataframe(cached)
         granularity = self.to_oanda_granularity(timeframe)
         interval = self._timeframe_delta(timeframe)
-        max_page_duration = interval * (
-            MAX_HISTORICAL_CANDLES_PER_REQUEST - 1
-        )
+        max_page_duration = interval * (MAX_HISTORICAL_CANDLES_PER_REQUEST - 1)
         candles: list[OandaCandle] = []
         page_start = start_dt
         while page_start < end_dt:
-            page_end = min(page_start + max_page_duration, end_dt)
+            if timeframe == "1M":
+                page_limit = self._add_months(page_start, MAX_HISTORICAL_CANDLES_PER_REQUEST - 1)
+            else:
+                page_limit = page_start + max_page_duration
+            page_end = min(page_limit, end_dt)
             page = await self.client.get_candles(
                 instrument,
                 granularity,
@@ -159,7 +181,9 @@ class OandaMarketDataProvider:
         candles = [
             candle
             for candle in candles
-            if start_dt <= datetime.fromisoformat(candle.time.replace("Z", "+00:00")).astimezone(UTC) < end_dt
+            if start_dt
+            <= datetime.fromisoformat(candle.time.replace("Z", "+00:00")).astimezone(UTC)
+            < end_dt
         ]
         if store is not None:
             store.save(

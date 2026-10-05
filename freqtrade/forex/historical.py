@@ -37,10 +37,34 @@ class HistoricalCandleStore:
         if not self.path.exists():
             return None
         payload = json.loads(self.path.read_text(encoding="utf-8"))
-        record = payload.get("ranges", {}).get(self._latest_key(instrument, timeframe, count))
-        if record is None:
-            return None
-        return [OandaCandle.from_payload(item) for item in record["raw"]]
+        ranges = payload.get("ranges", {})
+        exact_record = ranges.get(self._latest_key(instrument, timeframe, count))
+        candles_by_time: dict[str, OandaCandle] = {}
+        complete_ranges: list[list[OandaCandle]] = []
+        for cached in ranges.values():
+            if (
+                cached.get("instrument", "").upper() != instrument.upper()
+                or cached.get("timeframe") != timeframe
+            ):
+                continue
+            cached_candles: list[OandaCandle] = []
+            for item in cached.get("raw", []):
+                candle = OandaCandle.from_payload(item)
+                candles_by_time[candle.time] = candle
+                cached_candles.append(candle)
+            if len(cached_candles) >= count:
+                complete_ranges.append(cached_candles)
+        if complete_ranges:
+            latest_range = max(
+                complete_ranges,
+                key=lambda candles: max(candle.time for candle in candles),
+            )
+            return sorted(latest_range, key=lambda candle: candle.time)[-count:]
+        if len(candles_by_time) < count:
+            if exact_record is None:
+                return None
+            return [OandaCandle.from_payload(item) for item in exact_record["raw"]]
+        return sorted(candles_by_time.values(), key=lambda candle: candle.time)[-count:]
 
     def save(
         self,
@@ -107,6 +131,56 @@ class HistoricalCandleStore:
             del ranges[key]
         self.path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         return len(matching)
+
+    def inventory(self, *, instrument: str, timeframe: str) -> dict[str, Any]:
+        if not self.path.exists():
+            return {
+                "instrument": instrument.upper(),
+                "timeframe": timeframe,
+                "cachedRanges": 0,
+                "candles": 0,
+                "from": None,
+                "to": None,
+                "ranges": [],
+            }
+        payload = json.loads(self.path.read_text(encoding="utf-8"))
+        matching = (
+            (key, record)
+            for key, record in payload.get("ranges", {}).items()
+            if record.get("instrument", "").upper() == instrument.upper()
+            and record.get("timeframe") == timeframe
+        )
+        timestamps: set[datetime] = set()
+        ranges: list[dict[str, Any]] = []
+        for key, record in matching:
+            raw = record.get("raw", [])
+            candle_times = {
+                datetime.fromisoformat(item["time"].replace("Z", "+00:00")).astimezone(UTC)
+                for item in raw
+            }
+            timestamps.update(candle_times)
+            ranges.append(
+                {
+                    "key": key,
+                    "kind": "range" if "start" in record else "latest",
+                    "requestedStart": record.get("start"),
+                    "requestedEnd": record.get("end"),
+                    "candles": len(candle_times),
+                    "from": min(candle_times).isoformat() if candle_times else None,
+                    "to": max(candle_times).isoformat() if candle_times else None,
+                }
+            )
+        ranges.sort(key=lambda item: (item["from"] or "", item["key"]))
+        ordered = sorted(timestamps)
+        return {
+            "instrument": instrument.upper(),
+            "timeframe": timeframe,
+            "cachedRanges": len(ranges),
+            "candles": len(timestamps),
+            "from": ordered[0].isoformat() if ordered else None,
+            "to": ordered[-1].isoformat() if ordered else None,
+            "ranges": ranges,
+        }
 
     @staticmethod
     def _key(instrument: str, timeframe: str, start: str, end: str) -> str:

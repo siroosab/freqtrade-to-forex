@@ -13,7 +13,7 @@ import secrets
 import sqlite3
 import threading
 from contextlib import suppress
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from functools import partial
 from pathlib import Path
@@ -27,9 +27,11 @@ from freqtrade.forex.auto_execution import OandaAutoStrategyExecutor
 from freqtrade.forex.backtest import ForexBacktester
 from freqtrade.forex.config import OandaSettings, load_forex_config, save_forex_config
 from freqtrade.forex.health import OandaHealthCheck
+from freqtrade.forex.historical import HistoricalCandleStore
 from freqtrade.forex.ledger import PaperLedger
 from freqtrade.forex.models import OandaEnvironment, OandaInstrument
 from freqtrade.forex.oanda import OandaAPIError, OandaClient, discover_oanda_accounts
+from freqtrade.forex.provider import OandaMarketDataProvider
 from freqtrade.forex.strategy_catalog import discover_strategy_files, validate_strategy_upload
 from freqtrade.forex.strategy_execution import (
     FreqtradeStrategyAdapter,
@@ -71,9 +73,7 @@ def _validated_protection_values(
         except (InvalidOperation, TypeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=f"{name} must be a number") from exc
         if not parsed.is_finite() or parsed <= 0:
-            raise HTTPException(
-                status_code=400, detail=f"{name} must be a positive number"
-            )
+            raise HTTPException(status_code=400, detail=f"{name} must be a positive number")
     if trailing_distance is not None:
         try:
             parsed_distance = Decimal(str(trailing_distance))
@@ -113,16 +113,21 @@ def _render_ui_index(ui_index: Path) -> str:
         html = re.sub(r'href="/assets/[^"]+\.css"', f'href="/assets/{css_assets[0].name}"', html)
 
     return html
+
+
 def format_hyperopt_report(report: dict) -> str:
     """Format baseline and generic strategy Hyperopt results."""
     best_parameters = report.get("bestParameters") or {}
     best_minimal_roi = report.get("bestMinimalRoi") or {}
 
     def parameter_text(parameters: dict) -> str:
-        return " ".join(
-            f"{name}={value}{'%' if name == 'maxSpreadPct' else ''}"
-            for name, value in parameters.items()
-        ) or "none"
+        return (
+            " ".join(
+                f"{name}={value}{'%' if name == 'maxSpreadPct' else ''}"
+                for name, value in parameters.items()
+            )
+            or "none"
+        )
 
     coverage_line = (
         f"  {report['candidatesTested']} candidates tested ({report['attemptsRequested']} attempts requested)"
@@ -168,7 +173,9 @@ def format_hyperopt_report(report: dict) -> str:
     return "\n".join(lines)
 
 
-def _normalize_api_users(raw_users: object, *, source_name: str, min_password_length: int) -> dict[str, dict[str, str]]:
+def _normalize_api_users(
+    raw_users: object, *, source_name: str, min_password_length: int
+) -> dict[str, dict[str, str]]:
     normalized: dict[str, dict[str, str]] = {}
     sources: list[tuple[str, object]] = []
     if isinstance(raw_users, dict):
@@ -191,7 +198,11 @@ def _normalize_api_users(raw_users: object, *, source_name: str, min_password_le
                 username = str(user_config.get("username", "")).strip()
                 resolved_user = user_config
             else:
-                if not isinstance(username, str) or not username.strip() or not isinstance(user_config, dict):
+                if (
+                    not isinstance(username, str)
+                    or not username.strip()
+                    or not isinstance(user_config, dict)
+                ):
                     raise ValueError(f"{source_label} entries must map usernames to user objects")
                 resolved_user = user_config
             if not isinstance(username, str) or not username.strip():
@@ -219,7 +230,9 @@ def _load_session_users() -> dict[str, dict[str, str]]:
             raw_users = json.loads(configured_users)
         except json.JSONDecodeError as exc:
             raise ValueError("FOREX_API_USERS_JSON must contain a JSON object") from exc
-        return _normalize_api_users(raw_users, source_name="FOREX_API_USERS_JSON", min_password_length=12)
+        return _normalize_api_users(
+            raw_users, source_name="FOREX_API_USERS_JSON", min_password_length=12
+        )
 
     config_path = Path(os.environ.get("OANDA_CONFIG_PATH", "user_data/config.json"))
     if config_path.exists():
@@ -290,6 +303,16 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
     instrument_metadata_cache: dict[tuple[str, str], tuple[datetime, OandaInstrument]] = {}
     instrument_metadata_cache_ttl = timedelta(minutes=5)
 
+    def get_candle_store() -> HistoricalCandleStore:
+        return HistoricalCandleStore(
+            Path(
+                os.environ.get(
+                    "OANDA_CANDLE_CACHE_PATH",
+                    "user_data/data/oanda/candles.json",
+                )
+            )
+        )
+
     def redact_value(value: object) -> object:
         if isinstance(value, str):
             return "***REDACTED***" if value else value
@@ -305,17 +328,30 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         sanitized: dict[str, object] = {}
         for key, value in data.items():
             lowered = str(key).lower()
-            if any(token in lowered for token in ("token", "secret", "password", "authorization", "cookie", "key")):
+            if any(
+                token in lowered
+                for token in ("token", "secret", "password", "authorization", "cookie", "key")
+            ):
                 sanitized[key] = "***REDACTED***"
             elif isinstance(value, dict):
                 sanitized[key] = sanitize_for_log(value)
             elif isinstance(value, list):
-                sanitized[key] = [sanitize_for_log(item) if isinstance(item, dict) else redact_value(item) for item in value]
+                sanitized[key] = [
+                    sanitize_for_log(item) if isinstance(item, dict) else redact_value(item)
+                    for item in value
+                ]
             else:
                 sanitized[key] = redact_value(value)
         return sanitized
 
-    def record_audit_event(event: str, *, details: dict | None = None, username: str | None = None, role: str | None = None, allowed: bool | None = None) -> None:
+    def record_audit_event(
+        event: str,
+        *,
+        details: dict | None = None,
+        username: str | None = None,
+        role: str | None = None,
+        allowed: bool | None = None,
+    ) -> None:
         log_entry = {
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "event": event,
@@ -354,7 +390,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         if session_user is None:
             raise HTTPException(status_code=401, detail="Missing or invalid session token")
         if user_role != session_user["role"]:
-            raise HTTPException(status_code=403, detail="Forbidden: session role does not match request role")
+            raise HTTPException(
+                status_code=403, detail="Forbidden: session role does not match request role"
+            )
         if user_role not in {"operator", "admin"}:
             raise HTTPException(status_code=403, detail="Forbidden: invalid role for write actions")
         expected_csrf = session_user.get("csrfToken", "")
@@ -365,7 +403,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
 
     def resolve_setup_paths() -> tuple[Path, Path]:
         config_path = Path(os.environ.get("OANDA_CONFIG_PATH", "user_data/config.json"))
-        strategy_path = Path(os.environ.get("FOREX_STRATEGY_PATH", "user_data/strategies/ForexMasterStrategy.py"))
+        strategy_path = Path(
+            os.environ.get("FOREX_STRATEGY_PATH", "user_data/strategies/ForexMasterStrategy.py")
+        )
         return config_path, strategy_path
 
     def fallback_health() -> dict:
@@ -398,20 +438,71 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
     def fallback_market_summary() -> dict:
         return {
             "instruments": [
-                {"pair": "EUR/USD", "bid": 1.0906, "ask": 1.0908, "spread": 0.0002, "change": "+0.42%"},
-                {"pair": "GBP/USD", "bid": 1.2794, "ask": 1.2797, "spread": 0.0003, "change": "+0.18%"},
-                {"pair": "USD/JPY", "bid": 148.68, "ask": 148.72, "spread": 0.04, "change": "-0.27%"},
-                {"pair": "AUD/USD", "bid": 0.6648, "ask": 0.6651, "spread": 0.0003, "change": "+0.32%"},
+                {
+                    "pair": "EUR/USD",
+                    "bid": 1.0906,
+                    "ask": 1.0908,
+                    "spread": 0.0002,
+                    "change": "+0.42%",
+                },
+                {
+                    "pair": "GBP/USD",
+                    "bid": 1.2794,
+                    "ask": 1.2797,
+                    "spread": 0.0003,
+                    "change": "+0.18%",
+                },
+                {
+                    "pair": "USD/JPY",
+                    "bid": 148.68,
+                    "ask": 148.72,
+                    "spread": 0.04,
+                    "change": "-0.27%",
+                },
+                {
+                    "pair": "AUD/USD",
+                    "bid": 0.6648,
+                    "ask": 0.6651,
+                    "spread": 0.0003,
+                    "change": "+0.32%",
+                },
             ],
             "strategySignals": [
-                {"name": "FX Trend Pulse", "mode": "Practice", "status": "Running", "signal": "Buy bias", "quality": "84%"},
-                {"name": "Breakout Guard", "mode": "Dry-run", "status": "Watching", "signal": "Neutral", "quality": "76%"},
-                {"name": "Carry Edge", "mode": "Backtest", "status": "Validated", "signal": "Short bias", "quality": "91%"},
+                {
+                    "name": "FX Trend Pulse",
+                    "mode": "Practice",
+                    "status": "Running",
+                    "signal": "Buy bias",
+                    "quality": "84%",
+                },
+                {
+                    "name": "Breakout Guard",
+                    "mode": "Dry-run",
+                    "status": "Watching",
+                    "signal": "Neutral",
+                    "quality": "76%",
+                },
+                {
+                    "name": "Carry Edge",
+                    "mode": "Backtest",
+                    "status": "Validated",
+                    "signal": "Short bias",
+                    "quality": "91%",
+                },
             ],
             "alerts": [
-                {"title": "Risk check passed", "detail": "Daily loss remains within policy threshold."},
-                {"title": "Session rollover", "detail": "London close overlap is active for EUR/USD."},
-                {"title": "Order validation", "detail": "Client order ID confirmed and idempotency check passed."},
+                {
+                    "title": "Risk check passed",
+                    "detail": "Daily loss remains within policy threshold.",
+                },
+                {
+                    "title": "Session rollover",
+                    "detail": "London close overlap is active for EUR/USD.",
+                },
+                {
+                    "title": "Order validation",
+                    "detail": "Client order ID confirmed and idempotency check passed.",
+                },
             ],
         }
 
@@ -430,9 +521,33 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
 
     def fallback_orders() -> list[dict]:
         return [
-            {"id": "ORD-1042", "symbol": "EUR/USD", "side": "BUY", "volume": "1200", "status": "Filled", "createdAt": "2026-09-18T09:14:22Z", "risk": "0.75%"},
-            {"id": "ORD-1043", "symbol": "GBP/USD", "side": "SELL", "volume": "900", "status": "Pending", "createdAt": "2026-09-18T09:17:10Z", "risk": "0.62%"},
-            {"id": "ORD-1044", "symbol": "USD/JPY", "side": "BUY", "volume": "800", "status": "Cancelled", "createdAt": "2026-09-18T09:20:07Z", "risk": "0.48%"},
+            {
+                "id": "ORD-1042",
+                "symbol": "EUR/USD",
+                "side": "BUY",
+                "volume": "1200",
+                "status": "Filled",
+                "createdAt": "2026-09-18T09:14:22Z",
+                "risk": "0.75%",
+            },
+            {
+                "id": "ORD-1043",
+                "symbol": "GBP/USD",
+                "side": "SELL",
+                "volume": "900",
+                "status": "Pending",
+                "createdAt": "2026-09-18T09:17:10Z",
+                "risk": "0.62%",
+            },
+            {
+                "id": "ORD-1044",
+                "symbol": "USD/JPY",
+                "side": "BUY",
+                "volume": "800",
+                "status": "Cancelled",
+                "createdAt": "2026-09-18T09:20:07Z",
+                "risk": "0.48%",
+            },
         ]
 
     def fallback_settings() -> dict:
@@ -445,16 +560,82 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
 
     def fallback_strategies() -> list[dict]:
         return [
-            {"id": "fx-trend-pulse", "name": "FX Trend Pulse", "mode": "Practice", "status": "Running", "signal": "Buy bias", "confidence": "84%", "version": "v2.8.1", "warmup": "96 candles", "lastCandle": "M5 • 09:35", "enabled": True},
-            {"id": "breakout-guard", "name": "Breakout Guard", "mode": "Dry-run", "status": "Watching", "signal": "Neutral", "confidence": "76%", "version": "v1.4.9", "warmup": "72 candles", "lastCandle": "M15 • 09:20", "enabled": False},
-            {"id": "carry-edge", "name": "Carry Edge", "mode": "Backtest", "status": "Validated", "signal": "Short bias", "confidence": "91%", "version": "v3.0.2", "warmup": "120 candles", "lastCandle": "H1 • 08:00", "enabled": True},
+            {
+                "id": "fx-trend-pulse",
+                "name": "FX Trend Pulse",
+                "mode": "Practice",
+                "status": "Running",
+                "signal": "Buy bias",
+                "confidence": "84%",
+                "version": "v2.8.1",
+                "warmup": "96 candles",
+                "lastCandle": "M5 • 09:35",
+                "enabled": True,
+            },
+            {
+                "id": "breakout-guard",
+                "name": "Breakout Guard",
+                "mode": "Dry-run",
+                "status": "Watching",
+                "signal": "Neutral",
+                "confidence": "76%",
+                "version": "v1.4.9",
+                "warmup": "72 candles",
+                "lastCandle": "M15 • 09:20",
+                "enabled": False,
+            },
+            {
+                "id": "carry-edge",
+                "name": "Carry Edge",
+                "mode": "Backtest",
+                "status": "Validated",
+                "signal": "Short bias",
+                "confidence": "91%",
+                "version": "v3.0.2",
+                "warmup": "120 candles",
+                "lastCandle": "H1 • 08:00",
+                "enabled": True,
+            },
         ]
 
     def fallback_backtests() -> list[dict]:
         return [
-            {"id": "bt-2026-09-18-01", "name": "EUR/USD Multi-Session", "pair": "EUR/USD", "timeframe": "M15", "status": "Completed", "result": "+4.61%", "netProfit": "+$8,420.10", "drawdown": "5.20%", "trades": 62, "updatedAt": "2026-09-18T09:42:00Z"},
-            {"id": "bt-2026-09-18-02", "name": "GBP/JPY Volatility", "pair": "GBP/JPY", "timeframe": "H1", "status": "Running", "result": "Processing", "netProfit": "+$2,960.40", "drawdown": "3.10%", "trades": 28, "updatedAt": "2026-09-18T09:26:00Z"},
-            {"id": "bt-2026-09-18-03", "name": "USD/CHF Carry Filter", "pair": "USD/CHF", "timeframe": "H4", "status": "Warning", "result": "+1.08%", "netProfit": "+$1,640.90", "drawdown": "8.40%", "trades": 17, "updatedAt": "2026-09-18T08:42:00Z"},
+            {
+                "id": "bt-2026-09-18-01",
+                "name": "EUR/USD Multi-Session",
+                "pair": "EUR/USD",
+                "timeframe": "M15",
+                "status": "Completed",
+                "result": "+4.61%",
+                "netProfit": "+$8,420.10",
+                "drawdown": "5.20%",
+                "trades": 62,
+                "updatedAt": "2026-09-18T09:42:00Z",
+            },
+            {
+                "id": "bt-2026-09-18-02",
+                "name": "GBP/JPY Volatility",
+                "pair": "GBP/JPY",
+                "timeframe": "H1",
+                "status": "Running",
+                "result": "Processing",
+                "netProfit": "+$2,960.40",
+                "drawdown": "3.10%",
+                "trades": 28,
+                "updatedAt": "2026-09-18T09:26:00Z",
+            },
+            {
+                "id": "bt-2026-09-18-03",
+                "name": "USD/CHF Carry Filter",
+                "pair": "USD/CHF",
+                "timeframe": "H4",
+                "status": "Warning",
+                "result": "+1.08%",
+                "netProfit": "+$1,640.90",
+                "drawdown": "8.40%",
+                "trades": 17,
+                "updatedAt": "2026-09-18T08:42:00Z",
+            },
         ]
 
     STRATEGY_CONFIG_BY_PAIR: dict[str, dict[str, object]] = {}
@@ -466,10 +647,28 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
     def strategy_config_for_pair(pair: str) -> dict[str, object]:
         normalized = pair.replace("_", "/").upper()
         if normalized not in STRATEGY_CONFIG_BY_PAIR:
-            setup = load_forex_config(Path(os.environ.get("OANDA_CONFIG_PATH", "user_data/config.json")))
+            setup = load_forex_config(
+                Path(os.environ.get("OANDA_CONFIG_PATH", "user_data/config.json"))
+            )
             pair_strategy = dict(setup.get("pair_strategies", {})).get(normalized.replace("/", "_"))
-            pair_timeframe = dict(setup.get("pair_timeframes", {})).get(normalized.replace("/", "_"))
-            timeframe_labels = {"1m": "M1", "5m": "M5", "15m": "M15", "30m": "M30", "1h": "H1", "2h": "H2", "4h": "H4", "6h": "H6", "8h": "H8", "12h": "H12", "1d": "D1", "1w": "W1", "1mo": "MN1"}
+            pair_timeframe = dict(setup.get("pair_timeframes", {})).get(
+                normalized.replace("/", "_")
+            )
+            timeframe_labels = {
+                "1m": "M1",
+                "5m": "M5",
+                "15m": "M15",
+                "30m": "M30",
+                "1h": "H1",
+                "2h": "H2",
+                "4h": "H4",
+                "6h": "H6",
+                "8h": "H8",
+                "12h": "H12",
+                "1d": "D1",
+                "1w": "W1",
+                "1mo": "MN1",
+            }
             STRATEGY_CONFIG_BY_PAIR[normalized] = {
                 "strategyClass": pair_strategy or "ForexMasterStrategy",
                 "timeframe": timeframe_labels.get(pair_timeframe, "M15"),
@@ -508,9 +707,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         if not risk_config_state_loaded:
             if risk_config_state_path.exists():
                 try:
-                    saved_configs = json.loads(
-                        risk_config_state_path.read_text(encoding="utf-8")
-                    )
+                    saved_configs = json.loads(risk_config_state_path.read_text(encoding="utf-8"))
                 except (OSError, json.JSONDecodeError) as exc:
                     logger.exception("Could not read persisted risk configuration")
                     raise HTTPException(
@@ -518,8 +715,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                         detail=f"Risk configuration is unavailable: {exc}",
                     ) from exc
                 if not isinstance(saved_configs, dict) or any(
-                    not isinstance(value, dict)
-                    for value in saved_configs.values()
+                    not isinstance(value, dict) for value in saved_configs.values()
                 ):
                     raise HTTPException(
                         status_code=500,
@@ -556,9 +752,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         if not strategy_execution_state_path.exists():
             return {"enabled": False, "lastProcessed": {}, "results": []}
         try:
-            payload = json.loads(
-                strategy_execution_state_path.read_text(encoding="utf-8")
-            )
+            payload = json.loads(strategy_execution_state_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             logger.exception("Could not read automatic strategy execution state")
             raise HTTPException(
@@ -631,9 +825,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             runtime_state_path = Path("user_data/oanda/runtime-state.json")
             if runtime_state_path.exists():
                 try:
-                    runtime_state = json.loads(
-                        runtime_state_path.read_text(encoding="utf-8")
-                    )
+                    runtime_state = json.loads(runtime_state_path.read_text(encoding="utf-8"))
                 except (OSError, json.JSONDecodeError) as exc:
                     logger.exception("Could not read runtime execution gate")
                     state["lastError"] = f"Runtime gate unavailable: {exc}"
@@ -703,8 +895,13 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         HYPEROPT_REPORTS.pop(scope_key, None)
         HYPEROPT_JOBS.pop(scope_key, None)
         BACKTEST_HISTORY[:] = [
-            item for item in BACKTEST_HISTORY
-            if not (item.get("pair") == normalized and item.get("timeframe", "").upper() == timeframe.upper() and item.get("strategy") == strategy_class)
+            item
+            for item in BACKTEST_HISTORY
+            if not (
+                item.get("pair") == normalized
+                and item.get("timeframe", "").upper() == timeframe.upper()
+                and item.get("strategy") == strategy_class
+            )
         ]
 
     def resolve_history_request(
@@ -717,9 +914,16 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         if mode != "days":
             raise HTTPException(status_code=400, detail="historyMode must be candles or days")
         try:
-            timeframe_seconds = timeframe_to_seconds(freqtrade_timeframe(timeframe))
+            normalized_timeframe = freqtrade_timeframe(timeframe)
+            timeframe_seconds = (
+                30 * 86400
+                if normalized_timeframe == "1M"
+                else timeframe_to_seconds(normalized_timeframe)
+            )
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail=f"Days history is unsupported for timeframe {timeframe}") from exc
+            raise HTTPException(
+                status_code=400, detail=f"Days history is unsupported for timeframe {timeframe}"
+            ) from exc
         requested_candles = (value * 86400 + timeframe_seconds - 1) // timeframe_seconds
         return mode, min(requested_candles, max_candles)
 
@@ -785,22 +989,33 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             )
         revision_db.commit()
 
-    def persist_scope_revision(pair: str, timeframe: str, strategy_class: str | None = None) -> None:
+    def persist_scope_revision(
+        pair: str, timeframe: str, strategy_class: str | None = None
+    ) -> None:
         normalized_pair = pair.replace("_", "/").upper()
-        selected_class = strategy_class or str(strategy_config_for_pair(normalized_pair).get("strategyClass", "ForexMasterStrategy"))
+        selected_class = strategy_class or str(
+            strategy_config_for_pair(normalized_pair).get("strategyClass", "ForexMasterStrategy")
+        )
         scope = f"{normalized_pair}|{timeframe.upper()}|{selected_class}"
         revision_db.execute(
             "INSERT OR REPLACE INTO strategy_scope_revisions(scope, config_json, review_json) VALUES (?, ?, ?)",
             (
                 scope,
                 json.dumps(strategy_config_for_pair(normalized_pair), default=str),
-                json.dumps(STRATEGY_REVIEW_BY_SCOPE.get((normalized_pair, timeframe.upper(), selected_class), {}), default=str),
+                json.dumps(
+                    STRATEGY_REVIEW_BY_SCOPE.get(
+                        (normalized_pair, timeframe.upper(), selected_class), {}
+                    ),
+                    default=str,
+                ),
             ),
         )
         revision_db.commit()
 
     def restore_scope_revisions() -> None:
-        for scope, config_json, review_json in revision_db.execute("SELECT scope, config_json, review_json FROM strategy_scope_revisions"):
+        for scope, config_json, review_json in revision_db.execute(
+            "SELECT scope, config_json, review_json FROM strategy_scope_revisions"
+        ):
             parts = scope.split("|")
             pair = parts[0]
             if len(parts) == 2:
@@ -869,7 +1084,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 continue
             rows.append(
                 {
-                    "date": pd.Timestamp(time_value).tz_localize("UTC") if pd.Timestamp(time_value).tzinfo is None else pd.Timestamp(time_value).tz_convert("UTC"),
+                    "date": pd.Timestamp(time_value).tz_localize("UTC")
+                    if pd.Timestamp(time_value).tzinfo is None
+                    else pd.Timestamp(time_value).tz_convert("UTC"),
                     "open": float(open_value),
                     "high": float(high_value),
                     "low": float(low_value),
@@ -938,11 +1155,13 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
     async def broker_trade_rows(client: OandaClient) -> tuple[list[dict], list[dict]]:
         open_trades = await client.get_open_trades()
         closed_trades = await client.get_closed_trades(count=500)
-        instruments = sorted({
-            str(trade.get("instrument", ""))
-            for trade in [*open_trades, *closed_trades]
-            if trade.get("instrument")
-        })
+        instruments = sorted(
+            {
+                str(trade.get("instrument", ""))
+                for trade in [*open_trades, *closed_trades]
+                if trade.get("instrument")
+            }
+        )
         quotes = (
             {quote.instrument: quote for quote in await client.get_prices(instruments)}
             if instruments
@@ -1004,9 +1223,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             try:
                 parsed_price = Decimal(str(price))
             except (InvalidOperation, TypeError, ValueError) as exc:
-                raise HTTPException(
-                    status_code=400, detail="price must be a number"
-                ) from exc
+                raise HTTPException(status_code=400, detail="price must be a number") from exc
             if not parsed_price.is_finite() or parsed_price <= 0:
                 raise HTTPException(status_code=400, detail="price must be positive")
 
@@ -1014,9 +1231,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         try:
             units = Decimal(str(raw_units)) if raw_units is not None else None
         except (InvalidOperation, TypeError, ValueError) as exc:
-            raise HTTPException(
-                status_code=400, detail="units must be a number"
-            ) from exc
+            raise HTTPException(status_code=400, detail="units must be a number") from exc
         if units is not None and (
             not units.is_finite() or units == 0 or units != units.to_integral_value()
         ):
@@ -1038,9 +1253,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         strategy_class: str,
     ) -> dict[str, object]:
         normalized_pair = normalize_pair(pair)
-        scoped = STRATEGY_REVIEW_BY_SCOPE.get(
-            (normalized_pair, timeframe.upper(), strategy_class)
-        )
+        scoped = STRATEGY_REVIEW_BY_SCOPE.get((normalized_pair, timeframe.upper(), strategy_class))
         if scoped is not None:
             return dict(scoped)
         return {
@@ -1108,7 +1321,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     "units": trade.units,
                     "entry_price": str(trade.entry_price),
                     "exit_price": str(trade.exit_price) if trade.exit_price is not None else None,
-                    "realized_pl": str(trade.realized_pl) if trade.realized_pl is not None else None,
+                    "realized_pl": str(trade.realized_pl)
+                    if trade.realized_pl is not None
+                    else None,
                     "unrealized_pl": str(trade.unrealized_pl)
                     if trade.unrealized_pl is not None
                     else None,
@@ -1162,14 +1377,41 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         return {
             "instruments": instruments,
             "strategySignals": [
-                {"name": "FX Trend Pulse", "mode": "Practice", "status": "Running", "signal": "Buy bias", "quality": "84%"},
-                {"name": "Breakout Guard", "mode": "Dry-run", "status": "Watching", "signal": "Neutral", "quality": "76%"},
-                {"name": "Carry Edge", "mode": "Backtest", "status": "Validated", "signal": "Short bias", "quality": "91%"},
+                {
+                    "name": "FX Trend Pulse",
+                    "mode": "Practice",
+                    "status": "Running",
+                    "signal": "Buy bias",
+                    "quality": "84%",
+                },
+                {
+                    "name": "Breakout Guard",
+                    "mode": "Dry-run",
+                    "status": "Watching",
+                    "signal": "Neutral",
+                    "quality": "76%",
+                },
+                {
+                    "name": "Carry Edge",
+                    "mode": "Backtest",
+                    "status": "Validated",
+                    "signal": "Short bias",
+                    "quality": "91%",
+                },
             ],
             "alerts": [
-                {"title": "Risk check passed", "detail": "Daily loss remains within policy threshold."},
-                {"title": "Session rollover", "detail": "London close overlap is active for EUR/USD."},
-                {"title": "Order validation", "detail": "Client order ID confirmed and idempotency check passed."},
+                {
+                    "title": "Risk check passed",
+                    "detail": "Daily loss remains within policy threshold.",
+                },
+                {
+                    "title": "Session rollover",
+                    "detail": "London close overlap is active for EUR/USD.",
+                },
+                {
+                    "title": "Order validation",
+                    "detail": "Client order ID confirmed and idempotency check passed.",
+                },
             ],
         }
 
@@ -1288,7 +1530,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             if key in payload:
                 candidate[key] = payload[key]
         if str(candidate["side"]).upper() not in {"LONG", "SHORT", "BOTH", "NONE"}:
-            raise HTTPException(status_code=400, detail="Risk side must be LONG, SHORT, BOTH, or NONE")
+            raise HTTPException(
+                status_code=400, detail="Risk side must be LONG, SHORT, BOTH, or NONE"
+            )
         for key in ("riskBudgetMode", "maxExposureMode"):
             if candidate[key] not in {"percent", "absolute"}:
                 raise HTTPException(status_code=400, detail=f"{key} must be percent or absolute")
@@ -1302,13 +1546,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         try:
             units = Decimal(str(candidate["units"]).replace(",", "").strip())
         except (InvalidOperation, TypeError, ValueError) as exc:
-            raise HTTPException(
-                status_code=400, detail="units must be a positive number"
-            ) from exc
+            raise HTTPException(status_code=400, detail="units must be a positive number") from exc
         if not units.is_finite() or units <= 0:
-            raise HTTPException(
-                status_code=400, detail="units must be a positive number"
-            )
+            raise HTTPException(status_code=400, detail="units must be a positive number")
         candidate["units"] = str(units)
         persisted_configs = {
             **RISK_CONFIG_BY_PAIR,
@@ -1387,9 +1627,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     "status": "Pending",
                     "createdAt": item.get("createTime"),
                     "risk": "—",
-                    "manual": str(
-                        (item.get("clientExtensions") or {}).get("id", "")
-                    ).startswith("manual-ui-"),
+                    "manual": str((item.get("clientExtensions") or {}).get("id", "")).startswith(
+                        "manual-ui-"
+                    ),
                 }
                 for item in broker_orders
             ]
@@ -1426,10 +1666,27 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             instrument_name = normalized_pair.replace("/", "_")
             view_timeframe = timeframe.upper()
             supported_granularities = {
-                "S5", "S10", "S15", "S30",
-                "M1", "M2", "M4", "M5", "M10", "M15", "M30",
-                "H1", "H2", "H3", "H4", "H6", "H8", "H12",
-                "D", "W", "M",
+                "S5",
+                "S10",
+                "S15",
+                "S30",
+                "M1",
+                "M2",
+                "M4",
+                "M5",
+                "M10",
+                "M15",
+                "M30",
+                "H1",
+                "H2",
+                "H3",
+                "H4",
+                "H6",
+                "H8",
+                "H12",
+                "D",
+                "W",
+                "M",
             }
             granularity = view_timeframe if view_timeframe in supported_granularities else None
             if granularity is None:
@@ -1451,22 +1708,30 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 chart_cache.pop(cache_key, None)
 
             settings = OandaSettings.from_environment()
-            approved_timeframe = str(
-                approved_revision.get("timeframe", "M15")
-            ).upper()
-            approved_strategy = str(
-                approved_revision.get("strategyClass", "ForexMasterStrategy")
-            )
+            approved_timeframe = str(approved_revision.get("timeframe", "M15")).upper()
+            approved_strategy = str(approved_revision.get("strategyClass", "ForexMasterStrategy"))
             approved_granularity = oanda_granularity(freqtrade_timeframe(approved_timeframe))
-            view_seconds = 30 * 86400 if view_timeframe == "M" else timeframe_to_seconds(freqtrade_timeframe(view_timeframe))
-            approved_seconds = 30 * 86400 if approved_timeframe in {"M", "MN1"} else timeframe_to_seconds(freqtrade_timeframe(approved_timeframe))
+            view_seconds = (
+                30 * 86400
+                if view_timeframe == "M"
+                else timeframe_to_seconds(freqtrade_timeframe(view_timeframe))
+            )
+            approved_seconds = (
+                30 * 86400
+                if approved_timeframe in {"M", "MN1"}
+                else timeframe_to_seconds(freqtrade_timeframe(approved_timeframe))
+            )
             signal_count = min(
                 max(count * max(1, view_seconds // approved_seconds), count),
                 5000,
             )
-            async with OandaClient(settings.token, settings.account_id, environment=settings.environment) as client:
+            async with OandaClient(
+                settings.token, settings.account_id, environment=settings.environment
+            ) as client:
                 view_candles = await client.get_candles(instrument_name, granularity, count=count)
-                signal_candles = await client.get_candles(instrument_name, approved_granularity, count=signal_count)
+                signal_candles = await client.get_candles(
+                    instrument_name, approved_granularity, count=signal_count
+                )
                 frame = df_from_raw_candles(signal_candles)
                 view_times = [candle.time for candle in view_candles]
                 hyperopt = approved_revision.get("hyperopt", {})
@@ -1484,7 +1749,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     ),
                 )
                 informative_candles = {}
-                for informative_timeframe in strategy_informative_timeframes(strategy, normalized_pair):
+                for informative_timeframe in strategy_informative_timeframes(
+                    strategy, normalized_pair
+                ):
                     informative_count = strategy_informative_candle_count(
                         strategy, informative_timeframe, signal_count
                     )
@@ -1493,8 +1760,12 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                         oanda_granularity(informative_timeframe),
                         count=min(informative_count, 5000),
                     )
-                    informative_candles[informative_timeframe] = df_from_raw_candles(informative_raw)
-                strategy_adapter = FreqtradeStrategyAdapter(strategy, normalized_pair, informative_candles)
+                    informative_candles[informative_timeframe] = df_from_raw_candles(
+                        informative_raw
+                    )
+                strategy_adapter = FreqtradeStrategyAdapter(
+                    strategy, normalized_pair, informative_candles
+                )
 
                 def signal_for_window(window: pd.DataFrame) -> dict[str, str]:
                     return {
@@ -1511,14 +1782,27 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     if signal in {"long", "short"} and signal != previous:
                         row = frame.iloc[index]
                         signal_time = pd.Timestamp(row["date"])
-                        signal_time = signal_time.tz_localize("UTC") if signal_time.tzinfo is None else signal_time.tz_convert("UTC")
-                        mapped_time = next((candidate for candidate in reversed(view_times) if pd.Timestamp(candidate) <= signal_time), view_times[0] if view_times else row["date"].isoformat())
-                        signals.append({
-                            "time": mapped_time,
-                            "side": "BUY" if signal == "long" else "SELL",
-                            "price": float(row["close"]),
-                            "sourceTimeframe": approved_timeframe,
-                        })
+                        signal_time = (
+                            signal_time.tz_localize("UTC")
+                            if signal_time.tzinfo is None
+                            else signal_time.tz_convert("UTC")
+                        )
+                        mapped_time = next(
+                            (
+                                candidate
+                                for candidate in reversed(view_times)
+                                if pd.Timestamp(candidate) <= signal_time
+                            ),
+                            view_times[0] if view_times else row["date"].isoformat(),
+                        )
+                        signals.append(
+                            {
+                                "time": mapped_time,
+                                "side": "BUY" if signal == "long" else "SELL",
+                                "price": float(row["close"]),
+                                "sourceTimeframe": approved_timeframe,
+                            }
+                        )
                     previous = signal
                 open_trades = await client.get_open_trades()
                 closed_trades = await client.get_closed_trades(count=100)
@@ -1530,31 +1814,44 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 for trade, closed in all_chart_trades:
                     row = serialize_broker_trade(trade, {}, closed=closed)
                     if row["openedAt"] and row["entryPrice"]:
-                        chart_trades.append({
-                            "pair": row["symbol"],
-                            "time": row["openedAt"],
-                            "side": row["side"],
-                            "price": float(row["entryPrice"]),
-                            "source": row["source"],
-                            "markerType": "entry",
-                            "pnl": row["pnl"],
-                        })
+                        chart_trades.append(
+                            {
+                                "pair": row["symbol"],
+                                "time": row["openedAt"],
+                                "side": row["side"],
+                                "price": float(row["entryPrice"]),
+                                "source": row["source"],
+                                "markerType": "entry",
+                                "pnl": row["pnl"],
+                            }
+                        )
                     if row["closedAt"] and row["exitPrice"]:
-                        chart_trades.append({
-                            "pair": row["symbol"],
-                            "time": row["closedAt"],
-                            "side": row["side"],
-                            "price": float(row["exitPrice"]),
-                            "source": row["source"],
-                            "markerType": "exit",
-                            "pnl": row["pnl"],
-                        })
+                        chart_trades.append(
+                            {
+                                "pair": row["symbol"],
+                                "time": row["closedAt"],
+                                "side": row["side"],
+                                "price": float(row["exitPrice"]),
+                                "source": row["source"],
+                                "markerType": "exit",
+                                "pnl": row["pnl"],
+                            }
+                        )
                 chart_data = {
                     "pair": normalized_pair,
                     "timeframe": view_timeframe,
                     "approvedTimeframe": approved_timeframe,
                     "approvedStrategy": approved_strategy,
-                    "candles": [{"time": candle.time, "open": float(candle.open), "high": float(candle.high), "low": float(candle.low), "close": float(candle.close)} for candle in view_candles],
+                    "candles": [
+                        {
+                            "time": candle.time,
+                            "open": float(candle.open),
+                            "high": float(candle.high),
+                            "low": float(candle.low),
+                            "close": float(candle.close),
+                        }
+                        for candle in view_candles
+                    ],
                     "signals": signals,
                     "trades": [trade for trade in chart_trades if trade["pair"] == normalized_pair],
                     "indicators": {"ema": []},
@@ -1586,7 +1883,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             "csrfPresent": bool(csrf_token),
             "environmentAllowed": environment_name in {"dev", "staging", "practice", "live"},
             "executionModeAllowed": execution_mode in {"dry-run", "practice", "backtest", "live"},
-            "releaseGateApproved": release_gate == "approved" if environment_name == "live" else True,
+            "releaseGateApproved": release_gate == "approved"
+            if environment_name == "live"
+            else True,
         }
         if not session_user:
             raise HTTPException(status_code=401, detail="Missing or invalid session token")
@@ -1595,14 +1894,19 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         if user_role != session_user["role"]:
             raise HTTPException(status_code=403, detail="Forbidden: session role mismatch")
         if user_role not in {"operator", "admin"}:
-            raise HTTPException(status_code=403, detail="Forbidden: role not permitted for operations")
+            raise HTTPException(
+                status_code=403, detail="Forbidden: role not permitted for operations"
+            )
         if not csrf_token:
             raise HTTPException(status_code=403, detail="Missing CSRF token")
         if environment_name == "live":
             if user_role != "admin":
                 raise HTTPException(status_code=403, detail="Live environment requires admin role")
             if release_gate != "approved":
-                raise HTTPException(status_code=403, detail="Live environment requires explicit release gate approval")
+                raise HTTPException(
+                    status_code=403,
+                    detail="Live environment requires explicit release gate approval",
+                )
 
         response = {
             "allowed": True,
@@ -1715,7 +2019,10 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
     ) -> dict:
         validate_write_access(user_role, csrf_token, session_token)
 
-        resolved_user = resolve_session_user(session_token) or {"username": "anonymous", "role": user_role or "viewer"}
+        resolved_user = resolve_session_user(session_token) or {
+            "username": "anonymous",
+            "role": user_role or "viewer",
+        }
         symbol = str(payload.get("symbol", "EUR/USD")).strip()
         side = str(payload.get("side", "BUY")).upper().strip()
         raw_units = payload.get("units", payload.get("volume", 0))
@@ -1793,8 +2100,14 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             except ValueError as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-            cancel_reason = getattr(result, 'cancel_reason', None) or None
-            final_status = "filled" if result.fill_price is not None else "cancelled" if cancel_reason else "queued"
+            cancel_reason = getattr(result, "cancel_reason", None) or None
+            final_status = (
+                "filled"
+                if result.fill_price is not None
+                else "cancelled"
+                if cancel_reason
+                else "queued"
+            )
             order = {
                 "status": final_status,
                 "symbol": symbol,
@@ -1805,8 +2118,10 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "orderId": result.order_id,
                 "transactionId": result.transaction_id,
                 "fillPrice": str(result.fill_price) if result.fill_price is not None else None,
-                "environment": getattr(getattr(settings_obj, 'environment', None), 'value', 'practice'),
-                "executionMode": getattr(settings_obj, 'execution_mode', 'practice'),
+                "environment": getattr(
+                    getattr(settings_obj, "environment", None), "value", "practice"
+                ),
+                "executionMode": getattr(settings_obj, "execution_mode", "practice"),
                 "role": user_role,
                 "reason": cancel_reason,
                 "cancelReason": cancel_reason,
@@ -1890,10 +2205,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             raise HTTPException(status_code=400, detail="units must be a positive whole number")
         if not price.is_finite() or price <= 0:
             raise HTTPException(status_code=400, detail="price must be a positive number")
-        client_order_id = str(
-            payload.get("clientOrderId")
-            or f"manual-ui-{secrets.token_hex(16)}"
-        )
+        client_order_id = str(payload.get("clientOrderId") or f"manual-ui-{secrets.token_hex(16)}")
         if not client_order_id.startswith("manual-ui-"):
             raise HTTPException(status_code=400, detail="Manual order ID is invalid")
         signed_units = int(units) if side == "BUY" else -int(units)
@@ -1905,9 +2217,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     symbol.replace("/", "_"),
                     signed_units,
                     str(price),
-                    stop_loss_price=(
-                        str(payload["stopLoss"]) if payload.get("stopLoss") else None
-                    ),
+                    stop_loss_price=(str(payload["stopLoss"]) if payload.get("stopLoss") else None),
                     take_profit_price=(
                         str(payload["takeProfit"]) if payload.get("takeProfit") else None
                     ),
@@ -1964,24 +2274,19 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             raise HTTPException(
                 status_code=503, detail=f"OANDA account unavailable: {exc}"
             ) from exc
-        environment_name = str(
-            getattr(settings.environment, "value", settings.environment)
-        ).lower()
+        environment_name = str(getattr(settings.environment, "value", settings.environment)).lower()
         if environment_name != "practice":
             raise HTTPException(
                 status_code=403,
                 detail=(
-                    "Manual dashboard orders can only be modified "
-                    "in the OANDA Practice environment"
+                    "Manual dashboard orders can only be modified in the OANDA Practice environment"
                 ),
             )
         try:
             async with OandaClient(
                 settings.token, settings.account_id, settings.environment
             ) as client:
-                order = find_manual_pending_order(
-                    await client.get_pending_orders(), order_id
-                )
+                order = find_manual_pending_order(await client.get_pending_orders(), order_id)
                 price, units = parse_pending_order_modification(payload, order)
                 result = await client.modify_order(
                     order_id,
@@ -2034,7 +2339,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 extension = (
                     trade.get("tradeClientExtensions") or trade.get("clientExtensions") or {}
                 )
-                client_order_id = str(extension.get("id", "")) if isinstance(extension, dict) else ""
+                client_order_id = (
+                    str(extension.get("id", "")) if isinstance(extension, dict) else ""
+                )
                 is_manual = client_order_id.startswith("manual-ui-")
                 is_automated = (
                     isinstance(extension, dict)
@@ -2094,9 +2401,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         session_token: str | None = Header(default=None, alias="X-Session-Token"),
     ) -> dict:
         validate_write_access(user_role, csrf_token, session_token)
-        stop_loss, take_profit, trailing_stop_loss_distance = (
-            _validated_protection_values(payload)
-        )
+        stop_loss, take_profit, trailing_stop_loss_distance = _validated_protection_values(payload)
         try:
             settings = OandaSettings.from_environment()
             environment_name = str(
@@ -2179,9 +2484,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         session_token: str | None = Header(default=None, alias="X-Session-Token"),
     ) -> dict:
         validate_write_access(user_role, csrf_token, session_token)
-        stop_loss, take_profit, trailing_stop_loss_distance = (
-            _validated_protection_values(payload)
-        )
+        stop_loss, take_profit, trailing_stop_loss_distance = _validated_protection_values(payload)
         try:
             settings = OandaSettings.from_environment()
             environment_name = str(
@@ -2191,8 +2494,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 raise HTTPException(
                     status_code=403,
                     detail=(
-                        "Risk protection updates are restricted to the OANDA "
-                        "Practice environment"
+                        "Risk protection updates are restricted to the OANDA Practice environment"
                     ),
                 )
             async with OandaClient(
@@ -2255,9 +2557,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         except (InvalidOperation, TypeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail="units and price must be numbers") from exc
         if not units.is_finite() or units <= 0 or units != units.to_integral_value():
-            raise HTTPException(
-                status_code=400, detail="units must be a positive whole number"
-            )
+            raise HTTPException(status_code=400, detail="units must be a positive whole number")
         if not price.is_finite() or price <= 0:
             raise HTTPException(status_code=400, detail="price must be a positive number")
         try:
@@ -2269,8 +2569,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 raise HTTPException(
                     status_code=403,
                     detail=(
-                        "Average-entry orders are restricted to the OANDA "
-                        "Practice environment"
+                        "Average-entry orders are restricted to the OANDA Practice environment"
                     ),
                 )
             async with OandaClient(
@@ -2411,7 +2710,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         try:
             env = OandaEnvironment(environment_name)
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail="environment must be practice or live") from exc
+            raise HTTPException(
+                status_code=400, detail="environment must be practice or live"
+            ) from exc
 
         try:
             async with OandaClient(token_value, account_value, env) as client:
@@ -2435,16 +2736,25 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         items = []
         for instrument in metadata:
             name = str(getattr(instrument, "name", "") or "").strip().upper()
-            display_name = str(getattr(instrument, "display_name", getattr(instrument, "displayName", name)) or name)
-            base_currency = getattr(instrument, "base_currency", getattr(instrument, "baseCurrency", None))
-            quote_currency = getattr(instrument, "quote_currency", getattr(instrument, "quoteCurrency", None))
-            items.append({
-                "name": name,
-                "displayName": display_name,
-                "baseCurrency": base_currency,
-                "quoteCurrency": quote_currency,
-                "priority": priority_map.get(name, "standard"),
-            })
+            display_name = str(
+                getattr(instrument, "display_name", getattr(instrument, "displayName", name))
+                or name
+            )
+            base_currency = getattr(
+                instrument, "base_currency", getattr(instrument, "baseCurrency", None)
+            )
+            quote_currency = getattr(
+                instrument, "quote_currency", getattr(instrument, "quoteCurrency", None)
+            )
+            items.append(
+                {
+                    "name": name,
+                    "displayName": display_name,
+                    "baseCurrency": base_currency,
+                    "quoteCurrency": quote_currency,
+                    "priority": priority_map.get(name, "standard"),
+                }
+            )
         items.sort(key=lambda item: (priority_rank.get(item["priority"], 99), item["name"]))
         return {"environment": env.value, "accountId": account_value, "instruments": items}
 
@@ -2463,7 +2773,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         try:
             environment = OandaEnvironment(environment_name)
         except ValueError as exc:
-            raise HTTPException(status_code=400, detail="environment must be practice or live") from exc
+            raise HTTPException(
+                status_code=400, detail="environment must be practice or live"
+            ) from exc
         try:
             result = await discover_oanda_accounts(token, environment)
         except OandaAPIError as exc:
@@ -2498,7 +2810,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             raise HTTPException(status_code=400, detail="environment must be practice or live")
         execution_mode = environment
         if payload.get("accountConfirmed") is not True:
-            raise HTTPException(status_code=400, detail="Confirm the selected OANDA account before saving")
+            raise HTTPException(
+                status_code=400, detail="Confirm the selected OANDA account before saving"
+            )
         expected_type_code = str(payload.get("accountTypeCode", ""))
         supported_type = expected_type_code in {"002", "003"} or (
             environment == "practice" and expected_type_code == "PRACTICE"
@@ -2510,9 +2824,14 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             )
         if environment == "live":
             if payload.get("liveConfirmed") is not True:
-                raise HTTPException(status_code=400, detail="Explicitly confirm that this is a Live OANDA account")
+                raise HTTPException(
+                    status_code=400, detail="Explicitly confirm that this is a Live OANDA account"
+                )
             if os.environ.get("OANDA_LIVE_CONFIRM") != "1":
-                raise HTTPException(status_code=403, detail="Live setup is disabled. Set OANDA_LIVE_CONFIRM=1 on the server and restart the API.")
+                raise HTTPException(
+                    status_code=403,
+                    detail="Live setup is disabled. Set OANDA_LIVE_CONFIRM=1 on the server and restart the API.",
+                )
         try:
             environment_enum = OandaEnvironment(environment)
             discovery = await discover_oanda_accounts(token, environment_enum)
@@ -2529,11 +2848,16 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             None,
         )
         if selected_account is None:
-            raise HTTPException(status_code=400, detail="Selected account could not be verified as a supported OANDA account")
+            raise HTTPException(
+                status_code=400,
+                detail="Selected account could not be verified as a supported OANDA account",
+            )
         if not instruments:
             raise HTTPException(status_code=400, detail="at least one instrument is required")
         if not Decimal("0") < risk_fraction <= Decimal("1"):
-            raise HTTPException(status_code=400, detail="riskFraction must be greater than 0 and at most 1")
+            raise HTTPException(
+                status_code=400, detail="riskFraction must be greater than 0 and at most 1"
+            )
         pair_timeframes = {
             str(pair).strip().upper().replace("/", "_"): str(timeframe).strip().lower()
             for pair, timeframe in dict(payload.get("pairTimeframes", {})).items()
@@ -2541,7 +2865,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         }
         supported_timeframes = {"1m", "5m", "15m", "30m", "1h", "4h", "1d", "1w", "1mo"}
         if any(timeframe not in supported_timeframes for timeframe in pair_timeframes.values()):
-            raise HTTPException(status_code=400, detail="pairTimeframes contains an unsupported timeframe")
+            raise HTTPException(
+                status_code=400, detail="pairTimeframes contains an unsupported timeframe"
+            )
         pair_strategies = {
             str(pair).strip().upper().replace("/", "_"): str(strategy).strip()
             for pair, strategy in dict(payload.get("pairStrategies", {})).items()
@@ -2550,8 +2876,14 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         available_strategy_names = {item.name for item in discover_strategy_files()}
         unknown_strategies = sorted(set(pair_strategies.values()) - available_strategy_names)
         if unknown_strategies:
-            raise HTTPException(status_code=400, detail=f"Unknown strategy class(es): {', '.join(unknown_strategies)}")
-        config_path = Path(payload.get("configPath") or os.environ.get("OANDA_CONFIG_PATH", "user_data/config.json"))
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown strategy class(es): {', '.join(unknown_strategies)}",
+            )
+        config_path = Path(
+            payload.get("configPath")
+            or os.environ.get("OANDA_CONFIG_PATH", "user_data/config.json")
+        )
         current = load_forex_config(config_path)
         approved_revisions = dict(current.get("pair_approved_revisions") or {})
         for pair_key, revision in list(approved_revisions.items()):
@@ -2563,31 +2895,37 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 != pair_timeframes.get(pair_key)
             ):
                 approved_revisions.pop(pair_key, None)
-        current.update({
-            "schema_version": 1,
-            "timeframe": "5m",
-            "setup": {"configured": True, "credentials_source": "ui"},
-            "pair_timeframes": pair_timeframes,
-            "pair_strategies": pair_strategies,
-            "pair_approved_revisions": approved_revisions,
-            "exchange": {
-                **current.get("exchange", {}),
-                "name": "oanda",
-                "oanda_environment": environment,
-                "oanda_execution_mode": execution_mode,
-                "oanda_token": token,
-                "account_id": account_id,
-                "oanda_account_type_code": selected_account["accountTypeCode"],
-                "oanda_account_type": selected_account["accountType"],
-                "oanda_account_tags": selected_account["tags"],
-                "pair_whitelist": instruments,
-                "oanda_risk_fraction": str(risk_fraction),
-            },
-        })
+        current.update(
+            {
+                "schema_version": 1,
+                "timeframe": "5m",
+                "setup": {"configured": True, "credentials_source": "ui"},
+                "pair_timeframes": pair_timeframes,
+                "pair_strategies": pair_strategies,
+                "pair_approved_revisions": approved_revisions,
+                "exchange": {
+                    **current.get("exchange", {}),
+                    "name": "oanda",
+                    "oanda_environment": environment,
+                    "oanda_execution_mode": execution_mode,
+                    "oanda_token": token,
+                    "account_id": account_id,
+                    "oanda_account_type_code": selected_account["accountTypeCode"],
+                    "oanda_account_type": selected_account["accountType"],
+                    "oanda_account_tags": selected_account["tags"],
+                    "pair_whitelist": instruments,
+                    "oanda_risk_fraction": str(risk_fraction),
+                },
+            }
+        )
         saved_path = save_forex_config(current, config_path)
         record_audit_event(
             "setup.saved",
-            details={"environment": environment, "executionMode": execution_mode, "instruments": instruments},
+            details={
+                "environment": environment,
+                "executionMode": execution_mode,
+                "instruments": instruments,
+            },
             allowed=True,
         )
         return {
@@ -2608,7 +2946,11 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
     async def setup_runtime_status() -> dict:
         state_path = Path("user_data/oanda/runtime-state.json")
         if not state_path.exists():
-            return {"state": "running", "reloadPending": False, "message": "Bot is allowed to operate."}
+            return {
+                "state": "running",
+                "reloadPending": False,
+                "message": "Bot is allowed to operate.",
+            }
         try:
             state = json.loads(state_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
@@ -2630,23 +2972,40 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         validate_write_access(user_role, csrf_token, session_token)
         action = str(payload.get("action", "")).strip().lower()
         actions = {
-            "reload": ("running", True, "Configuration reload requested; the worker must reload before its next cycle."),
+            "reload": (
+                "running",
+                True,
+                "Configuration reload requested; the worker must reload before its next cycle.",
+            ),
             "resume": ("running", False, "Bot operation resumed."),
             "pause": ("paused", False, "Paused: no new trades and no management of open trades."),
             "stop": ("stopped", False, "Stopped: trading and open-trade management are disabled."),
         }
         if action not in actions:
-            raise HTTPException(status_code=400, detail="action must be reload, resume, pause, or stop")
+            raise HTTPException(
+                status_code=400, detail="action must be reload, resume, pause, or stop"
+            )
         state, reload_pending, message = actions[action]
         state_path = Path("user_data/oanda/runtime-state.json")
         state_path.parent.mkdir(parents=True, exist_ok=True)
         temporary_path = state_path.with_suffix(".tmp")
         temporary_path.write_text(
-            json.dumps({"state": state, "reloadPending": reload_pending, "message": message, "updatedAt": datetime.now(timezone.utc).isoformat()}, indent=2) + "\n",
+            json.dumps(
+                {
+                    "state": state,
+                    "reloadPending": reload_pending,
+                    "message": message,
+                    "updatedAt": datetime.now(timezone.utc).isoformat(),
+                },
+                indent=2,
+            )
+            + "\n",
             encoding="utf-8",
         )
         temporary_path.replace(state_path)
-        record_audit_event("setup.runtime", details={"action": action, "state": state}, allowed=True)
+        record_audit_event(
+            "setup.runtime", details={"action": action, "state": state}, allowed=True
+        )
         return {"state": state, "reloadPending": reload_pending, "message": message}
 
     @app.get("/api/v1/strategy/auto-execution")
@@ -2716,9 +3075,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     or not revision.get("timeframe")
                     or freqtrade_timeframe(str(revision.get("timeframe", "")))
                     != freqtrade_timeframe(
-                        str(timeframes.get(pair_key, ""))
-                        if isinstance(timeframes, dict)
-                        else ""
+                        str(timeframes.get(pair_key, "")) if isinstance(timeframes, dict) else ""
                     )
                 ):
                     raise HTTPException(
@@ -2749,9 +3106,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             runtime_state_path = Path("user_data/oanda/runtime-state.json")
             if runtime_state_path.exists():
                 try:
-                    runtime_state = json.loads(
-                        runtime_state_path.read_text(encoding="utf-8")
-                    )
+                    runtime_state = json.loads(runtime_state_path.read_text(encoding="utf-8"))
                 except (OSError, json.JSONDecodeError) as exc:
                     raise HTTPException(
                         status_code=500,
@@ -2768,9 +3123,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         write_strategy_execution_state(state)
         current_task = app.state.strategy_execution_task
         if enabled and (current_task is None or current_task.done()):
-            app.state.strategy_execution_task = asyncio.create_task(
-                auto_execution_loop()
-            )
+            app.state.strategy_execution_task = asyncio.create_task(auto_execution_loop())
         elif not enabled and current_task is not None and not current_task.done():
             current_task.cancel()
             try:
@@ -2784,9 +3137,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "enabled": enabled,
                 "environment": settings.environment.value if enabled else None,
             },
-            username=(resolve_session_user(session_token) or {}).get(
-                "username", "anonymous"
-            ),
+            username=(resolve_session_user(session_token) or {}).get("username", "anonymous"),
             role=user_role,
             allowed=True,
         )
@@ -2802,7 +3153,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
     async def download_setup_file(file_kind: str, strategy_name: str | None = None) -> Response:
         config_path, strategy_path = resolve_setup_paths()
         if file_kind == "strategy" and strategy_name:
-            selected = next((item for item in discover_strategy_files() if item.name == strategy_name), None)
+            selected = next(
+                (item for item in discover_strategy_files() if item.name == strategy_name), None
+            )
             if selected is None:
                 raise HTTPException(status_code=404, detail="strategy class is not available")
             strategy_path = selected.path
@@ -2820,28 +3173,33 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 if fallback_strategy_path.exists():
                     path = fallback_strategy_path
             else:
-                generated_content = json.dumps(
-                    {
-                        "schema_version": 1,
-                        "timeframe": "5m",
-                        "pair_timeframes": {"EUR_USD": "5m", "GBP_USD": "1h"},
-                        "exchange": {
-                            "name": "oanda",
-                            "oanda_environment": "practice",
-                            "oanda_execution_mode": "dry_run",
-                            "oanda_token": "",
-                            "account_id": "",
-                            "pair_whitelist": ["EUR_USD", "GBP_USD"],
-                            "oanda_risk_fraction": "0.01",
+                generated_content = (
+                    json.dumps(
+                        {
+                            "schema_version": 1,
+                            "timeframe": "5m",
+                            "pair_timeframes": {"EUR_USD": "5m", "GBP_USD": "1h"},
+                            "exchange": {
+                                "name": "oanda",
+                                "oanda_environment": "practice",
+                                "oanda_execution_mode": "dry_run",
+                                "oanda_token": "",
+                                "account_id": "",
+                                "pair_whitelist": ["EUR_USD", "GBP_USD"],
+                                "oanda_risk_fraction": "0.01",
+                            },
                         },
-                    },
-                    indent=2,
-                ) + "\n"
+                        indent=2,
+                    )
+                    + "\n"
+                )
             if not path.exists() and generated_content is None:
                 raise HTTPException(status_code=404, detail=f"{file_kind} file is not available")
         media_type = "application/json" if file_kind == "config" else "text/x-python"
         return Response(
-            content=generated_content if generated_content is not None else path.read_text(encoding="utf-8"),
+            content=generated_content
+            if generated_content is not None
+            else path.read_text(encoding="utf-8"),
             media_type=media_type,
             headers={"Content-Disposition": f'attachment; filename="{path.name}"'},
         )
@@ -2867,16 +3225,24 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         strategy_names: list[str] = []
         if file_kind == "config":
             if not content.strip() or len(content.encode("utf-8")) > 2_000_000:
-                raise HTTPException(status_code=400, detail="file is empty or exceeds the 2 MB limit")
+                raise HTTPException(
+                    status_code=400, detail="file is empty or exceeds the 2 MB limit"
+                )
             try:
                 config_payload = json.loads(content)
             except json.JSONDecodeError as exc:
-                raise HTTPException(status_code=400, detail="config.json must contain valid JSON") from exc
+                raise HTTPException(
+                    status_code=400, detail="config.json must contain valid JSON"
+                ) from exc
             if not isinstance(config_payload, dict):
-                raise HTTPException(status_code=400, detail="config.json must contain a JSON object")
+                raise HTTPException(
+                    status_code=400, detail="config.json must contain a JSON object"
+                )
         else:
             file_name = str(payload.get("fileName") or strategy_path.name)
-            strategy_directory = Path(os.environ.get("FOREX_STRATEGIES_DIR", "user_data/strategies"))
+            strategy_directory = Path(
+                os.environ.get("FOREX_STRATEGIES_DIR", "user_data/strategies")
+            )
             path = strategy_directory / file_name
             try:
                 strategy_names = validate_strategy_upload(
@@ -2890,8 +3256,15 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         temporary_path = path.with_suffix(f"{path.suffix}.tmp")
         temporary_path.write_text(content, encoding="utf-8")
         temporary_path.replace(path)
-        record_audit_event("setup.file_uploaded", details={"fileKind": file_kind, "path": str(path)}, allowed=True)
-        result = {"uploaded": True, "fileKind": file_kind, "path": str(path), "reloadRequired": True}
+        record_audit_event(
+            "setup.file_uploaded", details={"fileKind": file_kind, "path": str(path)}, allowed=True
+        )
+        result = {
+            "uploaded": True,
+            "fileKind": file_kind,
+            "path": str(path),
+            "reloadRequired": True,
+        }
         if file_kind == "strategy":
             result["strategyNames"] = strategy_names
         return result
@@ -3012,6 +3385,125 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             job["status"] = "failed"
             job["error"] = str(exc)
 
+    def resolve_candle_scope(pair: str, timeframe: str) -> tuple[str, str]:
+        normalized_pair = normalize_pair(pair)
+        try:
+            normalized_timeframe = freqtrade_timeframe(timeframe)
+            oanda_granularity(normalized_timeframe)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return normalized_pair, normalized_timeframe
+
+    @app.get("/api/v1/hyperopt/data-cache")
+    async def hyperopt_data_cache(pair: str, timeframe: str) -> dict:
+        normalized_pair, normalized_timeframe = resolve_candle_scope(pair, timeframe)
+        return get_candle_store().inventory(
+            instrument=normalized_pair.replace("/", "_"),
+            timeframe=normalized_timeframe,
+        )
+
+    @app.delete("/api/v1/hyperopt/data-cache")
+    async def clear_hyperopt_data_cache(
+        pair: str,
+        timeframe: str,
+        user_role: str | None = Header(default=None, alias="X-User-Role"),
+        csrf_token: str | None = Header(default=None, alias="X-CSRF-Token"),
+        session_token: str | None = Header(default=None, alias="X-Session-Token"),
+    ) -> dict:
+        validate_write_access(user_role, csrf_token, session_token)
+        normalized_pair, normalized_timeframe = resolve_candle_scope(pair, timeframe)
+        removed_ranges = get_candle_store().clear(
+            instrument=normalized_pair.replace("/", "_"),
+            timeframe=normalized_timeframe,
+        )
+        record_audit_event(
+            "hyperopt.candle_cache_cleared",
+            details={
+                "pair": normalized_pair,
+                "timeframe": normalized_timeframe,
+                "removedRanges": removed_ranges,
+            },
+            role=user_role,
+            allowed=True,
+        )
+        return {
+            "pair": normalized_pair,
+            "timeframe": normalized_timeframe,
+            "removedRanges": removed_ranges,
+        }
+
+    @app.post("/api/v1/hyperopt/data-download")
+    async def download_hyperopt_data(
+        payload: dict,
+        user_role: str | None = Header(default=None, alias="X-User-Role"),
+        csrf_token: str | None = Header(default=None, alias="X-CSRF-Token"),
+        session_token: str | None = Header(default=None, alias="X-Session-Token"),
+    ) -> dict:
+        validate_write_access(user_role, csrf_token, session_token)
+        pair, normalized_timeframe = resolve_candle_scope(
+            str(payload.get("pair", "")),
+            str(payload.get("timeframe", "")),
+        )
+        try:
+            start_date = date.fromisoformat(str(payload.get("startDate", "")))
+            end_date = date.fromisoformat(str(payload.get("endDate", "")))
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail="startDate and endDate must be valid YYYY-MM-DD dates",
+            ) from exc
+        if start_date > end_date:
+            raise HTTPException(status_code=400, detail="startDate must not be after endDate")
+        start = datetime.combine(start_date, datetime.min.time(), tzinfo=UTC)
+        end = datetime.combine(end_date + timedelta(days=1), datetime.min.time(), tzinfo=UTC)
+        settings = OandaSettings.from_environment()
+        candle_store = get_candle_store()
+        try:
+            async with OandaClient(
+                settings.token,
+                settings.account_id,
+                environment=settings.environment,
+            ) as client:
+                frame = await OandaMarketDataProvider(client, settings).fetch_historical(
+                    pair,
+                    normalized_timeframe,
+                    start=start.isoformat().replace("+00:00", "Z"),
+                    end=end.isoformat().replace("+00:00", "Z"),
+                    store=candle_store,
+                )
+        except Exception as exc:
+            logger.exception("Unable to download requested historical candle range")
+            raise HTTPException(
+                status_code=502,
+                detail=f"Historical candle download failed: {exc}",
+            ) from exc
+        inventory = candle_store.inventory(
+            instrument=pair.replace("/", "_"),
+            timeframe=normalized_timeframe,
+        )
+        record_audit_event(
+            "hyperopt.candles_downloaded",
+            details={
+                "pair": pair,
+                "timeframe": normalized_timeframe,
+                "startDate": start_date.isoformat(),
+                "endDate": end_date.isoformat(),
+                "candles": len(frame),
+            },
+            role=user_role,
+            allowed=True,
+        )
+        return {
+            "pair": pair,
+            "timeframe": normalized_timeframe,
+            "startDate": start_date.isoformat(),
+            "endDate": end_date.isoformat(),
+            "candles": len(frame),
+            "from": frame["date"].min().isoformat() if not frame.empty else None,
+            "to": frame["date"].max().isoformat() if not frame.empty else None,
+            "cache": inventory,
+        }
+
     @app.post("/api/v1/hyperopt/start")
     async def start_hyperopt(
         payload: dict,
@@ -3030,7 +3522,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         scope_key = hyperopt_scope(pair, strategy_class, timeframe)
         active_job = HYPEROPT_JOBS.get(scope_key)
         if active_job is not None and active_job.get("status") == "running":
-            raise HTTPException(status_code=409, detail="Hyperopt is already running for this scope")
+            raise HTTPException(
+                status_code=409, detail="Hyperopt is already running for this scope"
+            )
         if payload.get("resetPrevious", True):
             reset_pair_research_state(pair, strategy_class, timeframe)
         history_mode, steps = resolve_history_request(payload, timeframe)
@@ -3040,11 +3534,13 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         attempts = max(1, min(int(payload.get("attempts", 24)), 900))
         hyperopt_loss = str(payload.get("hyperoptLoss", DEFAULT_HYPEROPT_LOSS))
         if hyperopt_loss not in HYPEROPT_LOSS_FUNCTIONS:
-            raise HTTPException(status_code=400, detail=f"Unsupported hyperopt loss: {hyperopt_loss}")
+            raise HTTPException(
+                status_code=400, detail=f"Unsupported hyperopt loss: {hyperopt_loss}"
+            )
         try:
             strategy = load_strategy(strategy_class, freqtrade_timeframe(timeframe), pair)
             informative_timeframes = strategy_informative_timeframes(strategy, pair)
-            granularity = oanda_granularity(freqtrade_timeframe(timeframe))
+            oanda_granularity(freqtrade_timeframe(timeframe))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         from freqtrade.strategy.parameters import BaseParameter
@@ -3064,12 +3560,14 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         if settings.execution_mode not in {"dry_run", "backtest", "practice"}:
             raise HTTPException(status_code=400, detail="Hyperopt requires a safe execution mode")
         instrument_name = pair.replace("/", "_")
+        candle_store = get_candle_store()
         try:
             async with OandaClient(
                 settings.token,
                 settings.account_id,
                 environment=settings.environment,
             ) as client:
+                provider = OandaMarketDataProvider(client, settings)
                 account = await client.get_account_summary()
                 metadata = await client.get_instruments((instrument_name,))
                 instrument = next(
@@ -3078,11 +3576,16 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 )
                 if instrument is None:
                     raise HTTPException(status_code=400, detail=f"Unknown OANDA instrument: {pair}")
-                candles = df_from_raw_candles(
-                    await client.get_candles(instrument_name, granularity, count=steps)
+                candles = await provider.fetch_latest(
+                    pair,
+                    freqtrade_timeframe(timeframe),
+                    count=steps,
+                    store=candle_store,
                 )
                 if candles.empty:
-                    raise HTTPException(status_code=400, detail=f"No historical candles returned for {pair}")
+                    raise HTTPException(
+                        status_code=400, detail=f"No historical candles returned for {pair}"
+                    )
                 spread = (await client.get_prices((instrument_name,)))[0].spread
                 informative_candles: dict[str, pd.DataFrame] = {}
                 for informative_timeframe in informative_timeframes:
@@ -3092,12 +3595,11 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                             strategy, informative_timeframe, len(candles)
                         ),
                     )
-                    informative_frame = df_from_raw_candles(
-                        await client.get_candles(
-                            instrument_name,
-                            oanda_granularity(informative_timeframe),
-                            count=informative_count,
-                        )
+                    informative_frame = await provider.fetch_latest(
+                        pair,
+                        informative_timeframe,
+                        count=informative_count,
+                        store=candle_store,
                     )
                     if informative_frame.empty:
                         raise HTTPException(
@@ -3108,7 +3610,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         except HTTPException:
             raise
         except Exception as exc:  # pragma: no cover - API boundary
-            raise HTTPException(status_code=502, detail=f"Hyperopt data request failed: {exc}") from exc
+            raise HTTPException(
+                status_code=502, detail=f"Hyperopt data request failed: {exc}"
+            ) from exc
 
         data_hash = candle_frame_hash({instrument_name: candles})
         schema_hash = strategy_schema_hash(strategy_class, timeframe)
@@ -3204,7 +3708,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         timeframe = str(payload.get("timeframe", "M15")).upper()
         job = HYPEROPT_JOBS.get(hyperopt_scope(pair, strategy_class, timeframe))
         if job is None or job.get("status") != "running":
-            raise HTTPException(status_code=400, detail="No running Hyperopt job exists for this scope")
+            raise HTTPException(
+                status_code=400, detail="No running Hyperopt job exists for this scope"
+            )
         stop_job = getattr(job.get("stopEvent"), "set", None)
         if not callable(stop_job):
             raise HTTPException(status_code=500, detail="Hyperopt stop control is unavailable")
@@ -3238,14 +3744,10 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
     ) -> dict:
         normalized_pair = normalize_pair(pair)
         selected_class = strategy_class or str(
-            strategy_config_for_pair(normalized_pair).get(
-                "strategyClass", "ForexMasterStrategy"
-            )
+            strategy_config_for_pair(normalized_pair).get("strategyClass", "ForexMasterStrategy")
         )
         selected_timeframe = timeframe.upper()
-        review = strategy_review_for_scope(
-            normalized_pair, selected_timeframe, selected_class
-        )
+        review = strategy_review_for_scope(normalized_pair, selected_timeframe, selected_class)
         review["approvedRevision"] = approved_runtime_revision(normalized_pair)
         return review
 
@@ -3258,10 +3760,14 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
     ) -> dict:
         validate_write_access(user_role, csrf_token, session_token)
         if user_role not in {"operator", "admin"}:
-            raise HTTPException(status_code=403, detail="Strategy approval requires operator access")
+            raise HTTPException(
+                status_code=403, detail="Strategy approval requires operator access"
+            )
         status = str(payload.get("status", "")).lower()
         if status not in {"approved", "rejected"}:
-            raise HTTPException(status_code=400, detail="Review status must be approved or rejected")
+            raise HTTPException(
+                status_code=400, detail="Review status must be approved or rejected"
+            )
         pair = normalize_pair(str(payload.get("pair", "EUR/USD")))
         timeframe = str(payload.get("timeframe", "M15")).upper()
         strategy_class = str(payload.get("strategyClass", ""))
@@ -3288,8 +3794,14 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             }
             PENDING_HYPEROPT_RESULTS[scope_key] = pending
         if status == "approved":
-            if not payload.get("requireOptimization") or pending is None or not isinstance(report, dict):
-                raise HTTPException(status_code=409, detail=f"No matching Hyperopt result is available for {pair}")
+            if (
+                not payload.get("requireOptimization")
+                or pending is None
+                or not isinstance(report, dict)
+            ):
+                raise HTTPException(
+                    status_code=409, detail=f"No matching Hyperopt result is available for {pair}"
+                )
             if (
                 pending.get("pair") != pair
                 or pending.get("timeframe") != timeframe
@@ -3367,7 +3879,12 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         persist_scope_revision(pair, timeframe, strategy_class)
         record_audit_event(
             "strategy.review",
-            details={"status": status, "pair": pair, "timeframe": timeframe, "strategyClass": strategy_class},
+            details={
+                "status": status,
+                "pair": pair,
+                "timeframe": timeframe,
+                "strategyClass": strategy_class,
+            },
             username=user_role,
             role=user_role,
             allowed=True,
@@ -3428,7 +3945,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                         session_token=session_token,
                     )
                 except HTTPException as exc:
-                    update_backtest_job(job_id, status="failed", phase="failed", message=str(exc.detail))
+                    update_backtest_job(
+                        job_id, status="failed", phase="failed", message=str(exc.detail)
+                    )
                 except Exception as exc:  # pragma: no cover - guarded task boundary
                     update_backtest_job(job_id, status="failed", phase="failed", message=str(exc))
 
@@ -3440,14 +3959,14 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         timeframe = str(payload.get("timeframe", "M5"))
         normalized_pair = normalize_pair(pair)
         instrument_name = pair.replace("/", "_").upper()
-        persisted_setup = load_forex_config(Path(os.environ.get("OANDA_CONFIG_PATH", "user_data/config.json")))
+        persisted_setup = load_forex_config(
+            Path(os.environ.get("OANDA_CONFIG_PATH", "user_data/config.json"))
+        )
         configured_strategy = dict(persisted_setup.get("pair_strategies", {})).get(instrument_name)
         strategy_class_name = str(
             payload.get("strategyClass")
             or configured_strategy
-            or strategy_config_for_pair(normalized_pair).get(
-                "strategyClass", "ForexMasterStrategy"
-            )
+            or strategy_config_for_pair(normalized_pair).get("strategyClass", "ForexMasterStrategy")
         )
         selected_timeframe = freqtrade_timeframe(timeframe)
         history_mode, steps = resolve_history_request(payload, timeframe)
@@ -3459,7 +3978,8 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             message=f"Preparing to download up to {steps} {timeframe} candles for {normalized_pair}.",
         )
         BACKTEST_HISTORY[:] = [
-            item for item in BACKTEST_HISTORY
+            item
+            for item in BACKTEST_HISTORY
             if not (
                 item.get("pair") == normalized_pair
                 and item.get("timeframe") == timeframe
@@ -3469,24 +3989,29 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         data_revision = datetime.now(timezone.utc).isoformat()
         settings = OandaSettings.from_environment()
         if settings.environment.value.lower() not in {"practice", "live"}:
-            raise HTTPException(status_code=400, detail="Backtest requires a valid OANDA environment")
+            raise HTTPException(
+                status_code=400, detail="Backtest requires a valid OANDA environment"
+            )
         if settings.execution_mode.lower() not in {"dry_run", "backtest", "practice"}:
-            raise HTTPException(status_code=400, detail="Backtest requires a safe OANDA execution mode")
+            raise HTTPException(
+                status_code=400, detail="Backtest requires a safe OANDA execution mode"
+            )
 
         approved_run = approved_runtime_revision(normalized_pair)
         approved_hyperopt = (
             approved_run.get("hyperopt")
             if isinstance(approved_run, dict)
             and approved_run.get("strategyClass") == strategy_class_name
-            and freqtrade_timeframe(str(approved_run.get("timeframe", "")))
-            == selected_timeframe
+            and freqtrade_timeframe(str(approved_run.get("timeframe", ""))) == selected_timeframe
             else None
         )
         if not isinstance(approved_hyperopt, dict):
             approved_hyperopt = None
         backtest_warning: str | None = None
         if isinstance(approved_hyperopt, dict):
-            pair_matches = str(approved_run.get("pair", normalized_pair)).upper() == normalized_pair.upper()
+            pair_matches = (
+                str(approved_run.get("pair", normalized_pair)).upper() == normalized_pair.upper()
+            )
             timeframe_matches = str(approved_run.get("timeframe", "")).upper() == timeframe.upper()
             strategy_matches = str(approved_run.get("strategyClass", "")) == strategy_class_name
             history_matches = (
@@ -3530,26 +4055,53 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     else None
                 ),
             )
-            informative_timeframes = strategy_informative_timeframes(strategy_instance, normalized_pair)
+            informative_timeframes = strategy_informative_timeframes(
+                strategy_instance, normalized_pair
+            )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         try:
-            granularity = oanda_granularity(selected_timeframe)
+            oanda_granularity(selected_timeframe)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         try:
-            async with OandaClient(settings.token, settings.account_id, environment=settings.environment) as client:
+            async with OandaClient(
+                settings.token, settings.account_id, environment=settings.environment
+            ) as client:
+                provider = OandaMarketDataProvider(client, settings)
+                candle_store = get_candle_store()
                 metadata = await client.get_instruments((instrument_name,))
-                update_backtest_job(job_id, phase="history", historyProgress=15, backtestProgress=0, message="Loading instrument metadata.")
+                update_backtest_job(
+                    job_id,
+                    phase="history",
+                    historyProgress=15,
+                    backtestProgress=0,
+                    message="Loading instrument metadata.",
+                )
                 if not metadata:
-                    raise HTTPException(status_code=404, detail=f"Instrument {instrument_name} is not available in the configured OANDA account")
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"Instrument {instrument_name} is not available in the configured OANDA account",
+                    )
                 account = await client.get_account_summary()
                 update_backtest_job(job_id, historyProgress=25, message="Reading account baseline.")
-                candles = await client.get_candles(instrument_name, granularity, count=steps)
-                update_backtest_job(job_id, historyProgress=85, message=f"Received {len(candles)} historical candles from OANDA.")
-                frame = df_from_raw_candles(candles)
+                frame = await provider.fetch_latest(
+                    normalized_pair,
+                    selected_timeframe,
+                    count=steps,
+                    store=candle_store,
+                )
+                candles = frame
+                update_backtest_job(
+                    job_id,
+                    historyProgress=85,
+                    message=f"Received {len(candles)} historical candles from OANDA.",
+                )
                 if frame.empty:
-                    raise HTTPException(status_code=400, detail="No historical candles were returned for the requested OANDA pair")
+                    raise HTTPException(
+                        status_code=400,
+                        detail="No historical candles were returned for the requested OANDA pair",
+                    )
                 informative_frames: dict[str, pd.DataFrame] = {}
                 for informative_timeframe in informative_timeframes:
                     informative_count = min(
@@ -3558,18 +4110,35 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                             strategy_instance, informative_timeframe, steps
                         ),
                     )
-                    informative_candles = await client.get_candles(
-                        instrument_name,
-                        oanda_granularity(informative_timeframe),
+                    informative_frame = await provider.fetch_latest(
+                        normalized_pair,
+                        informative_timeframe,
                         count=informative_count,
+                        store=candle_store,
                     )
-                    informative_frame = df_from_raw_candles(informative_candles)
                     if informative_frame.empty:
-                        raise HTTPException(status_code=400, detail=f"No informative candles returned for {informative_timeframe}")
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"No informative candles returned for {informative_timeframe}",
+                        )
                     informative_frames[informative_timeframe] = informative_frame
-                data_hash = candle_frame_hash({instrument_name: frame, **{f"{instrument_name}:{key}": value for key, value in informative_frames.items()}})
+                data_hash = candle_frame_hash(
+                    {
+                        instrument_name: frame,
+                        **{
+                            f"{instrument_name}:{key}": value
+                            for key, value in informative_frames.items()
+                        },
+                    }
+                )
                 price_row = (await client.get_prices((instrument_name,)))[0]
-                update_backtest_job(job_id, phase="backtest", historyProgress=100, backtestProgress=10, message=f"History ready: {len(frame)} {timeframe} candles and {len(informative_frames)} informative timeframe(s). Running {strategy_class_name}.")
+                update_backtest_job(
+                    job_id,
+                    phase="backtest",
+                    historyProgress=100,
+                    backtestProgress=10,
+                    message=f"History ready: {len(frame)} {timeframe} candles and {len(informative_frames)} informative timeframe(s). Running {strategy_class_name}.",
+                )
                 strategy = FreqtradeStrategyAdapter(
                     strategy_instance, normalized_pair, informative_frames
                 )
@@ -3586,12 +4155,17 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 ).run(frame, detail_candles=frame)
                 strategy_parameters = dict(
                     approved_hyperopt.get("parameters", {})
-                    if isinstance(approved_hyperopt, dict) else {}
+                    if isinstance(approved_hyperopt, dict)
+                    else {}
                 )
-                update_backtest_job(job_id, backtestProgress=95, message="Aggregating trades, P/L and risk metrics.")
+                update_backtest_job(
+                    job_id, backtestProgress=95, message="Aggregating trades, P/L and risk metrics."
+                )
                 drawdown_rate = getattr(result, "max_drawdown_rate", None)
                 if drawdown_rate is None:
-                    drawdown_rate = Decimal(str(getattr(result, "max_drawdown", 0))) / result.starting_balance
+                    drawdown_rate = (
+                        Decimal(str(getattr(result, "max_drawdown", 0))) / result.starting_balance
+                    )
                 winning_trades = [trade for trade in result.trades if trade.net_pl > 0]
                 losing_trades = [trade for trade in result.trades if trade.net_pl < 0]
                 drawn_trades = len(result.trades) - len(winning_trades) - len(losing_trades)
@@ -3606,7 +4180,8 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     duration_minutes.append(
                         max(
                             0.0,
-                            (pd.Timestamp(exit_time) - pd.Timestamp(entry_time)).total_seconds() / 60,
+                            (pd.Timestamp(exit_time) - pd.Timestamp(entry_time)).total_seconds()
+                            / 60,
                         )
                     )
                 account_currency = str(account.currency)
@@ -3657,8 +4232,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 }
                 BACKTEST_HISTORY.insert(0, summary)
                 history_summary = (
-                    f"Requested up to {steps} {timeframe} candles; "
-                    f"OANDA returned {len(frame)}."
+                    f"Requested up to {steps} {timeframe} candles; OANDA returned {len(frame)}."
                 )
                 response = {
                     "id": summary["id"],
@@ -3668,14 +4242,17 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     "steps": len(frame),
                     "historyMode": history_mode,
                     "historyValue": history_value,
-                    "message": history_summary + (" " + backtest_warning if backtest_warning else "") + f" Real OANDA historical backtest completed using {strategy_class_name}.",
-                    "warning": history_summary + (" " + backtest_warning if backtest_warning else ""),
+                    "message": history_summary
+                    + (" " + backtest_warning if backtest_warning else "")
+                    + f" Real OANDA historical backtest completed using {strategy_class_name}.",
+                    "warning": history_summary
+                    + (" " + backtest_warning if backtest_warning else ""),
                     "netPl": format_decimal(result.net_pl),
                     "trades": len(result.trades),
                     "startingBalance": format_decimal(result.starting_balance),
                     "endingBalance": format_decimal(result.ending_balance),
-                    "winRate": format_decimal(result.win_rate * Decimal('100')),
-                    "maxDrawdown": format_decimal(drawdown_rate * Decimal('100')),
+                    "winRate": format_decimal(result.win_rate * Decimal("100")),
+                    "maxDrawdown": format_decimal(drawdown_rate * Decimal("100")),
                     "strategy": strategy_class_name,
                     "backtestWindow": backtest_window,
                     "dataSource": "OANDA historical candles",
@@ -3689,7 +4266,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                         "stopPips": "0.5",
                         "executionMode": settings.execution_mode,
                         "configSource": "approved-hyperopt" if approved_hyperopt else "default",
-                        "approvedObjective": str(approved_hyperopt.get("objective")) if approved_hyperopt else None,
+                        "approvedObjective": str(approved_hyperopt.get("objective"))
+                        if approved_hyperopt
+                        else None,
                         "strategySchemaHash": strategy_schema_hash(strategy_class_name, timeframe),
                     },
                     "tradeDetails": [
@@ -3710,13 +4289,17 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         except HTTPException:
             raise
         except Exception as exc:  # pragma: no cover - guarded for API stability
-            update_backtest_job(job_id, status="failed", phase="failed", message=f"Backtest failed: {exc}")
+            update_backtest_job(
+                job_id, status="failed", phase="failed", message=f"Backtest failed: {exc}"
+            )
             raise HTTPException(status_code=500, detail=f"Backtest failed: {exc}") from exc
 
     @app.websocket("/ws/market")
     async def ws_market(websocket: WebSocket):
         await websocket.accept()
-        await websocket.send_json(live_event("market", "market.snapshot", fallback_market_summary()))
+        await websocket.send_json(
+            live_event("market", "market.snapshot", fallback_market_summary())
+        )
         try:
             while True:
                 await websocket.receive_text()
@@ -3726,7 +4309,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
     @app.websocket("/ws/account")
     async def ws_account(websocket: WebSocket):
         await websocket.accept()
-        await websocket.send_json(live_event("account", "account.snapshot", fallback_account_summary()))
+        await websocket.send_json(
+            live_event("account", "account.snapshot", fallback_account_summary())
+        )
         try:
             while True:
                 await websocket.receive_text()
@@ -3751,8 +4336,14 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "alerts",
                 "alerts.snapshot",
                 [
-                    {"title": "Practice mode active", "detail": "Read-only broker health is confirmed and dry-run guard is enabled."},
-                    {"title": "Risk guard", "detail": "Daily drawdown remains inside policy thresholds."},
+                    {
+                        "title": "Practice mode active",
+                        "detail": "Read-only broker health is confirmed and dry-run guard is enabled.",
+                    },
+                    {
+                        "title": "Risk guard",
+                        "detail": "Daily drawdown remains inside policy thresholds.",
+                    },
                 ],
             )
         )
@@ -3765,7 +4356,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
     @app.websocket("/ws/alerts")
     async def ws_alerts(websocket: WebSocket):
         await websocket.accept()
-        await websocket.send_json(live_event("alerts", "alerts.snapshot", fallback_market_summary()["alerts"]))
+        await websocket.send_json(
+            live_event("alerts", "alerts.snapshot", fallback_market_summary()["alerts"])
+        )
         try:
             while True:
                 await websocket.receive_text()
@@ -3799,9 +4392,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                         linked_orders = [
                             order
                             for order in pending_orders
-                            if str(
-                                (order.get("clientExtensions") or {}).get("id", "")
-                            ).startswith("risk-average-for-")
+                            if str((order.get("clientExtensions") or {}).get("id", "")).startswith(
+                                "risk-average-for-"
+                            )
                         ]
                         if not linked_orders:
                             continue
@@ -3812,9 +4405,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                             client_order_id = str(
                                 (order.get("clientExtensions") or {}).get("id", "")
                             )
-                            parent_id = client_order_id.removeprefix(
-                                "risk-average-for-"
-                            ).rsplit("-", 1)[0]
+                            parent_id = client_order_id.removeprefix("risk-average-for-").rsplit(
+                                "-", 1
+                            )[0]
                             if parent_id in open_trade_ids:
                                 continue
                             try:
@@ -3841,9 +4434,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                         exc_info=True,
                     )
 
-        app.state.average_order_cleanup_task = asyncio.create_task(
-            average_order_cleanup_loop()
-        )
+        app.state.average_order_cleanup_task = asyncio.create_task(average_order_cleanup_loop())
         try:
             strategy_execution_state = read_strategy_execution_state()
         except HTTPException:
@@ -3852,9 +4443,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             )
         else:
             if strategy_execution_state.get("enabled") is True:
-                app.state.strategy_execution_task = asyncio.create_task(
-                    auto_execution_loop()
-                )
+                app.state.strategy_execution_task = asyncio.create_task(auto_execution_loop())
 
     @app.on_event("shutdown")
     async def stop_background_tasks() -> None:

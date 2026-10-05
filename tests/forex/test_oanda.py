@@ -42,7 +42,11 @@ from freqtrade.forex.risk_limits import (
     RiskUsage,
     aggregate_currency_exposure,
 )
-from freqtrade.forex.config import OandaSettings, execution_mode_for_native_runmode, validate_native_forex_config
+from freqtrade.forex.config import (
+    OandaSettings,
+    execution_mode_for_native_runmode,
+    validate_native_forex_config,
+)
 
 
 def _auth_headers(client, role: str = "operator") -> dict[str, str]:
@@ -62,6 +66,8 @@ def _auth_headers(client, role: str = "operator") -> dict[str, str]:
         "X-User-Role": session["user"]["role"],
         "X-CSRF-Token": session["csrfToken"],
     }
+
+
 from freqtrade.forex.cli import run_dry_run
 from freqtrade.forex.costs import ForexFillModel, financing_cost
 from freqtrade.forex.execution import (
@@ -153,15 +159,18 @@ def test_oanda_account_discovery_is_read_only_and_filters_supported_tags():
                 },
             )
         if request.url.path.endswith("/instruments"):
-            instruments = (
-                [{"name": "EUR_USD"}]
-                if "/practice-v20/" in request.url.path
-                else []
-            )
+            instruments = [{"name": "EUR_USD"}] if "/practice-v20/" in request.url.path else []
             return httpx.Response(200, json={"instruments": instruments})
         return httpx.Response(
             200,
-            json={"account": {"alias": "Primary", "currency": "GBP", "NAV": "10000", "marginAvailable": "9000"}},
+            json={
+                "account": {
+                    "alias": "Primary",
+                    "currency": "GBP",
+                    "NAV": "10000",
+                    "marginAvailable": "9000",
+                }
+            },
         )
 
     async def discover():
@@ -364,17 +373,11 @@ def test_risk_policy_enforces_daily_total_and_currency_exposure_limits() -> None
     policy.validate(usage)
 
     with pytest.raises(RiskLimitError, match="daily loss"):
-        policy.validate(
-            RiskUsage(Decimal("101"), Decimal("200"), {"USD": Decimal("1")})
-        )
+        policy.validate(RiskUsage(Decimal("101"), Decimal("200"), {"USD": Decimal("1")}))
     with pytest.raises(RiskLimitError, match="total risk"):
-        policy.validate(
-            RiskUsage(Decimal("40"), Decimal("251"), {"USD": Decimal("1")})
-        )
+        policy.validate(RiskUsage(Decimal("40"), Decimal("251"), {"USD": Decimal("1")}))
     with pytest.raises(RiskLimitError, match="correlation exposure"):
-        policy.validate(
-            RiskUsage(Decimal("40"), Decimal("200"), {"USD": Decimal("1001")})
-        )
+        policy.validate(RiskUsage(Decimal("40"), Decimal("200"), {"USD": Decimal("1001")}))
 
 
 def test_risk_control_kill_switch_and_usage_limits() -> None:
@@ -484,9 +487,7 @@ async def test_paper_account_state_updates_equity_margin_and_daily_loss() -> Non
     )
 
     await session.refresh_prices()
-    await session.open_market(
-        "EUR_USD", 1000, "account-entry-1", stop_loss_price="1.0995"
-    )
+    await session.open_market("EUR_USD", 1000, "account-entry-1", stop_loss_price="1.0995")
     open_state = session.account_state()
     assert open_state.balance == Decimal("10000")
     assert open_state.equity == Decimal("9999.9")
@@ -711,6 +712,7 @@ def test_market_data_provider_maps_timeframes_and_filters_incomplete_candles() -
     assert OandaMarketDataProvider.to_oanda_granularity("5m") == "M5"
     assert OandaMarketDataProvider.to_oanda_granularity("15m") == "M15"
     assert OandaMarketDataProvider.to_oanda_granularity("1h") == "H1"
+    assert OandaMarketDataProvider.to_oanda_granularity("1M") == "M"
 
     candles = [
         OandaCandle(
@@ -855,9 +857,7 @@ async def test_market_data_provider_can_fetch_only_forming_candles() -> None:
                 ),
             ]
 
-    provider = OandaMarketDataProvider(
-        FakeClient(), OandaSettings("token", "account")
-    )
+    provider = OandaMarketDataProvider(FakeClient(), OandaSettings("token", "account"))
     frame = await provider.fetch_incomplete_ohlcv("EUR/USD", "4h")
 
     assert len(frame) == 1
@@ -898,14 +898,19 @@ def test_oanda_settings_and_pair_mapping_from_freqtrade_config() -> None:
     assert settings.risk_fraction == "0.02"
     assert settings.execution_mode == "dry_run"
     assert settings.pair_timeframes == {"EUR_USD": "5m", "GBP_USD": "1h"}
-    assert settings.pair_strategies == {"EUR_USD": "ForexMasterStrategy", "GBP_USD": "ForexEmaStrategy"}
+    assert settings.pair_strategies == {
+        "EUR_USD": "ForexMasterStrategy",
+        "GBP_USD": "ForexEmaStrategy",
+    }
     assert settings.pair_approved_revisions["GBP_USD"]["timeframe"] == "H1"
     assert OandaMarketDataProvider.to_oanda_instrument("eur/usd") == "EUR_USD"
     assert OandaMarketDataProvider.to_freqtrade_pair("GBP_USD") == "GBP/USD"
 
 
 @pytest.mark.asyncio
-async def test_dry_run_uses_pair_strategy_and_timeframe_over_global_args(monkeypatch, tmp_path) -> None:
+async def test_dry_run_uses_pair_strategy_and_timeframe_over_global_args(
+    monkeypatch, tmp_path
+) -> None:
     loaded_strategies = []
     workers = []
 
@@ -941,18 +946,23 @@ async def test_dry_run_uses_pair_strategy_and_timeframe_over_global_args(monkeyp
             return None
 
     monkeypatch.setattr("freqtrade.forex.cli.OandaClient", FakeClient)
-    monkeypatch.setattr("freqtrade.forex.cli.OandaExecutionGateway", lambda *args, **kwargs: object())
+    monkeypatch.setattr(
+        "freqtrade.forex.cli.OandaExecutionGateway", lambda *args, **kwargs: object()
+    )
     monkeypatch.setattr("freqtrade.forex.cli.DryRunSession", lambda *args, **kwargs: object())
-    monkeypatch.setattr("freqtrade.forex.cli.OandaMarketDataProvider", lambda *args, **kwargs: object())
+    monkeypatch.setattr(
+        "freqtrade.forex.cli.OandaMarketDataProvider", lambda *args, **kwargs: object()
+    )
     monkeypatch.setattr("freqtrade.forex.cli.PaperLedger", lambda *args, **kwargs: object())
     monkeypatch.setattr(
         "freqtrade.forex.cli.load_strategy",
         lambda name, timeframe, pair, parameter_values=None: (
-            loaded_strategies.append((name, timeframe, pair, parameter_values))
-            or object()
+            loaded_strategies.append((name, timeframe, pair, parameter_values)) or object()
         ),
     )
-    monkeypatch.setattr("freqtrade.forex.cli.FreqtradeStrategyAdapter", lambda *args, **kwargs: object())
+    monkeypatch.setattr(
+        "freqtrade.forex.cli.FreqtradeStrategyAdapter", lambda *args, **kwargs: object()
+    )
     monkeypatch.setattr("freqtrade.forex.cli.DryRunStrategyLoop", lambda *args, **kwargs: object())
     monkeypatch.setattr("freqtrade.forex.cli.DryRunWorker", FakeWorker)
     monkeypatch.setattr("freqtrade.forex.cli.DryRunPortfolioWorker", FakePortfolioWorker)
@@ -982,9 +992,7 @@ async def test_dry_run_uses_pair_strategy_and_timeframe_over_global_args(monkeyp
 
     await run_dry_run(settings, args)
 
-    assert loaded_strategies == [
-        ("ApprovedForexStrategy", "1h", "EUR/USD", {"fast": 7})
-    ]
+    assert loaded_strategies == [("ApprovedForexStrategy", "1h", "EUR/USD", {"fast": 7})]
     assert workers[0].config.timeframe == "1h"
 
 
@@ -1090,24 +1098,26 @@ def test_show_timeframes_cli_reports_pair_scope_and_approval(tmp_path, capsys) -
     from freqtrade.forex.cli import run_show_timeframes
 
     config_path = tmp_path / "forex.json"
-    config_path.write_text(json.dumps({
-        "exchange": {"pair_whitelist": ["EUR_USD", "GBP_USD"]},
-        "pair_timeframes": {"EUR_USD": "5m", "GBP_USD": "1h"},
-        "pair_strategies": {
-            "EUR_USD": "ForexEmaStrategy",
-            "GBP_USD": "ForexEmaStrategy",
-        },
-        "pair_approved_revisions": {
-            "GBP_USD": {
-                "pair": "GBP/USD",
-                "strategyClass": "ForexEmaStrategy",
-                "timeframe": "H1",
+    config_path.write_text(
+        json.dumps(
+            {
+                "exchange": {"pair_whitelist": ["EUR_USD", "GBP_USD"]},
+                "pair_timeframes": {"EUR_USD": "5m", "GBP_USD": "1h"},
+                "pair_strategies": {
+                    "EUR_USD": "ForexEmaStrategy",
+                    "GBP_USD": "ForexEmaStrategy",
+                },
+                "pair_approved_revisions": {
+                    "GBP_USD": {
+                        "pair": "GBP/USD",
+                        "strategyClass": "ForexEmaStrategy",
+                        "timeframe": "H1",
+                    }
+                },
             }
-        },
-    }))
-    args = build_parser().parse_args([
-        "show-timeframes", "--config", str(config_path)
-    ])
+        )
+    )
+    args = build_parser().parse_args(["show-timeframes", "--config", str(config_path)])
 
     assert run_show_timeframes(args) == 0
     rows = json.loads(capsys.readouterr().out)
@@ -1134,10 +1144,18 @@ def test_paper_backup_cli_requires_destination() -> None:
 
 
 def test_forex_research_cli_parses_strategy_options(tmp_path: Path) -> None:
-    args = build_parser().parse_args([
-        "hyperopt", "--pair", "EUR/USD", "--epochs", "12",
-        "--refresh-data", "--results-dir", str(tmp_path),
-    ])
+    args = build_parser().parse_args(
+        [
+            "hyperopt",
+            "--pair",
+            "EUR/USD",
+            "--epochs",
+            "12",
+            "--refresh-data",
+            "--results-dir",
+            str(tmp_path),
+        ]
+    )
     assert args.command == "hyperopt"
     assert args.epochs == 12
     assert args.refresh_data is True
@@ -1149,31 +1167,25 @@ def test_forex_research_cli_parses_strategy_options(tmp_path: Path) -> None:
         build_parser().parse_args(["hyperopt", "--freqaimodel", "LightGBMRegressor"])
     with pytest.raises(SystemExit):
         build_parser().parse_args(["backtest", "--ai-model", "model.json"])
-    selected_strategy = build_parser().parse_args([
-        "hyperopt", "--strategy", "ForexEmaStrategy"
-    ])
+    selected_strategy = build_parser().parse_args(["hyperopt", "--strategy", "ForexEmaStrategy"])
     assert selected_strategy.strategy == "ForexEmaStrategy"
-    forex_sample_strategy = build_parser().parse_args([
-        "hyperopt", "--timeframe", "15m", "--strategy", "ForexSampleStrategy"
-    ])
+    forex_sample_strategy = build_parser().parse_args(
+        ["hyperopt", "--timeframe", "15m", "--strategy", "ForexSampleStrategy"]
+    )
     assert forex_sample_strategy.timeframe == "15m"
     assert forex_sample_strategy.strategy == "ForexSampleStrategy"
-    forex_sample_backtest = build_parser().parse_args([
-        "backtest", "--timeframe", "15m", "--strategy", "ForexSampleStrategy"
-    ])
+    forex_sample_backtest = build_parser().parse_args(
+        ["backtest", "--timeframe", "15m", "--strategy", "ForexSampleStrategy"]
+    )
     assert forex_sample_backtest.timeframe == "15m"
-    one_minute_hyperopt = build_parser().parse_args([
-        "hyperopt", "--timeframe", "1m", "--strategy", "ForexSampleStrategy"
-    ])
-    one_minute_backtest = build_parser().parse_args([
-        "backtest", "--timeframe", "1m", "--strategy", "ForexSampleStrategy"
-    ])
-    one_minute_download = build_parser().parse_args([
-        "download-data", "--timeframe", "1m"
-    ])
-    one_minute_cache_clear = build_parser().parse_args([
-        "cache-clear", "--timeframe", "1m"
-    ])
+    one_minute_hyperopt = build_parser().parse_args(
+        ["hyperopt", "--timeframe", "1m", "--strategy", "ForexSampleStrategy"]
+    )
+    one_minute_backtest = build_parser().parse_args(
+        ["backtest", "--timeframe", "1m", "--strategy", "ForexSampleStrategy"]
+    )
+    one_minute_download = build_parser().parse_args(["download-data", "--timeframe", "1m"])
+    one_minute_cache_clear = build_parser().parse_args(["cache-clear", "--timeframe", "1m"])
     assert one_minute_hyperopt.timeframe == "1m"
     assert one_minute_backtest.timeframe == "1m"
     assert one_minute_download.timeframe == "1m"
@@ -1184,6 +1196,8 @@ def test_forex_research_cli_parses_strategy_options(tmp_path: Path) -> None:
     assert download.command == "download-data"
     assert clear.command == "cache-clear"
     assert clear.pair == "EUR/USD"
+
+
 @pytest.mark.asyncio
 async def test_backtest_cli_runs_ema_strategy_without_model_options(
     tmp_path: Path, monkeypatch, capsys
@@ -1193,7 +1207,8 @@ async def test_backtest_cli_runs_ema_strategy_without_model_options(
     candles = [
         OandaCandle(
             time=(datetime(2026, 9, 15, 10, tzinfo=UTC) + timedelta(hours=index))
-            .isoformat().replace("+00:00", "Z"),
+            .isoformat()
+            .replace("+00:00", "Z"),
             complete=True,
             open=Decimal("1.10000"),
             high=Decimal("1.10100"),
@@ -1242,17 +1257,26 @@ async def test_backtest_cli_runs_ema_strategy_without_model_options(
 
     monkeypatch.setattr("freqtrade.forex.cli.OandaClient", FakeClient)
     monkeypatch.setattr("freqtrade.forex.cli.ForexBacktester", FakeBacktester)
-    args = build_parser().parse_args([
-        "backtest", "--pair", "EUR/USD", "--timeframe", "1h", "--count", "30",
-        "--strategy", "ema",
-    ])
+    args = build_parser().parse_args(
+        [
+            "backtest",
+            "--pair",
+            "EUR/USD",
+            "--timeframe",
+            "1h",
+            "--count",
+            "30",
+            "--strategy",
+            "ema",
+        ]
+    )
 
     assert await run_backtest(OandaSettings("token", "account"), args) == 0
     captured = capsys.readouterr().out
     assert "Backtest Summary" in captured
     assert "Wins / Draws / Losses" in captured
     assert "Net profit (USD)" in captured
-    output = json.loads(captured[captured.index("{\n"):])
+    output = json.loads(captured[captured.index("{\n") :])
     assert output["strategy"] == "ema"
     assert "freqaimodel" not in output
     assert output["summary"]["account_currency"] == "USD"
@@ -1533,7 +1557,9 @@ def test_practice_order_requires_protective_order_arguments() -> None:
 @pytest.mark.asyncio
 async def test_practice_preflight_requires_practice_mode() -> None:
     with pytest.raises(ValueError, match="OANDA_EXECUTION_MODE=practice"):
-        await run_practice(OandaSettings("token", "account"), build_parser().parse_args(["practice"]))
+        await run_practice(
+            OandaSettings("token", "account"), build_parser().parse_args(["practice"])
+        )
 
 
 @pytest.mark.asyncio
@@ -1543,6 +1569,8 @@ async def test_practice_order_rejects_missing_protection_fields() -> None:
 
     with pytest.raises(ValueError, match="require --units"):
         await run_practice(settings, args)
+
+
 @pytest.mark.asyncio
 async def test_historical_provider_caches_exact_range_and_normalized_data(tmp_path: Path) -> None:
     from freqtrade.forex.models import OandaCandle
@@ -1573,18 +1601,12 @@ async def test_historical_provider_caches_exact_range_and_normalized_data(tmp_pa
     start = "2026-09-15T10:00:00Z"
     end = "2026-09-15T10:10:00Z"
 
-    first = await provider.fetch_historical(
-        "EUR/USD", "5m", start=start, end=end, store=store
-    )
-    second = await provider.fetch_historical(
-        "EUR/USD", "5m", start=start, end=end, store=store
-    )
+    first = await provider.fetch_historical("EUR/USD", "5m", start=start, end=end, store=store)
+    second = await provider.fetch_historical("EUR/USD", "5m", start=start, end=end, store=store)
 
     assert len(first) == 1
     assert second.equals(first)
-    client.get_candles.assert_awaited_once_with(
-        "EUR_USD", "M5", from_time=start, to_time=end
-    )
+    client.get_candles.assert_awaited_once_with("EUR_USD", "M5", from_time=start, to_time=end)
     cached_payload = json.loads((tmp_path / "candles.json").read_text(encoding="utf-8"))
     record = next(iter(cached_payload["ranges"].values()))
     assert len(record["raw"]) == 1
@@ -1664,7 +1686,8 @@ async def test_latest_candle_cache_is_reused_refreshed_and_cleared(tmp_path: Pat
     candles = [
         OandaCandle(
             time=(datetime(2026, 9, 15, 10, tzinfo=UTC) + timedelta(minutes=5 * index))
-            .isoformat().replace("+00:00", "Z"),
+            .isoformat()
+            .replace("+00:00", "Z"),
             complete=True,
             open=Decimal("1.10000"),
             high=Decimal("1.10100"),
@@ -1681,15 +1704,21 @@ async def test_latest_candle_cache_is_reused_refreshed_and_cleared(tmp_path: Pat
 
     first = await provider.fetch_latest("EUR/USD", "5m", count=30, store=store)
     cached = await provider.fetch_latest("EUR/USD", "5m", count=30, store=store)
-    refreshed = await provider.fetch_latest(
-        "EUR/USD", "5m", count=30, store=store, refresh=True
-    )
+    refreshed = await provider.fetch_latest("EUR/USD", "5m", count=30, store=store, refresh=True)
 
     assert first.equals(cached)
     assert cached.equals(refreshed)
     assert client.get_candles.await_count == 2
+    inventory = store.inventory(instrument="EUR_USD", timeframe="5m")
+    assert inventory["candles"] == 30
+    assert inventory["cachedRanges"] == 1
+    assert inventory["from"].startswith("2026-09-15T10:00:00")
+    assert inventory["to"].startswith("2026-09-15T12:25:00")
+    assert len(store.load_latest("EUR_USD", "5m", count=2) or []) == 2
     assert store.clear(instrument="EUR_USD", timeframe="5m") == 1
     assert store.load_latest("EUR_USD", "5m", count=30) is None
+
+
 @pytest.mark.asyncio
 async def test_native_cli_selects_strategy_class_for_hyperopt(
     tmp_path: Path, monkeypatch, capsys
@@ -1699,7 +1728,8 @@ async def test_native_cli_selects_strategy_class_for_hyperopt(
     candles = [
         OandaCandle(
             time=(datetime(2026, 9, 15, 10, tzinfo=UTC) + timedelta(hours=index))
-            .isoformat().replace("+00:00", "Z"),
+            .isoformat()
+            .replace("+00:00", "Z"),
             complete=True,
             open=Decimal("1.10000"),
             high=Decimal("1.10100"),
@@ -1748,15 +1778,26 @@ async def test_native_cli_selects_strategy_class_for_hyperopt(
         return [candidate]
 
     monkeypatch.setattr("freqtrade.forex.cli.OandaClient", FakeClient)
-    monkeypatch.setattr(
-        "freqtrade.forex.cli.run_strategy_hyperopt", fake_strategy_hyperopt
+    monkeypatch.setattr("freqtrade.forex.cli.run_strategy_hyperopt", fake_strategy_hyperopt)
+    args = build_parser().parse_args(
+        [
+            "hyperopt",
+            "--pair",
+            "EUR/USD",
+            "--timeframe",
+            "1h",
+            "--count",
+            "40",
+            "--epochs",
+            "1",
+            "--strategy",
+            "ForexEmaStrategy",
+            "--data-cache",
+            str(tmp_path / "candles.json"),
+            "--results-dir",
+            str(tmp_path / "reports"),
+        ]
     )
-    args = build_parser().parse_args([
-        "hyperopt", "--pair", "EUR/USD", "--timeframe", "1h",
-        "--count", "40", "--epochs", "1", "--strategy", "ForexEmaStrategy",
-        "--data-cache", str(tmp_path / "candles.json"),
-        "--results-dir", str(tmp_path / "reports"),
-    ])
 
     assert await run_hyperopt(OandaSettings("token", "account"), args) == 0
     output = capsys.readouterr().out
@@ -1766,9 +1807,9 @@ async def test_native_cli_selects_strategy_class_for_hyperopt(
     report_path = tmp_path / "reports" / "EUR_USD_1h_ForexEmaStrategy_hyperopt.json"
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert report["strategy"] == "ForexEmaStrategy"
-    assert report["best"]["parameters"] == {
-        "fast_period_opt": 5, "slow_period_opt": 12
-    }
+    assert report["best"]["parameters"] == {"fast_period_opt": 5, "slow_period_opt": 12}
+
+
 @pytest.mark.asyncio
 async def test_dry_run_gateway_never_calls_oanda() -> None:
     client = AsyncMock()
@@ -1837,7 +1878,7 @@ async def test_practice_gateway_blocks_order_when_risk_control_is_tripped() -> N
                 max_currency_exposure=Decimal("1000"),
             )
         ),
-        RiskUsage(Decimal("101"), Decimal("0"), {"USD": Decimal("0")} ),
+        RiskUsage(Decimal("101"), Decimal("0"), {"USD": Decimal("0")}),
     )
     gateway = OandaExecutionGateway(
         OandaSettings("token", "account"),
@@ -1865,6 +1906,7 @@ async def test_practice_gateway_blocks_order_when_risk_control_is_tripped() -> N
             client_order_id="risk-blocked-2",
         )
 
+
 @pytest.mark.asyncio
 async def test_practice_order_reports_simulated_vs_real_fill_difference() -> None:
     client = AsyncMock()
@@ -1874,7 +1916,9 @@ async def test_practice_order_reports_simulated_vs_real_fill_difference() -> Non
         fill_price=Decimal("1.10012"),
         units=Decimal("1000"),
     )
-    gateway = OandaExecutionGateway(OandaSettings("token", "account"), ExecutionMode.PRACTICE, client=client)
+    gateway = OandaExecutionGateway(
+        OandaSettings("token", "account"), ExecutionMode.PRACTICE, client=client
+    )
 
     result = await gateway.submit_market_order(
         "EUR_USD",
@@ -1917,7 +1961,9 @@ async def test_practice_order_reconciles_account_and_positions_after_submission(
             unrealized_pl=Decimal("1"),
         )
     ]
-    gateway = OandaExecutionGateway(OandaSettings("token", "account"), ExecutionMode.PRACTICE, client=client)
+    gateway = OandaExecutionGateway(
+        OandaSettings("token", "account"), ExecutionMode.PRACTICE, client=client
+    )
 
     result = await gateway.submit_market_order_and_reconcile(
         "EUR_USD",
@@ -1944,7 +1990,10 @@ async def test_practice_netting_close_and_reverse_submit_expected_opposite_units
             order_id="close-1", transaction_id="close-tx", fill_price=None, units=Decimal("-1000")
         ),
         OandaOrderResult(
-            order_id="reverse-1", transaction_id="reverse-tx", fill_price=None, units=Decimal("-2000")
+            order_id="reverse-1",
+            transaction_id="reverse-tx",
+            fill_price=None,
+            units=Decimal("-2000"),
         ),
     ]
     client.get_account_summary.return_value = OandaAccountState(
@@ -1956,7 +2005,9 @@ async def test_practice_netting_close_and_reverse_submit_expected_opposite_units
         unrealized_pl=Decimal("0"),
     )
     client.get_open_positions.return_value = []
-    gateway = OandaExecutionGateway(OandaSettings("token", "account"), ExecutionMode.PRACTICE, client=client)
+    gateway = OandaExecutionGateway(
+        OandaSettings("token", "account"), ExecutionMode.PRACTICE, client=client
+    )
 
     await gateway.close_position("EUR_USD", 1000, client_order_id="close-1")
     await gateway.reverse_position(
@@ -1980,7 +2031,9 @@ async def test_gateway_reuses_idempotent_result_without_duplicate_order() -> Non
     client.create_market_order.return_value = OandaOrderResult(
         order_id="42", transaction_id="43", fill_price=Decimal("1.10012"), units=Decimal("1000")
     )
-    gateway = OandaExecutionGateway(OandaSettings("token", "account"), ExecutionMode.PRACTICE, client=client)
+    gateway = OandaExecutionGateway(
+        OandaSettings("token", "account"), ExecutionMode.PRACTICE, client=client
+    )
 
     first = await gateway.submit_market_order(
         "EUR_USD", 1000, stop_loss_price="1.09900", client_order_id="same-order"
@@ -2082,7 +2135,13 @@ def test_order_state_machine_records_partial_fill_then_completion_and_cancel() -
     machine = OrderStateMachine()
     machine.apply(
         OandaTransaction.from_payload(
-            {"id": "30", "type": "ORDER_CREATE", "orderID": "29", "instrument": "EUR_USD", "units": "1000"}
+            {
+                "id": "30",
+                "type": "ORDER_CREATE",
+                "orderID": "29",
+                "instrument": "EUR_USD",
+                "units": "1000",
+            }
         )
     )
 
@@ -2303,7 +2362,11 @@ def test_read_only_api_returns_paper_report(tmp_path) -> None:
     assert response.json()["trades"][0]["instrument"] == "EUR_USD"
     assert trades.status_code == 200
     assert len(trades.json()) == 1
+
+
 def test_backtest_api_runs_real_backtest_and_persists_history(monkeypatch, tmp_path) -> None:
+    from freqtrade.forex.models import OandaCandle
+
     class DummyPrice:
         instrument = "EUR_USD"
         spread = Decimal("0.00010")
@@ -2338,12 +2401,17 @@ def test_backtest_api_runs_real_backtest_and_persists_history(monkeypatch, tmp_p
         async def get_account_summary(self):
             return DummyAccount()
 
-        async def get_candles(self, instrument, granularity, count):
+        async def get_candles(self, instrument, granularity, count=None):
             return [
-                {
-                    "time": f"2026-01-{day:02d}T00:00:00Z",
-                    "mid": {"o": "1.10000", "h": "1.10100", "l": "1.09900", "c": "1.10050"},
-                }
+                OandaCandle(
+                    time=f"2026-01-{day:02d}T00:00:00Z",
+                    complete=True,
+                    open=Decimal("1.10000"),
+                    high=Decimal("1.10100"),
+                    low=Decimal("1.09900"),
+                    close=Decimal("1.10050"),
+                    volume=42,
+                )
                 for day in range(1, 11)
             ]
 
@@ -2383,15 +2451,19 @@ def test_backtest_api_runs_real_backtest_and_persists_history(monkeypatch, tmp_p
                 monthly_breakdown=(),
             )
 
+    monkeypatch.setenv("OANDA_CANDLE_CACHE_PATH", str(tmp_path / "candles.json"))
     monkeypatch.setattr("freqtrade.forex.api.OandaClient", DummyClient)
-    monkeypatch.setattr("freqtrade.forex.api.OandaSettings.from_environment", lambda: SimpleNamespace(
-        token="token",
-        account_id="acct",
-        environment=SimpleNamespace(value="practice"),
-        instruments=("EUR_USD",),
-        execution_mode="dry_run",
-        risk_fraction="0.01",
-    ))
+    monkeypatch.setattr(
+        "freqtrade.forex.api.OandaSettings.from_environment",
+        lambda: SimpleNamespace(
+            token="token",
+            account_id="acct",
+            environment=SimpleNamespace(value="practice"),
+            instruments=("EUR_USD",),
+            execution_mode="dry_run",
+            risk_fraction="0.01",
+        ),
+    )
     monkeypatch.setattr("freqtrade.forex.api.ForexBacktester", DummyBacktester)
 
     with TestClient(create_app(tmp_path / "backtest.sqlite")) as client:
@@ -2402,7 +2474,12 @@ def test_backtest_api_runs_real_backtest_and_persists_history(monkeypatch, tmp_p
         )
         second_strategy = client.post(
             "/api/v1/backtests/run",
-            json={"pair": "EUR/USD", "timeframe": "M5", "strategyClass": "ForexEmaStrategy", "steps": 120},
+            json={
+                "pair": "EUR/USD",
+                "timeframe": "M5",
+                "strategyClass": "ForexEmaStrategy",
+                "steps": 120,
+            },
             headers=_auth_headers(client),
         )
         history = client.get("/api/v1/backtests")
@@ -2414,7 +2491,10 @@ def test_backtest_api_runs_real_backtest_and_persists_history(monkeypatch, tmp_p
     assert second_strategy.status_code == 200, second_strategy.text
     assert second_strategy.json()["strategy"] == "ForexEmaStrategy"
     assert history.status_code == 200
-    assert {item["strategy"] for item in history.json()} == {"ForexMasterStrategy", "ForexEmaStrategy"}
+    assert {item["strategy"] for item in history.json()} == {
+        "ForexMasterStrategy",
+        "ForexEmaStrategy",
+    }
 
 
 def test_dashboard_and_setup_serve_react_ui_when_built(tmp_path) -> None:
@@ -2503,6 +2583,8 @@ def test_strategy_adapter_matches_freqtrade_native_contract() -> None:
     assert bool(entry.iloc[-1]["enter_long"]) is True
     assert bool(exit_df.iloc[-1]["exit_long"]) is False
     assert adapter.timeframe == "5m"
+
+
 def test_native_ema_strategy_is_loadable_and_configurable() -> None:
     strategy = ForexEmaStrategy(
         {
@@ -2511,9 +2593,11 @@ def test_native_ema_strategy_is_loadable_and_configurable() -> None:
             "candle_type_def": CandleType.SPOT,
         }
     )
-    frame = pd.DataFrame({
-        "close": [1.0, 1.01, 1.02, 1.01, 1.00],
-    })
+    frame = pd.DataFrame(
+        {
+            "close": [1.0, 1.01, 1.02, 1.01, 1.00],
+        }
+    )
 
     populated = strategy.populate_indicators(frame, {"pair": "EUR/USD"})
     populated = strategy.populate_entry_trend(populated, {"pair": "EUR/USD"})
@@ -2527,11 +2611,13 @@ def test_native_ema_strategy_is_loadable_and_configurable() -> None:
 
 
 def test_native_ema_strategy_keeps_long_and_short_signals_independent() -> None:
-    strategy = ForexEmaStrategy({
-        "forex_fast_period": 2,
-        "forex_slow_period": 3,
-        "candle_type_def": CandleType.SPOT,
-    })
+    strategy = ForexEmaStrategy(
+        {
+            "forex_fast_period": 2,
+            "forex_slow_period": 3,
+            "candle_type_def": CandleType.SPOT,
+        }
+    )
     index = range(strategy.startup_candle_count + 1)
     base = pd.DataFrame(
         {
@@ -2561,9 +2647,15 @@ def test_exit_rules_keep_long_and_short_price_semantics_independent() -> None:
 
     assert fixed.levels(side="long", entry_price=Decimal("1.1000")).stop_price == Decimal("1.0990")
     assert fixed.levels(side="short", entry_price=Decimal("1.1000")).stop_price == Decimal("1.1010")
-    assert target.levels(side="long", entry_price=Decimal("1.1000")).take_profit_price == Decimal("1.1020")
-    assert target.levels(side="short", entry_price=Decimal("1.1000")).take_profit_price == Decimal("1.0980")
-    assert atr.levels(side="short", entry_price=Decimal("1.1000"), atr=Decimal("0.0010")).stop_price == Decimal("1.10150")
+    assert target.levels(side="long", entry_price=Decimal("1.1000")).take_profit_price == Decimal(
+        "1.1020"
+    )
+    assert target.levels(side="short", entry_price=Decimal("1.1000")).take_profit_price == Decimal(
+        "1.0980"
+    )
+    assert atr.levels(
+        side="short", entry_price=Decimal("1.1000"), atr=Decimal("0.0010")
+    ).stop_price == Decimal("1.10150")
 
 
 def test_trailing_stop_only_moves_in_favorable_direction() -> None:
@@ -2578,12 +2670,14 @@ def test_trailing_stop_only_moves_in_favorable_direction() -> None:
 
     assert long_stop == Decimal("1.1040")
     assert short_stop == Decimal("1.0960")
-    assert trailing.stop_price(
-        side="long", current_price=Decimal("1.1020"), previous_stop=long_stop
-    ) == long_stop
-    assert trailing.stop_price(
-        side="short", current_price=Decimal("1.0980"), previous_stop=short_stop
-    ) == short_stop
+    assert (
+        trailing.stop_price(side="long", current_price=Decimal("1.1020"), previous_stop=long_stop)
+        == long_stop
+    )
+    assert (
+        trailing.stop_price(side="short", current_price=Decimal("1.0980"), previous_stop=short_stop)
+        == short_stop
+    )
 
 
 def test_time_exit_uses_candle_age_and_validates_order() -> None:
@@ -2638,6 +2732,8 @@ def test_forex_feature_pipeline_preserves_alignment_and_warmup() -> None:
 
     with pytest.raises(ValueError, match="preserve candle length"):
         ForexFeaturePipeline((lambda data: data.iloc[:-1],)).apply(frame)
+
+
 def test_native_ema_strategy_loads_through_strategy_resolver(default_conf) -> None:
     default_conf.update(
         {
@@ -3075,7 +3171,9 @@ def test_backtest_validation_supports_train_test_and_walk_forward_splits() -> No
     )
 
     assert validation["train"]["window_end"] < validation["test"]["window_start"]
-    assert validation["walk_forward"][0]["window_end"] < validation["walk_forward"][1]["window_start"]
+    assert (
+        validation["walk_forward"][0]["window_end"] < validation["walk_forward"][1]["window_start"]
+    )
     assert validation["test"]["result"].ending_balance >= Decimal("0")
 
 
@@ -3260,7 +3358,10 @@ def test_hyperopt_runs_independent_validation_split() -> None:
     )
 
     assert result.validation["train"]["window_end"] < result.validation["test"]["window_start"]
-    assert result.validation["walk_forward"][0]["window_end"] < result.validation["walk_forward"][1]["window_start"]
+    assert (
+        result.validation["walk_forward"][0]["window_end"]
+        < result.validation["walk_forward"][1]["window_start"]
+    )
     assert result.validation["test"]["result"].ending_balance >= Decimal("0")
 
 
@@ -3328,8 +3429,18 @@ def test_hyperopt_requires_walk_forward_and_out_of_sample_validation() -> None:
         ).run(
             candles,
             parameter_space=(
-                {"fast_period": 2, "slow_period": 5, "stop_pips": Decimal("10"), "risk_fraction": Decimal("0.01")},
-                {"fast_period": 3, "slow_period": 8, "stop_pips": Decimal("15"), "risk_fraction": Decimal("0.02")},
+                {
+                    "fast_period": 2,
+                    "slow_period": 5,
+                    "stop_pips": Decimal("10"),
+                    "risk_fraction": Decimal("0.01"),
+                },
+                {
+                    "fast_period": 3,
+                    "slow_period": 8,
+                    "stop_pips": Decimal("15"),
+                    "risk_fraction": Decimal("0.02"),
+                },
             ),
             train_fraction=Decimal("0.7"),
             walk_forward_steps=1,
@@ -3346,8 +3457,18 @@ def test_hyperopt_requires_walk_forward_and_out_of_sample_validation() -> None:
     ).run(
         candles,
         parameter_space=(
-            {"fast_period": 2, "slow_period": 5, "stop_pips": Decimal("10"), "risk_fraction": Decimal("0.01")},
-            {"fast_period": 3, "slow_period": 8, "stop_pips": Decimal("15"), "risk_fraction": Decimal("0.02")},
+            {
+                "fast_period": 2,
+                "slow_period": 5,
+                "stop_pips": Decimal("10"),
+                "risk_fraction": Decimal("0.01"),
+            },
+            {
+                "fast_period": 3,
+                "slow_period": 8,
+                "stop_pips": Decimal("15"),
+                "risk_fraction": Decimal("0.02"),
+            },
         ),
         train_fraction=Decimal("0.7"),
         walk_forward_steps=2,
@@ -3391,8 +3512,18 @@ def test_hyperopt_accepts_multi_metric_loss_function() -> None:
     ).run(
         candles,
         parameter_space=(
-            {"fast_period": 2, "slow_period": 5, "stop_pips": Decimal("10"), "risk_fraction": Decimal("0.01")},
-            {"fast_period": 3, "slow_period": 8, "stop_pips": Decimal("15"), "risk_fraction": Decimal("0.02")},
+            {
+                "fast_period": 2,
+                "slow_period": 5,
+                "stop_pips": Decimal("10"),
+                "risk_fraction": Decimal("0.01"),
+            },
+            {
+                "fast_period": 3,
+                "slow_period": 8,
+                "stop_pips": Decimal("15"),
+                "risk_fraction": Decimal("0.02"),
+            },
         ),
         train_fraction=Decimal("0.7"),
         walk_forward_steps=2,
@@ -3436,8 +3567,18 @@ def test_hyperopt_supports_seeded_reproducibility_and_resume(tmp_path) -> None:
     ).run(
         candles,
         parameter_space=(
-            {"fast_period": 2, "slow_period": 5, "stop_pips": Decimal("10"), "risk_fraction": Decimal("0.01")},
-            {"fast_period": 3, "slow_period": 8, "stop_pips": Decimal("15"), "risk_fraction": Decimal("0.02")},
+            {
+                "fast_period": 2,
+                "slow_period": 5,
+                "stop_pips": Decimal("10"),
+                "risk_fraction": Decimal("0.01"),
+            },
+            {
+                "fast_period": 3,
+                "slow_period": 8,
+                "stop_pips": Decimal("15"),
+                "risk_fraction": Decimal("0.02"),
+            },
         ),
         train_fraction=Decimal("0.7"),
         walk_forward_steps=2,
@@ -3455,8 +3596,18 @@ def test_hyperopt_supports_seeded_reproducibility_and_resume(tmp_path) -> None:
     ).run(
         candles,
         parameter_space=(
-            {"fast_period": 2, "slow_period": 5, "stop_pips": Decimal("10"), "risk_fraction": Decimal("0.01")},
-            {"fast_period": 3, "slow_period": 8, "stop_pips": Decimal("15"), "risk_fraction": Decimal("0.02")},
+            {
+                "fast_period": 2,
+                "slow_period": 5,
+                "stop_pips": Decimal("10"),
+                "risk_fraction": Decimal("0.01"),
+            },
+            {
+                "fast_period": 3,
+                "slow_period": 8,
+                "stop_pips": Decimal("15"),
+                "risk_fraction": Decimal("0.02"),
+            },
         ),
         train_fraction=Decimal("0.7"),
         walk_forward_steps=2,
@@ -3501,8 +3652,18 @@ def test_hyperopt_requires_pair_and_period_robustness_guard() -> None:
         ).run(
             candles,
             parameter_space=(
-                {"fast_period": 2, "slow_period": 5, "stop_pips": Decimal("10"), "risk_fraction": Decimal("0.01")},
-                {"fast_period": 3, "slow_period": 8, "stop_pips": Decimal("15"), "risk_fraction": Decimal("0.02")},
+                {
+                    "fast_period": 2,
+                    "slow_period": 5,
+                    "stop_pips": Decimal("10"),
+                    "risk_fraction": Decimal("0.01"),
+                },
+                {
+                    "fast_period": 3,
+                    "slow_period": 8,
+                    "stop_pips": Decimal("15"),
+                    "risk_fraction": Decimal("0.02"),
+                },
             ),
             train_fraction=Decimal("0.7"),
             walk_forward_steps=2,
@@ -3521,8 +3682,18 @@ def test_hyperopt_requires_pair_and_period_robustness_guard() -> None:
         ).run(
             candles,
             parameter_space=(
-                {"fast_period": 2, "slow_period": 5, "stop_pips": Decimal("10"), "risk_fraction": Decimal("0.01")},
-                {"fast_period": 3, "slow_period": 8, "stop_pips": Decimal("15"), "risk_fraction": Decimal("0.02")},
+                {
+                    "fast_period": 2,
+                    "slow_period": 5,
+                    "stop_pips": Decimal("10"),
+                    "risk_fraction": Decimal("0.01"),
+                },
+                {
+                    "fast_period": 3,
+                    "slow_period": 8,
+                    "stop_pips": Decimal("15"),
+                    "risk_fraction": Decimal("0.02"),
+                },
             ),
             train_fraction=Decimal("0.7"),
             walk_forward_steps=2,
@@ -3541,8 +3712,18 @@ def test_hyperopt_requires_pair_and_period_robustness_guard() -> None:
     ).run(
         candles,
         parameter_space=(
-            {"fast_period": 2, "slow_period": 5, "stop_pips": Decimal("10"), "risk_fraction": Decimal("0.01")},
-            {"fast_period": 3, "slow_period": 8, "stop_pips": Decimal("15"), "risk_fraction": Decimal("0.02")},
+            {
+                "fast_period": 2,
+                "slow_period": 5,
+                "stop_pips": Decimal("10"),
+                "risk_fraction": Decimal("0.01"),
+            },
+            {
+                "fast_period": 3,
+                "slow_period": 8,
+                "stop_pips": Decimal("15"),
+                "risk_fraction": Decimal("0.02"),
+            },
         ),
         train_fraction=Decimal("0.7"),
         walk_forward_steps=2,
@@ -3583,9 +3764,24 @@ def test_hyperopt_supports_parallel_execution() -> None:
     ).run(
         candles,
         parameter_space=(
-            {"fast_period": 2, "slow_period": 5, "stop_pips": Decimal("10"), "risk_fraction": Decimal("0.01")},
-            {"fast_period": 3, "slow_period": 8, "stop_pips": Decimal("15"), "risk_fraction": Decimal("0.02")},
-            {"fast_period": 4, "slow_period": 10, "stop_pips": Decimal("12"), "risk_fraction": Decimal("0.015")},
+            {
+                "fast_period": 2,
+                "slow_period": 5,
+                "stop_pips": Decimal("10"),
+                "risk_fraction": Decimal("0.01"),
+            },
+            {
+                "fast_period": 3,
+                "slow_period": 8,
+                "stop_pips": Decimal("15"),
+                "risk_fraction": Decimal("0.02"),
+            },
+            {
+                "fast_period": 4,
+                "slow_period": 10,
+                "stop_pips": Decimal("12"),
+                "risk_fraction": Decimal("0.015"),
+            },
         ),
         train_fraction=Decimal("0.7"),
         walk_forward_steps=2,
@@ -3895,9 +4091,7 @@ async def test_oanda_client_reads_instruments_prices_and_candles() -> None:
                                 {"price": "1.10012", "liquidity": "120000"},
                                 {"price": "1.10020", "liquidity": "180000"},
                             ],
-                            "unitsAvailable": {
-                                "default": {"long": "200000", "short": "190000"}
-                            },
+                            "unitsAvailable": {"default": {"long": "200000", "short": "190000"}},
                         }
                     ]
                 },
@@ -3937,9 +4131,7 @@ async def test_oanda_client_reads_instruments_prices_and_candles() -> None:
     assert prices[0].spread == Decimal("0.00012")
     assert prices[0].bids[0] == (Decimal("1.10000"), Decimal("100000"))
     assert prices[0].asks[1] == (Decimal("1.10020"), Decimal("180000"))
-    assert prices[0].units_available == {
-        "default": {"long": "200000", "short": "190000"}
-    }
+    assert prices[0].units_available == {"default": {"long": "200000", "short": "190000"}}
     assert candles[0].close == Decimal("1.10050")
     assert requests[0].headers["Authorization"] == "Bearer test-token"
     assert requests[2].url.params["granularity"] == "M5"
@@ -3953,11 +4145,16 @@ async def test_oanda_client_supports_stop_take_profit_modify_and_cancel_orders()
         requests.append(request)
         if request.method == "DELETE":
             return httpx.Response(
-                200, json={"orderCancelTransaction": {"id": "cancel-tx", "orderID": "stop-1"}, "lastTransactionID": "cancel-tx"}
+                200,
+                json={
+                    "orderCancelTransaction": {"id": "cancel-tx", "orderID": "stop-1"},
+                    "lastTransactionID": "cancel-tx",
+                },
             )
         if request.method == "PUT":
             return httpx.Response(
-                200, json={"orderCreateTransaction": {"id": "stop-1"}, "lastTransactionID": "modify-tx"}
+                200,
+                json={"orderCreateTransaction": {"id": "stop-1"}, "lastTransactionID": "modify-tx"},
             )
         body = request.content.decode()
         order_type = "STOP" if '"price":"1.0990"' in body else "TAKE_PROFIT"
@@ -3975,8 +4172,12 @@ async def test_oanda_client_supports_stop_take_profit_modify_and_cancel_orders()
         transport=transport,
     ) as http_client:
         async with OandaClient("ignored", "account", http_client=http_client) as client:
-            stop = await client.create_stop_order("EUR_USD", 1000, "1.0990", client_order_id="stop-1")
-            target = await client.create_take_profit_order("EUR_USD", 1000, "1.1050", client_order_id="target-1")
+            stop = await client.create_stop_order(
+                "EUR_USD", 1000, "1.0990", client_order_id="stop-1"
+            )
+            target = await client.create_take_profit_order(
+                "EUR_USD", 1000, "1.1050", client_order_id="target-1"
+            )
             modified = await client.modify_order("stop-1", price="1.0985")
             canceled = await client.cancel_order("stop-1")
 
@@ -4024,10 +4225,12 @@ async def test_oanda_client_retries_transient_errors_and_pages_large_candle_requ
                 )
             return httpx.Response(
                 200,
-                json={"candles": [
-                    candle_payload(first_page_start + timedelta(minutes=5 * index))
-                    for index in range(5000)
-                ]},
+                json={
+                    "candles": [
+                        candle_payload(first_page_start + timedelta(minutes=5 * index))
+                        for index in range(5000)
+                    ]
+                },
             )
         if (
             request.url.path.endswith("/candles")
@@ -4035,10 +4238,12 @@ async def test_oanda_client_retries_transient_errors_and_pages_large_candle_requ
         ):
             return httpx.Response(
                 200,
-                json={"candles": [
-                    candle_payload(first_page_start - timedelta(minutes=5)),
-                    candle_payload(first_page_start),
-                ]},
+                json={
+                    "candles": [
+                        candle_payload(first_page_start - timedelta(minutes=5)),
+                        candle_payload(first_page_start),
+                    ]
+                },
             )
         return httpx.Response(500, json={"errorCode": "SERVER_ERROR"})
 
@@ -4070,25 +4275,31 @@ async def test_oanda_client_retries_disconnect_and_timeout_during_practice_order
         if request.url.path.endswith("/instruments"):
             return httpx.Response(
                 200,
-                json={"instruments": [{
-                    "name": "EUR_USD",
-                    "displayName": "EUR/USD",
-                    "pipLocation": -4,
-                    "displayPrecision": 5,
-                    "tradeUnitsPrecision": 0,
-                    "minimumTradeSize": "1",
-                }]},
+                json={
+                    "instruments": [
+                        {
+                            "name": "EUR_USD",
+                            "displayName": "EUR/USD",
+                            "pipLocation": -4,
+                            "displayPrecision": 5,
+                            "tradeUnitsPrecision": 0,
+                            "minimumTradeSize": "1",
+                        }
+                    ]
+                },
             )
         if request.url.path.endswith("/pricing"):
             return httpx.Response(
                 200,
                 json={
-                    "prices": [{
-                        "instrument": "EUR_USD",
-                        "time": "2026-09-15T10:00:00Z",
-                        "bids": [{"price": "1.10000"}],
-                        "asks": [{"price": "1.10012"}],
-                    }],
+                    "prices": [
+                        {
+                            "instrument": "EUR_USD",
+                            "time": "2026-09-15T10:00:00Z",
+                            "bids": [{"price": "1.10000"}],
+                            "asks": [{"price": "1.10012"}],
+                        }
+                    ],
                 },
             )
         attempts += 1
@@ -4214,20 +4425,20 @@ async def test_oanda_client_creates_and_modifies_limit_orders_and_trade_protecti
             return httpx.Response(
                 200,
                 json={
-                    "instruments": [{
-                        "name": "EUR_USD",
-                        "displayName": "EUR/USD",
-                        "pipLocation": -4,
-                        "displayPrecision": 5,
-                        "tradeUnitsPrecision": 0,
-                        "minimumTradeSize": "1",
-                    }]
+                    "instruments": [
+                        {
+                            "name": "EUR_USD",
+                            "displayName": "EUR/USD",
+                            "pipLocation": -4,
+                            "displayPrecision": 5,
+                            "tradeUnitsPrecision": 0,
+                            "minimumTradeSize": "1",
+                        }
+                    ]
                 },
             )
         if request.method == "GET":
-            return httpx.Response(
-                200, json={"orders": [{"id": "limit-1", "type": "LIMIT"}]}
-            )
+            return httpx.Response(200, json={"orders": [{"id": "limit-1", "type": "LIMIT"}]})
         if "/trades/" in request.url.path and request.url.path.endswith("/orders"):
             return httpx.Response(
                 200,
@@ -4313,25 +4524,31 @@ async def test_oanda_client_creates_signed_market_order_with_attached_risk_order
         if request.url.path.endswith("/instruments"):
             return httpx.Response(
                 200,
-                json={"instruments": [{
-                    "name": "EUR_USD",
-                    "displayName": "EUR/USD",
-                    "pipLocation": -4,
-                    "displayPrecision": 5,
-                    "tradeUnitsPrecision": 0,
-                    "minimumTradeSize": "1",
-                }]},
+                json={
+                    "instruments": [
+                        {
+                            "name": "EUR_USD",
+                            "displayName": "EUR/USD",
+                            "pipLocation": -4,
+                            "displayPrecision": 5,
+                            "tradeUnitsPrecision": 0,
+                            "minimumTradeSize": "1",
+                        }
+                    ]
+                },
             )
         if request.url.path.endswith("/pricing"):
             return httpx.Response(
                 200,
                 json={
-                    "prices": [{
-                        "instrument": "EUR_USD",
-                        "time": "2026-09-15T10:00:00Z",
-                        "bids": [{"price": "1.10000"}],
-                        "asks": [{"price": "1.10012"}],
-                    }],
+                    "prices": [
+                        {
+                            "instrument": "EUR_USD",
+                            "time": "2026-09-15T10:00:00Z",
+                            "bids": [{"price": "1.10000"}],
+                            "asks": [{"price": "1.10012"}],
+                        }
+                    ],
                 },
             )
         captured = request
@@ -4375,24 +4592,32 @@ async def test_oanda_client_rejects_invalid_automated_take_profit_before_post() 
         if request.url.path.endswith("/instruments"):
             return httpx.Response(
                 200,
-                json={"instruments": [{
-                    "name": "XAU_CHF",
-                    "displayName": "Gold/CHF",
-                    "pipLocation": -2,
-                    "displayPrecision": 2,
-                    "tradeUnitsPrecision": 0,
-                    "minimumTradeSize": "1",
-                }]},
+                json={
+                    "instruments": [
+                        {
+                            "name": "XAU_CHF",
+                            "displayName": "Gold/CHF",
+                            "pipLocation": -2,
+                            "displayPrecision": 2,
+                            "tradeUnitsPrecision": 0,
+                            "minimumTradeSize": "1",
+                        }
+                    ]
+                },
             )
         if request.url.path.endswith("/pricing"):
             return httpx.Response(
                 200,
-                json={"prices": [{
-                    "instrument": "XAU_CHF",
-                    "time": "2026-09-28T11:15:00Z",
-                    "bids": [{"price": "3450.00"}],
-                    "asks": [{"price": "3450.20"}],
-                }]},
+                json={
+                    "prices": [
+                        {
+                            "instrument": "XAU_CHF",
+                            "time": "2026-09-28T11:15:00Z",
+                            "bids": [{"price": "3450.00"}],
+                            "asks": [{"price": "3450.20"}],
+                        }
+                    ]
+                },
             )
         post_requests.append(request)
         return httpx.Response(201, json={"orderCreateTransaction": {"id": "1"}})
