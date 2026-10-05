@@ -1603,9 +1603,13 @@ async def test_historical_provider_caches_exact_range_and_normalized_data(tmp_pa
 
     first = await provider.fetch_historical("EUR/USD", "5m", start=start, end=end, store=store)
     second = await provider.fetch_historical("EUR/USD", "5m", start=start, end=end, store=store)
+    third = await provider.fetch_historical(
+        "EUR/USD", "5m", start=start, end="2026-09-15T10:15:00Z", store=store
+    )
 
     assert len(first) == 1
     assert second.equals(first)
+    assert third.equals(first)
     client.get_candles.assert_awaited_once_with("EUR_USD", "M5", from_time=start, to_time=end)
     cached_payload = json.loads((tmp_path / "candles.json").read_text(encoding="utf-8"))
     record = next(iter(cached_payload["ranges"].values()))

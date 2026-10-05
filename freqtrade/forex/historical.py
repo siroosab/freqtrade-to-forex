@@ -1,7 +1,7 @@
 """Persistent raw and normalized candle storage for reproducible backtests."""
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -27,9 +27,37 @@ class HistoricalCandleStore:
         payload = json.loads(self.path.read_text(encoding="utf-8"))
         key = self._key(instrument, timeframe, start, end)
         record = payload.get("ranges", {}).get(key)
-        if record is None:
+        if record is not None:
+            return [OandaCandle.from_payload(item) for item in record["raw"]]
+
+        requested_start = self._parse_utc(start)
+        requested_end = self._parse_utc(end)
+        matching_ranges: list[tuple[datetime, dict[str, Any]]] = []
+        for cached in payload.get("ranges", {}).values():
+            if (
+                cached.get("instrument", "").upper() != instrument.upper()
+                or cached.get("timeframe") != timeframe
+                or "start" not in cached
+                or "end" not in cached
+            ):
+                continue
+            cached_start = self._parse_utc(str(cached["start"]))
+            cached_end = self._parse_utc(str(cached["end"]))
+            if (
+                cached_start == requested_start
+                and cached_end <= requested_end
+                and requested_end - cached_end <= timedelta(days=1)
+            ):
+                matching_ranges.append((cached_end, cached))
+        if not matching_ranges:
             return None
-        return [OandaCandle.from_payload(item) for item in record["raw"]]
+        _, cached_range = max(matching_ranges, key=lambda item: item[0])
+        candles = [
+            OandaCandle.from_payload(item)
+            for item in cached_range["raw"]
+            if requested_start <= self._parse_utc(str(item["time"])) < requested_end
+        ]
+        return candles or None
 
     def load_latest(
         self, instrument: str, timeframe: str, *, count: int
@@ -185,6 +213,10 @@ class HistoricalCandleStore:
     @staticmethod
     def _key(instrument: str, timeframe: str, start: str, end: str) -> str:
         return f"{instrument.upper()}|{timeframe}|{start}|{end}"
+
+    @staticmethod
+    def _parse_utc(value: str) -> datetime:
+        return datetime.fromisoformat(value).astimezone(UTC)
 
     @staticmethod
     def _latest_key(instrument: str, timeframe: str, count: int) -> str:

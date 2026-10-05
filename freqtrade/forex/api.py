@@ -927,6 +927,29 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         requested_candles = (value * 86400 + timeframe_seconds - 1) // timeframe_seconds
         return mode, min(requested_candles, max_candles)
 
+    def resolve_date_range_request(payload: dict) -> tuple[datetime, datetime]:
+        try:
+            start_date = date.fromisoformat(str(payload.get("startDate", "")))
+            end_date = date.fromisoformat(str(payload.get("endDate", "")))
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail="Date range requires valid startDate and endDate values",
+            ) from exc
+        if start_date > end_date:
+            raise HTTPException(status_code=400, detail="startDate must not be after endDate")
+        start = datetime.combine(start_date, datetime.min.time(), tzinfo=UTC)
+        requested_end = datetime.combine(
+            end_date + timedelta(days=1), datetime.min.time(), tzinfo=UTC
+        )
+        end = min(requested_end, datetime.now(UTC) - timedelta(minutes=1))
+        if start >= end:
+            raise HTTPException(
+                status_code=400,
+                detail="The selected range contains no completed candles before the current UTC time",
+            )
+        return start, end
+
     STRATEGY_REVIEW_STATE: dict[str, object] = {
         "status": "pending",
         "guardrails": [
@@ -3537,10 +3560,17 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             )
         if payload.get("resetPrevious", True):
             reset_pair_research_state(pair, strategy_class, timeframe)
-        history_mode, steps = resolve_history_request(payload, timeframe)
-        if steps < 40:
+        history_mode = str(payload.get("historyMode", "candles")).lower()
+        date_range_mode = history_mode == "date_range"
+        if date_range_mode:
+            start, end = resolve_date_range_request(payload)
+            steps = 0
+            history_value = 0
+        else:
+            history_mode, steps = resolve_history_request(payload, timeframe)
+            history_value = int(payload.get("historyValue", steps))
+        if not date_range_mode and steps < 40:
             raise HTTPException(status_code=400, detail="Hyperopt requires at least 40 candles")
-        history_value = int(payload.get("historyValue", steps))
         attempts = max(1, min(int(payload.get("attempts", 24)), 900))
         hyperopt_loss = str(payload.get("hyperoptLoss", DEFAULT_HYPEROPT_LOSS))
         if hyperopt_loss not in HYPEROPT_LOSS_FUNCTIONS:
@@ -3586,16 +3616,38 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 )
                 if instrument is None:
                     raise HTTPException(status_code=400, detail=f"Unknown OANDA instrument: {pair}")
-                candles = await provider.fetch_latest(
-                    pair,
-                    freqtrade_timeframe(timeframe),
-                    count=steps,
-                    store=candle_store,
-                )
+                if date_range_mode:
+                    candles = await provider.fetch_historical(
+                        pair,
+                        freqtrade_timeframe(timeframe),
+                        start=start.isoformat().replace("+00:00", "Z"),
+                        end=end.isoformat().replace("+00:00", "Z"),
+                        store=candle_store,
+                    )
+                else:
+                    candles = await provider.fetch_latest(
+                        pair,
+                        freqtrade_timeframe(timeframe),
+                        count=steps,
+                        store=candle_store,
+                    )
                 if candles.empty:
                     raise HTTPException(
                         status_code=400, detail=f"No historical candles returned for {pair}"
                     )
+                if date_range_mode:
+                    if len(candles) < 40:
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Date range Hyperopt requires at least 40 completed candles",
+                        )
+                    if len(candles) > 10000:
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Date range Hyperopt is limited to 10000 candles; narrow the selected range",
+                        )
+                    steps = len(candles)
+                    history_value = steps
                 spread = (await client.get_prices((instrument_name,)))[0].spread
                 informative_candles: dict[str, pd.DataFrame] = {}
                 for informative_timeframe in informative_timeframes:
@@ -3979,13 +4031,24 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             or strategy_config_for_pair(normalized_pair).get("strategyClass", "ForexMasterStrategy")
         )
         selected_timeframe = freqtrade_timeframe(timeframe)
-        history_mode, steps = resolve_history_request(payload, timeframe)
-        history_value = int(payload.get("historyValue", steps))
+        history_mode = str(payload.get("historyMode", "candles")).lower()
+        date_range_mode = history_mode == "date_range"
+        if date_range_mode:
+            start, end = resolve_date_range_request(payload)
+            steps = 0
+            history_value = 0
+        else:
+            history_mode, steps = resolve_history_request(payload, timeframe)
+            history_value = int(payload.get("historyValue", steps))
         update_backtest_job(
             job_id,
             status="running",
             phase="validating",
-            message=f"Preparing to download up to {steps} {timeframe} candles for {normalized_pair}.",
+            message=(
+                f"Preparing the selected date range for {normalized_pair}."
+                if date_range_mode
+                else f"Preparing to download up to {steps} {timeframe} candles for {normalized_pair}."
+            ),
         )
         BACKTEST_HISTORY[:] = [
             item
@@ -4095,12 +4158,21 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     )
                 account = await client.get_account_summary()
                 update_backtest_job(job_id, historyProgress=25, message="Reading account baseline.")
-                frame = await provider.fetch_latest(
-                    normalized_pair,
-                    selected_timeframe,
-                    count=steps,
-                    store=candle_store,
-                )
+                if date_range_mode:
+                    frame = await provider.fetch_historical(
+                        normalized_pair,
+                        selected_timeframe,
+                        start=start.isoformat().replace("+00:00", "Z"),
+                        end=end.isoformat().replace("+00:00", "Z"),
+                        store=candle_store,
+                    )
+                else:
+                    frame = await provider.fetch_latest(
+                        normalized_pair,
+                        selected_timeframe,
+                        count=steps,
+                        store=candle_store,
+                    )
                 candles = frame
                 update_backtest_job(
                     job_id,
@@ -4112,6 +4184,14 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                         status_code=400,
                         detail="No historical candles were returned for the requested OANDA pair",
                     )
+                if date_range_mode:
+                    if len(candles) > 10000:
+                        raise HTTPException(
+                            status_code=400,
+                            detail="Date range is limited to 10000 candles; narrow the selected range",
+                        )
+                    steps = len(candles)
+                    history_value = steps
                 informative_frames: dict[str, pd.DataFrame] = {}
                 for informative_timeframe in informative_timeframes:
                     informative_count = min(

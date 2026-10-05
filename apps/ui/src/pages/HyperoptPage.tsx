@@ -43,7 +43,7 @@ export function HyperoptPage() {
   const [timeframe, setTimeframe] = useState('M15')
   const [strategyClass, setStrategyClass] = useState('')
   const [historyValue, setHistoryValue] = useState(500)
-  const [historyMode, setHistoryMode] = useState<'candles' | 'days'>('candles')
+  const [historyMode, setHistoryMode] = useState<'candles' | 'days' | 'date_range'>('candles')
   const [dateRange, setDateRange] = useState(initialDateRange)
   const [attempts, setAttempts] = useState(30)
   const [lossFunction, setLossFunction] = useState('ProfitDrawDownHyperOptLoss')
@@ -137,6 +137,7 @@ export function HyperoptPage() {
   const downloadMutation = useMutation({
     mutationFn: downloadCandleDateRange,
     onSuccess: async () => {
+      setHistoryMode('date_range')
       await queryClient.invalidateQueries({ queryKey: ['candle-cache', pair, timeframe] })
     },
   })
@@ -162,11 +163,13 @@ export function HyperoptPage() {
     || downloadMutation.isPending
     || clearCacheMutation.isPending
   const strategies = strategiesQuery.data ?? []
-  const historyValueValid = Number.isInteger(historyValue)
-    && historyValue >= (historyMode === 'candles' ? 40 : 1)
-    && historyValue <= 10000
   const dateRangeValid = Boolean(dateRange.startDate && dateRange.endDate)
     && dateRange.startDate <= dateRange.endDate
+  const historyValueValid = historyMode === 'date_range'
+    ? dateRangeValid
+    : Number.isInteger(historyValue)
+      && historyValue >= (historyMode === 'candles' ? 40 : 1)
+      && historyValue <= 10000
 
   useEffect(() => {
     if (backtestQuery.data?.status === 'completed') {
@@ -175,7 +178,12 @@ export function HyperoptPage() {
   }, [backtestQuery.data?.status, pair, queryClient, timeframe])
 
   const runResearch = () => {
-    const history = { historyMode, historyValue, steps: historyValue }
+    const history = {
+      historyMode,
+      historyValue,
+      steps: historyValue,
+      ...(historyMode === 'date_range' ? dateRange : {}),
+    }
     backtestMutation.mutate({ pair, timeframe, strategyClass, ...history })
   }
 
@@ -187,6 +195,7 @@ export function HyperoptPage() {
       steps: historyValue,
       historyMode,
       historyValue,
+      ...(historyMode === 'date_range' ? dateRange : {}),
       attempts,
       hyperoptLoss: lossFunction,
     })
@@ -251,24 +260,29 @@ export function HyperoptPage() {
               <select
                 value={historyMode}
                 onChange={(event) => {
-                  const mode = event.target.value as 'candles' | 'days'
+                  const mode = event.target.value as 'candles' | 'days' | 'date_range'
                   setHistoryMode(mode)
-                  setHistoryValue(mode === 'days' ? 30 : 500)
+                  if (mode !== 'date_range') setHistoryValue(mode === 'days' ? 30 : 500)
                 }}
               >
                 <option value="candles">Candles</option>
                 <option value="days">Days</option>
+                <option value="date_range">Date range</option>
               </select>
             </label>
             <label className="field-block">
-              <span>History ({historyMode})</span>
-              <input
-                type="number"
-                min={historyMode === 'candles' ? 40 : 1}
-                max="10000"
-                value={historyValue}
-                onChange={(event) => setHistoryValue(Number(event.target.value))}
-              />
+              <span>{historyMode === 'date_range' ? 'Hyperopt input' : `History (${historyMode})`}</span>
+              {historyMode === 'date_range' ? (
+                <strong>{dateRange.startDate} through {dateRange.endDate}</strong>
+              ) : (
+                <input
+                  type="number"
+                  min={historyMode === 'candles' ? 40 : 1}
+                  max="10000"
+                  value={historyValue}
+                  onChange={(event) => setHistoryValue(Number(event.target.value))}
+                />
+              )}
             </label>
           </div>
           <div className="settings-grid">

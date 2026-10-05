@@ -729,6 +729,124 @@ def test_hyperopt_date_download_reports_and_clears_cache(tmp_path, monkeypatch):
     assert cleared_inventory.json()["candles"] == 0
 
 
+def test_hyperopt_uses_selected_date_range_instead_of_candle_default(tmp_path, monkeypatch):
+    from datetime import UTC, datetime, timedelta
+    from types import SimpleNamespace
+
+    database_path = tmp_path / "date-range-hyperopt.sqlite"
+    received_candle_counts = []
+
+    class FakeCandle:
+        def __init__(self, timestamp):
+            self.time = timestamp.isoformat().replace("+00:00", "Z")
+            self.complete = True
+            self.open = Decimal("1.10000")
+            self.high = Decimal("1.10100")
+            self.low = Decimal("1.09900")
+            self.close = Decimal("1.10050")
+            self.volume = 42
+
+    class FakeClient:
+        def __init__(self, token, account_id, environment):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+        async def get_account_summary(self):
+            return SimpleNamespace(balance=Decimal("10000"))
+
+        async def get_instruments(self, instruments):
+            assert instruments == ("EUR_USD",)
+            return [OandaInstrument("EUR_USD", "EUR/USD", -4, 5, 0, Decimal("1"))]
+
+        async def get_prices(self, instruments):
+            assert instruments == ("EUR_USD",)
+            return [SimpleNamespace(spread=Decimal("0.0001"))]
+
+        async def get_candles(self, instrument, granularity, *, from_time, to_time):
+            assert instrument == "EUR_USD"
+            assert granularity == "M15"
+            start = datetime.fromisoformat(from_time.replace("Z", "+00:00"))
+            return [FakeCandle(start + timedelta(minutes=15 * index)) for index in range(80)]
+
+    class FakeStrategy:
+        minimal_roi = {"0": 0.01}
+
+    def fake_hyperopt(candles, *args, **kwargs):
+        received_candle_counts.append(len(candles))
+        return [
+            {
+                "parameters": {},
+                "minimal_roi": {"0": 0.01},
+                "roi_parameters": {},
+                "objective": "1.0",
+                "trainNetPl": "0.5",
+                "trainDrawdown": "0.1",
+                "trainTrades": 2,
+                "validationNetPl": "0.4",
+                "validationDrawdown": "0.1",
+                "validationTrades": 1,
+            }
+        ]
+
+    monkeypatch.setenv("OANDA_CONFIG_PATH", str(tmp_path / "runtime-config.json"))
+    monkeypatch.setenv("OANDA_CANDLE_CACHE_PATH", str(tmp_path / "candles.json"))
+    monkeypatch.setattr("freqtrade.forex.api.OandaClient", FakeClient)
+    monkeypatch.setattr(
+        "freqtrade.forex.api.OandaSettings.from_environment",
+        lambda: SimpleNamespace(
+            token="token",
+            account_id="account",
+            environment="practice",
+            execution_mode="dry_run",
+            risk_fraction="0.01",
+        ),
+    )
+    monkeypatch.setattr("freqtrade.forex.api.load_strategy", lambda *args, **kwargs: FakeStrategy())
+    monkeypatch.setattr("freqtrade.forex.api.strategy_informative_timeframes", lambda *args: ())
+    monkeypatch.setattr("freqtrade.forex.api.run_strategy_hyperopt", fake_hyperopt)
+
+    with TestClient(create_app(database_path)) as scoped_client:
+        headers = _auth_headers(scoped_client)
+        started = scoped_client.post(
+            "/api/v1/hyperopt/start",
+            headers=headers,
+            json={
+                "pair": "EUR/USD",
+                "timeframe": "M15",
+                "strategyClass": "ForexMasterStrategy",
+                "historyMode": "date_range",
+                "historyValue": 500,
+                "startDate": "2026-01-01",
+                "endDate": "2026-01-02",
+                "attempts": 1,
+            },
+        )
+        assert started.status_code == 200, started.text
+
+        status_url = (
+            "/api/v1/hyperopt/status?pair=EUR%2FUSD"
+            "&strategy_class=ForexMasterStrategy&timeframe=M15"
+        )
+        for _ in range(100):
+            status = scoped_client.get(status_url).json()
+            if status.get("status") != "running":
+                break
+            time.sleep(0.01)
+
+    assert status.get("status") == "completed", status
+    assert received_candle_counts == [80]
+    assert status["report"]["historyMode"] == "date_range"
+    assert status["report"]["historyValue"] == 80
+    assert status["report"]["steps"] == 80
+    assert status["report"]["trainCandles"] == 40
+    assert status["report"]["validationCandles"] == 40
+
+
 def test_cors_allows_vite_frontend_origin():
     response = client.options(
         "/api/v1/account/summary",
@@ -789,7 +907,7 @@ def test_backtest_run_uses_requested_candles(monkeypatch, tmp_path):
             return type("Account", (), {"balance": "10000", "currency": "USD"})()
 
         async def get_candles(self, instrument, granularity, count=None, **kwargs):
-            download_requests.append((instrument, granularity, count))
+            download_requests.append((instrument, granularity, count, kwargs))
             return [
                 type(
                     "Candle",
@@ -857,12 +975,28 @@ def test_backtest_run_uses_requested_candles(monkeypatch, tmp_path):
         json={"pair": "EUR/USD", "timeframe": "M5", "historyMode": "candles", "historyValue": 1234},
         headers={"X-Session-Token": token, "X-User-Role": "operator", "X-CSRF-Token": csrf_token},
     )
+    date_range_response = client.post(
+        "/api/v1/backtests/run",
+        json={
+            "pair": "EUR/USD",
+            "timeframe": "M5",
+            "historyMode": "date_range",
+            "startDate": "2024-01-01",
+            "endDate": "2024-01-01",
+        },
+        headers={"X-Session-Token": token, "X-User-Role": "operator", "X-CSRF-Token": csrf_token},
+    )
 
     assert response.status_code == 200, response.text
     payload = response.json()
-    assert download_requests[0] == ("EUR_USD", "M5", 1234)
+    assert download_requests[0][:3] == ("EUR_USD", "M5", 1234)
     assert payload["steps"] == 2
     assert "OANDA returned 2" in payload["message"]
+    assert date_range_response.status_code == 200, date_range_response.text
+    assert date_range_response.json()["steps"] == 2
+    assert download_requests[1][2] is None
+    assert download_requests[1][3]["from_time"] == "2024-01-01T00:00:00Z"
+    assert download_requests[1][3]["to_time"] == "2024-01-02T00:00:00Z"
 
 
 def test_order_submit_requires_operator_role_and_csrf_token(monkeypatch):

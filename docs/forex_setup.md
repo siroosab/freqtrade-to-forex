@@ -93,14 +93,15 @@ again before running it. `--strategy` and `--timeframe` on `dry-run` can check
 the approved values but cannot override them. Hyperopt and Backtest remain
 available for unapproved research.
 
-The Hyperopt Scope panel accepts history in either candles or calendar days.
-It also reports cached candles for the selected pair/timeframe with their
-covered UTC dates, downloads a chosen inclusive start/end date range, and can
-clear that pair/timeframe's cached ranges. Downloaded date ranges are reusable
-by Backtest and Hyperopt when the cache contains enough candles. Requests ending
-today are capped at one minute before the current UTC time so OANDA does not
-reject an end timestamp that is still in the future; the effective end is shown
-after the download.
+The Hyperopt Scope panel accepts history in candles, calendar days, or an
+inclusive date range. Downloading a date range selects it as the input for
+Hyperopt and Backtest; their reports show the actual number of candles loaded
+from that range rather than the separate candle-count default. Cached ranges
+can be inspected by their covered UTC dates and cleared per pair/timeframe.
+Downloaded ranges are reused when the requested interval matches the cached
+coverage. Requests ending today are capped at one minute before the current UTC
+time so OANDA does not reject an end timestamp that is still in the future; the
+effective end is shown after the download.
 
 Inspect the currently selected pair settings and approval state without broker
 credentials:
