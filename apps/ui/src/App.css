@@ -1576,6 +1576,7 @@
 .legend-dot { width: 8px; height: 8px; border-radius: 50%; }
 .legend-dot.buy { background: #34d399; }
 .legend-dot.sell { background: #fb7185; }
+.legend-dot.roi-target { background: transparent; border: 1px dashed #fbbf24; border-radius: 0; transform: rotate(45deg); }
 
 .strategy-name-cell {
   display: flex;

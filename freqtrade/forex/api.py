@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import json
 import logging
+import math
 import os
 import re
 import secrets
@@ -1759,6 +1760,23 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 view_times = [candle.time for candle in view_candles]
                 hyperopt = approved_revision.get("hyperopt", {})
                 hyperopt = hyperopt if isinstance(hyperopt, dict) else {}
+                approved_roi_ratio: Decimal | None = None
+                approved_minimal_roi = hyperopt.get("minimal_roi")
+                if isinstance(approved_minimal_roi, dict) and "0" in approved_minimal_roi:
+                    try:
+                        parsed_roi_ratio = Decimal(str(approved_minimal_roi["0"]))
+                    except (InvalidOperation, TypeError, ValueError) as exc:
+                        raise HTTPException(
+                            status_code=409,
+                            detail="Approved Hyperopt ROI at minute 0 must be a number",
+                        ) from exc
+                    if not parsed_roi_ratio.is_finite():
+                        raise HTTPException(
+                            status_code=409,
+                            detail="Approved Hyperopt ROI at minute 0 must be finite",
+                        )
+                    if parsed_roi_ratio > 0:
+                        approved_roi_ratio = parsed_roi_ratio
                 parameters = hyperopt.get("parameters", {})
                 strategy = load_strategy(
                     approved_strategy,
@@ -1818,14 +1836,34 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                             ),
                             view_times[0] if view_times else row["date"].isoformat(),
                         )
-                        signals.append(
-                            {
-                                "time": mapped_time,
-                                "side": "BUY" if signal == "long" else "SELL",
-                                "price": float(row["close"]),
-                                "sourceTimeframe": approved_timeframe,
-                            }
-                        )
+                        signal_side = "BUY" if signal == "long" else "SELL"
+                        signal_price = float(row["close"])
+                        signal_data = {
+                            "time": mapped_time,
+                            "side": signal_side,
+                            "price": signal_price,
+                            "sourceTimeframe": approved_timeframe,
+                        }
+                        if approved_roi_ratio is not None:
+                            roi_multiplier = (
+                                Decimal(1) + approved_roi_ratio
+                                if signal_side == "BUY"
+                                else Decimal(1) - approved_roi_ratio
+                            )
+                            roi_target_price = Decimal(str(signal_price)) * roi_multiplier
+                            if roi_target_price > 0:
+                                target_price_value = float(roi_target_price)
+                                roi_percent_value = float(approved_roi_ratio * 100)
+                                if not math.isfinite(target_price_value) or not math.isfinite(
+                                    roi_percent_value
+                                ):
+                                    raise HTTPException(
+                                        status_code=409,
+                                        detail="Approved Hyperopt ROI target is outside the chartable numeric range",
+                                    )
+                                signal_data["roiTargetPrice"] = target_price_value
+                                signal_data["roiPercent"] = roi_percent_value
+                        signals.append(signal_data)
                     previous = signal
                 open_trades = await client.get_open_trades()
                 closed_trades = await client.get_closed_trades(count=100)

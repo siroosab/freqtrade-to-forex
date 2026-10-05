@@ -525,12 +525,16 @@ def test_hyperopt_approval_flows_into_chart_strategy(tmp_path, monkeypatch):
         async def get_closed_trades(self, *, count=100):
             return []
 
+        async def get_pending_orders(self):
+            return []
+
     class FakeAdapter:
         def __init__(self, strategy, pair, informative_candles=None):
             pass
 
         def signal(self, candles):
-            return type("Signal", (), {"value": "flat"})()
+            signal = "long" if len(candles) == 1 else "short" if len(candles) == 2 else "flat"
+            return type("Signal", (), {"value": signal})()
 
     def fake_hyperopt(*args, **kwargs):
         return [
@@ -612,6 +616,11 @@ def test_hyperopt_approval_flows_into_chart_strategy(tmp_path, monkeypatch):
     assert chart.status_code == 200, chart.text
     assert chart.json()["approvedStrategy"] == "ForexMasterStrategy"
     assert chart.json()["approvedTimeframe"] == "M15"
+    chart_signals = chart.json()["signals"]
+    assert [signal["side"] for signal in chart_signals] == ["BUY", "SELL"]
+    assert [signal["roiPercent"] for signal in chart_signals] == [1.0, 1.0]
+    assert abs(chart_signals[0]["roiTargetPrice"] - 1.111) < 1e-12
+    assert abs(chart_signals[1]["roiTargetPrice"] - (1.10001 * 0.99)) < 1e-12
     assert candle_requests[0] == ("EUR_USD", "M15", 192)
 
 
