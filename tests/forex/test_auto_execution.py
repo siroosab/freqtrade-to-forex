@@ -338,6 +338,35 @@ async def test_opposite_signal_does_not_reverse_when_close_is_not_filled(
     assert client.orders == []
 
 
+@pytest.mark.asyncio
+async def test_approved_minimal_roi_closes_profitable_automated_trade(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _strategy_directory(tmp_path, monkeypatch)
+    client = FakeOandaClient(_candles("long"))
+    client.open_trades = [
+        {
+            "id": "trade-roi",
+            "instrument": "EUR_USD",
+            "currentUnits": "1000",
+            "price": "1.0990",
+            "openTime": "2026-10-03T17:45:00Z",
+            "tradeClientExtensions": {"tag": "auto"},
+        }
+    ]
+    executor = _executor(client)
+    executor.setup["pair_approved_revisions"]["EUR_USD"]["hyperopt"] = {
+        "minimal_roi": {"0": 0.0005},
+    }
+
+    results = await executor.run_cycle()
+
+    assert client.closed_trade_ids == ["trade-roi"]
+    assert client.orders == []
+    assert results[0]["status"] == "closed"
+
+
 async def _no_depth_quote(instruments: tuple[str, ...]) -> list[OandaPrice]:
     del instruments
     return [

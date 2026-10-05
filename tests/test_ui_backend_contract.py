@@ -608,6 +608,7 @@ def test_hyperopt_approval_flows_into_chart_strategy(tmp_path, monkeypatch):
     assert approved.json()["approvedRevision"]["hyperopt"]["parameters"] == {
         "band_length": 20,
     }
+    assert approved.json()["approvedRevision"]["hyperopt"]["minimal_roi"] == {"0": 0.01}
     assert chart.status_code == 200, chart.text
     assert chart.json()["approvedStrategy"] == "ForexMasterStrategy"
     assert chart.json()["approvedTimeframe"] == "M15"

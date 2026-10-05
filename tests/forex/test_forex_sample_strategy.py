@@ -3,6 +3,13 @@ from decimal import Decimal
 import pandas as pd
 import pytest
 
+from freqtrade.forex.models import OandaInstrument
+from freqtrade.forex.strategy_execution import (
+    FreqtradeStrategyAdapter,
+    freqtrade_timeframe,
+    load_strategy,
+    strategy_informative_timeframes,
+)
 from freqtrade.forex.strategy_hyperopt import (
     _estimate_roi_volatility_per_5m,
     _generate_roi_table,
@@ -10,13 +17,6 @@ from freqtrade.forex.strategy_hyperopt import (
     _roi_space,
     _sample_roi_parameters,
     run_strategy_hyperopt,
-)
-from freqtrade.forex.models import OandaInstrument
-from freqtrade.forex.strategy_execution import (
-    FreqtradeStrategyAdapter,
-    freqtrade_timeframe,
-    load_strategy,
-    strategy_informative_timeframes,
 )
 from freqtrade.strategy.parameters import IntParameter
 
@@ -243,7 +243,7 @@ def test_strategy_hyperopt_optimizes_exit_params_and_roi_on_five_minute_data(
 ) -> None:
     class RoiOnlyOptimizationStrategy:
         timeframe = "5m"
-        minimal_roi = {"0": 0.0005}
+        minimal_roi = {}
         use_exit_signal = True
         _ft_informative = ()
         exit_level = IntParameter(1, 2, default=1, space="sell")
@@ -294,7 +294,7 @@ def test_strategy_hyperopt_optimizes_exit_params_and_roi_on_five_minute_data(
         pair="EUR/USD",
         strategy_class="RoiOnlyOptimizationStrategy",
         timeframe="5m",
-        starting_balance=Decimal("10000"),
+        starting_balance=Decimal(10000),
         risk_fraction=Decimal("0.01"),
         spread=Decimal("0"),
         stop_pips=Decimal("10"),

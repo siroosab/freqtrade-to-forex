@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import UTC
+from datetime import UTC, datetime
 from decimal import ROUND_DOWN, Decimal, InvalidOperation
 from typing import Any
 
@@ -193,6 +193,7 @@ class OandaAutoStrategyExecutor:
             candles,
             adapter,
             signal,
+            price,
             automated_trades,
             open_trades,
         )
@@ -341,6 +342,7 @@ class OandaAutoStrategyExecutor:
         candles: pd.DataFrame,
         adapter: FreqtradeStrategyAdapter,
         signal: Signal,
+        price: OandaPrice,
         automated_trades: list[dict[str, Any]],
         open_trades: list[dict[str, Any]],
     ) -> dict[str, object] | None:
@@ -354,7 +356,12 @@ class OandaAutoStrategyExecutor:
         opposite = (signal is Signal.SHORT and automated_side == "long") or (
             signal is Signal.LONG and automated_side == "short"
         )
-        if not should_exit and not opposite:
+        roi_exit = (
+            _roi_exit_due(automated_trades[0], adapter.minimal_roi, price, automated_side)
+            if not should_exit and not opposite
+            else False
+        )
+        if not should_exit and not opposite and not roi_exit:
             return None
 
         closed = await self._close_automated_trades(automated_trades)
@@ -450,6 +457,42 @@ def _is_automated_trade(trade: dict[str, Any]) -> bool:
 def _trade_side(trade: dict[str, Any]) -> str:
     units = Decimal(str(trade.get("currentUnits") or trade.get("initialUnits") or "0"))
     return "long" if units > 0 else "short"
+
+
+def _roi_exit_due(
+    trade: dict[str, Any],
+    minimal_roi: dict[str, float],
+    price: OandaPrice,
+    side: str,
+) -> bool:
+    if not minimal_roi:
+        return False
+    try:
+        opened_at = datetime.fromisoformat(str(trade["openTime"]))
+        if opened_at.tzinfo is None:
+            opened_at = opened_at.replace(tzinfo=UTC)
+        observed_at = datetime.fromisoformat(price.time)
+        if observed_at.tzinfo is None:
+            observed_at = observed_at.replace(tzinfo=UTC)
+        entry = Decimal(str(trade["price"]))
+        if not entry.is_finite() or entry <= 0:
+            raise ValueError
+        elapsed_minutes = (observed_at - opened_at).total_seconds() / 60
+        if elapsed_minutes < 0:
+            raise ValueError
+        thresholds = sorted(
+            (int(minute), Decimal(str(rate))) for minute, rate in minimal_roi.items()
+        )
+    except (KeyError, TypeError, ValueError, ArithmeticError) as exc:
+        raise AutoExecutionError(
+            "Cannot evaluate approved minimal ROI: open trade or ROI schedule is invalid"
+        ) from exc
+    active_thresholds = [rate for minute, rate in thresholds if minute <= elapsed_minutes]
+    if not active_thresholds:
+        return False
+    current = price.bid if side == "long" else price.ask
+    profit_ratio = (current - entry) / entry if side == "long" else (entry - current) / entry
+    return profit_ratio >= active_thresholds[-1]
 
 
 def _filled_close(result: dict[str, Any]) -> bool:

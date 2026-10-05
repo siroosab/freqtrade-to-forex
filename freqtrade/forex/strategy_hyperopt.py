@@ -330,9 +330,6 @@ def run_strategy_hyperopt(
     original_minimal_roi = getattr(strategy, "minimal_roi", {})
     if not isinstance(original_minimal_roi, dict):
         raise ValueError("strategy minimal_roi must be a mapping of minutes to returns")
-    optimize_roi = bool(original_minimal_roi)
-    if not parameters and not optimize_roi:
-        raise ValueError(f"{strategy_class} has no optimizable parameters")
     informative_timeframes = strategy_informative_timeframes(strategy, pair)
     missing_timeframes = set(informative_timeframes) - set(informative_candles)
     if missing_timeframes:
@@ -353,10 +350,8 @@ def run_strategy_hyperopt(
         values = {
             name: _sample_parameter_value(parameter, rng) for name, parameter in parameters.items()
         }
-        roi_parameters = (
-            _sample_roi_parameters(rng, timeframe, roi_volatility_per_5m) if optimize_roi else {}
-        )
-        minimal_roi = _generate_roi_table(roi_parameters) if roi_parameters else None
+        roi_parameters = _sample_roi_parameters(rng, timeframe, roi_volatility_per_5m)
+        minimal_roi = _generate_roi_table(roi_parameters)
         evaluate = _create_candidate_evaluator(
             candidate_values=values,
             candidate_minimal_roi=minimal_roi,
@@ -386,8 +381,8 @@ def run_strategy_hyperopt(
             "parameters": values,
             "minimal_roi": minimal_roi,
             "roi_parameters": roi_parameters,
-            "roi_volatility_per_5m": (roi_volatility_per_5m if optimize_roi else None),
-            "roi_volatility_regime": (_roi_regime(roi_volatility_per_5m) if optimize_roi else None),
+            "roi_volatility_per_5m": roi_volatility_per_5m,
+            "roi_volatility_regime": _roi_regime(roi_volatility_per_5m),
             "objective": format(objective, ".2f"),
             "trainNetPl": format(train_result.net_pl, ".2f"),
             "validationNetPl": format(validation_result.net_pl, ".2f"),
