@@ -28,11 +28,6 @@ class ForexEmaStrategy(IStrategy):
     informative_slow_period_opt = IntParameter(30, 80, default=50, space="buy")
     informative_adx_min_opt = IntParameter(0, 35, default=0, space="buy")
     entry_rsi_opt = DecimalParameter(50, 60, default=52, decimals=0, space="buy")
-    freqai_entry_threshold = DecimalParameter(
-        0.00001, 0.0005, default=0.0001, decimals=5, space="buy"
-    )
-    freqai_hyperopt_parameters = ("freqai_entry_threshold",)
-
     def __init__(self, config: dict) -> None:
         super().__init__(config)
         self.fast_period_opt = deepcopy(type(self).fast_period_opt)
@@ -41,7 +36,6 @@ class ForexEmaStrategy(IStrategy):
         self.informative_slow_period_opt = deepcopy(type(self).informative_slow_period_opt)
         self.informative_adx_min_opt = deepcopy(type(self).informative_adx_min_opt)
         self.entry_rsi_opt = deepcopy(type(self).entry_rsi_opt)
-        self.freqai_entry_threshold = deepcopy(type(self).freqai_entry_threshold)
         if "forex_fast_period" in config:
             self.fast_period_opt.value = int(config["forex_fast_period"])
         if "forex_slow_period" in config:
@@ -69,38 +63,6 @@ class ForexEmaStrategy(IStrategy):
     def slow_period(self) -> int:
         return int(self.slow_period_opt.value)
 
-    def feature_engineering_expand_all(
-        self, dataframe: DataFrame, period: int, metadata: dict, **kwargs
-    ) -> DataFrame:
-        close = to_numeric(dataframe["close"], errors="coerce")
-        dataframe[f"%-return-{period}"] = close.pct_change(period).fillna(0.0)
-        dataframe[f"%-range-{period}"] = (
-            (
-                to_numeric(dataframe["high"], errors="coerce")
-                - to_numeric(dataframe["low"], errors="coerce")
-            )
-            .rolling(period, min_periods=1)
-            .mean()
-            / close.replace(0, float("nan"))
-        ).fillna(0.0)
-        fast_ema = close.ewm(span=period, adjust=False).mean()
-        slow_ema = close.ewm(span=period * 2, adjust=False).mean()
-        dataframe[f"%-ema-spread-{period}"] = (
-            (fast_ema - slow_ema) / close.replace(0, float("nan"))
-        ).fillna(0.0)
-        return dataframe
-
-    def feature_engineering_standard(
-        self, dataframe: DataFrame, metadata: dict, **kwargs
-    ) -> DataFrame:
-        dataframe["%-session-hour"] = dataframe["date"].dt.hour / 23.0
-        return dataframe
-
-    def set_freqai_targets(self, dataframe: DataFrame, metadata: dict, **kwargs) -> DataFrame:
-        label_period = int(self.freqai_info["feature_parameters"]["label_period_candles"])
-        dataframe["&-s_close"] = dataframe["close"].shift(-label_period) / dataframe["close"] - 1.0
-        return dataframe
-
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         pipeline = ForexFeaturePipeline(
             (
@@ -114,8 +76,6 @@ class ForexEmaStrategy(IStrategy):
         )
         result = pipeline.apply(dataframe)
         result["htf_bias"] = self._closed_higher_timeframe_bias(result)
-        if self.config.get("freqai", {}).get("enabled", False):
-            result = self.freqai.start(result, metadata, self)
         return result
 
     @informative("4h")
@@ -284,26 +244,6 @@ class ForexEmaStrategy(IStrategy):
             & (dataframe["rsi"] <= 100.0 - threshold)
             & ready
         )
-        if "&-s_close" in dataframe:
-            trusted = dataframe.get("do_predict", 0) == 1
-            prediction = dataframe["&-s_close"]
-            if pd.api.types.is_numeric_dtype(prediction):
-                prediction = to_numeric(prediction, errors="coerce")
-                threshold = float(self.freqai_entry_threshold.value)
-                dataframe["enter_long"] = (
-                    long_setup & (bias > 0) & (prediction > threshold) & trusted
-                ).fillna(False)
-                dataframe["enter_short"] = (
-                    short_setup & (bias < 0) & (prediction < -threshold) & trusted
-                ).fillna(False)
-            else:
-                dataframe["enter_long"] = (
-                    long_setup & (bias > 0) & (prediction == "long") & trusted
-                ).fillna(False)
-                dataframe["enter_short"] = (
-                    short_setup & (bias < 0) & (prediction == "short") & trusted
-                ).fillna(False)
-            return dataframe
         dataframe["enter_long"] = (long_setup & (bias > 0)).fillna(False)
         dataframe["enter_short"] = (short_setup & (bias < 0)).fillna(False)
         return dataframe
@@ -313,21 +253,6 @@ class ForexEmaStrategy(IStrategy):
             dataframe.get("htf_bias", pd.Series(0, index=dataframe.index)),
             errors="coerce",
         ).fillna(0)
-        if "&-s_close" in dataframe:
-            trusted = dataframe.get("do_predict", 0) == 1
-            prediction = dataframe["&-s_close"]
-            if pd.api.types.is_numeric_dtype(prediction):
-                prediction = to_numeric(prediction, errors="coerce")
-                dataframe["exit_long"] = (((prediction < 0) & trusted) | (bias < 0)).fillna(False)
-                dataframe["exit_short"] = (((prediction > 0) & trusted) | (bias > 0)).fillna(False)
-            else:
-                dataframe["exit_long"] = (((prediction != "long") & trusted) | (bias < 0)).fillna(
-                    False
-                )
-                dataframe["exit_short"] = (((prediction != "short") & trusted) | (bias > 0)).fillna(
-                    False
-                )
-            return dataframe
         crossed_below = (dataframe["fast_ema"] < dataframe["slow_ema"]) & (
             dataframe["fast_ema"].shift(1) >= dataframe["slow_ema"].shift(1)
         )

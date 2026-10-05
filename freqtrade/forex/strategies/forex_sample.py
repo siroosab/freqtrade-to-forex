@@ -6,13 +6,7 @@ import pandas as pd
 from pandas import DataFrame
 
 from freqtrade.forex.features import ForexFeaturePipeline
-from freqtrade.strategy import (
-    CategoricalParameter,
-    DecimalParameter,
-    IntParameter,
-    IStrategy,
-    informative,
-)
+from freqtrade.strategy import CategoricalParameter, IntParameter, IStrategy, informative
 
 
 class ForexSampleStrategy(IStrategy):
@@ -43,66 +37,18 @@ class ForexSampleStrategy(IStrategy):
     min_streak = CategoricalParameter(
         [25, 55, 100, 125, 150], default=25, space="buy"
     )  # Maximum bearish-trend streak for short entries.
-    # AI prediction thresholds are tuned separately for regression and classification.
-    freqai_entry_threshold = DecimalParameter(
-        0.00001, 0.0005, default=0.0001, decimals=5, space="buy"
-    )  # Minimum predicted return magnitude required for an entry.
-    freqai_confidence_threshold = DecimalParameter(
-        0.34, 0.95, default=0.5, decimals=2, space="buy"
-    )  # Minimum classifier confidence required to accept a direction.
-    # Hyperopt selects the regression threshold when optimizing a FreqAI regressor.
-    freqai_hyperopt_parameters = ("freqai_entry_threshold",)
-    # Hyperopt selects the confidence threshold when optimizing a FreqAI classifier.
-    freqai_classifier_hyperopt_parameters = ("freqai_confidence_threshold",)
-
     def __init__(self, config: dict | None = None) -> None:
         super().__init__(config or {})
         self.buy_rsi = deepcopy(type(self).buy_rsi)
         self.sell_rsi = deepcopy(type(self).sell_rsi)
         self.max_streak = deepcopy(type(self).max_streak)
         self.min_streak = deepcopy(type(self).min_streak)
-        self.freqai_entry_threshold = deepcopy(type(self).freqai_entry_threshold)
-        self.freqai_confidence_threshold = deepcopy(
-            type(self).freqai_confidence_threshold
-        )
-
-    def feature_engineering_expand_all(
-        self, dataframe: DataFrame, period: int, metadata: dict, **kwargs
-    ) -> DataFrame:
-        close = pd.to_numeric(dataframe["close"], errors="coerce")
-        high = pd.to_numeric(dataframe["high"], errors="coerce")
-        low = pd.to_numeric(dataframe["low"], errors="coerce")
-        dataframe[f"%-return-{period}"] = close.pct_change(period).fillna(0.0)
-        dataframe[f"%-range-{period}"] = (
-            (high - low).rolling(period, min_periods=1).mean() / close.replace(0, float("nan"))
-        ).fillna(0.0)
-        fast = close.ewm(span=period, adjust=False).mean()
-        slow = close.ewm(span=period * 2, adjust=False).mean()
-        dataframe[f"%-ema-spread-{period}"] = (
-            (fast - slow) / close.replace(0, float("nan"))
-        ).fillna(0.0)
-        return dataframe
-
-    def feature_engineering_standard(
-        self, dataframe: DataFrame, metadata: dict, **kwargs
-    ) -> DataFrame:
-        dataframe["%-session-hour"] = pd.to_datetime(dataframe["date"], utc=True).dt.hour / 23.0
-        return dataframe
-
-    def set_freqai_targets(self, dataframe: DataFrame, metadata: dict, **kwargs) -> DataFrame:
-        label_period = int(self.freqai_info["feature_parameters"]["label_period_candles"])
-        close = pd.to_numeric(dataframe["close"], errors="coerce")
-        dataframe["&-s_close"] = close.shift(-label_period) / close - 1.0
-        return dataframe
-
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         pipeline = ForexFeaturePipeline(
             (self._populate_base_indicators,),
             warmup_candles=self.startup_candle_count,
         )
         result = pipeline.apply(dataframe)
-        if self.config.get("freqai", {}).get("enabled", False):
-            result = self.freqai.start(result, metadata, self)
         return result
 
     @staticmethod
@@ -200,28 +146,6 @@ class ForexSampleStrategy(IStrategy):
 
         long_signals &= ready & valid_price
         short_signals &= ready & valid_price
-        if "&-s_close" in result:
-            trusted = result.get("do_predict", 0) == 1
-            prediction = result["&-s_close"]
-            if pd.api.types.is_numeric_dtype(prediction):
-                prediction = pd.to_numeric(prediction, errors="coerce")
-                threshold = float(self.freqai_entry_threshold.value)
-                long_signals &= prediction > threshold
-                short_signals &= prediction < -threshold
-            else:
-                long_signals &= prediction == "long"
-                short_signals &= prediction == "short"
-                confidence = pd.to_numeric(
-                    result.get(
-                        "freqai_confidence",
-                        pd.Series(1.0, index=result.index),
-                    ),
-                    errors="coerce",
-                )
-                trusted &= confidence >= float(self.freqai_confidence_threshold.value)
-            long_signals &= trusted
-            short_signals &= trusted
-
         result["enter_long"] = long_signals.fillna(False)
         result["enter_short"] = short_signals.fillna(False)
         return result

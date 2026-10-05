@@ -347,14 +347,11 @@ python -m freqtrade.forex download-data --pair EUR/USD --timeframe 1h --count 50
 # Hyperopt استراتژی در 5m با کمتر از 30 روز بازار فارکس
 python -m freqtrade.forex hyperopt --pair EUR/USD --timeframe 5m --count 5000 --epochs 30 --strategy ForexEmaStrategy
 
-# آموزش/بازیابی LightGBMRegressor و Hyperopt آستانهٔ پیش‌بینی
-python -m freqtrade.forex hyperopt --pair EUR/USD --timeframe 5m --count 5000 --epochs 30 --strategy ForexEmaStrategy --freqaimodel LightGBMRegressor
-
 # بک‌تست همان بازهٔ محدود
 python -m freqtrade.forex backtest --pair EUR/USD --timeframe 5m --count 5000 --strategy ForexEmaStrategy
 
 # اجبار به دانلود تازه هنگام بک‌تست یا پاک‌کردن کش
-python -m freqtrade.forex backtest --pair EUR/USD --timeframe 5m --count 5000 --strategy ForexEmaStrategy --freqaimodel LightGBMRegressor --refresh-data
+python -m freqtrade.forex backtest --pair EUR/USD --timeframe 5m --count 5000 --strategy ForexEmaStrategy --refresh-data
 python -m freqtrade.forex cache-clear --pair EUR/USD --timeframe 1h
 
 # مشاهدهٔ strategy، timeframe و وضعیت تأیید جفت‌ارزها
@@ -373,39 +370,30 @@ python -m freqtrade.forex show-timeframes --pair EUR/USD
 مناسب برای فارکس نمونه‌گیری می‌شوند. دادهٔ اعتبارسنجی در برآورد نوسان وارد
 نمی‌شود. گزارش Hyperopt مقدار نوسان معمول 5m و طبقهٔ کم/متوسط/زیاد آن را نیز
 نمایش می‌دهد. بهترین جدول در گزارش با نام
-`best_minimal_roi` ذخیره می‌شود. پارامترهای فضای `sell`/`exit` حذف می‌شوند؛
-پارامترهای ورود فروش (مانند آستانهٔ ورود short) باید در استراتژی با فضای `buy`
-تعریف شوند. در بک‌تست، خروج بر اساس ROI مستقل از سیگنال خروج انجام می‌شود.
+`best_minimal_roi` ذخیره می‌شود. پارامترهای بهینه‌سازی‌پذیر فضای `sell`/`exit`
+نیز همراه پارامترهای ورود جست‌وجو می‌شوند؛ برای نمونه، پارامترهای خروجی که
+سیگنال‌های خروج را کنترل می‌کنند در candidateها اعمال می‌شوند. در بک‌تست، خروج
+بر اساس ROI مستقل از سیگنال خروج انجام می‌شود. candidateهای بدون معامله در بخش
+اعتبارسنجی پایین‌تر از candidateهای دارای معامله رتبه می‌گیرند.
 در Hyperopt وب، جدول ROI و پارامترهای سازندهٔ آن در گزارش و نتیجهٔ منتظر تأیید
 ذخیره می‌شوند؛ پس از تأیید، همراه همان جفت‌ارز، strategy و تایم‌فریم ثبت و در
-سیگنال‌ها و بک‌تست بعدی (از جمله مسیر FreqAI) اعمال می‌شوند. Hyperopt زمان‌بندی‌شده
+سیگنال‌ها و بک‌تست بعدی اعمال می‌شوند. Hyperopt زمان‌بندی‌شده
 نیز از همین مسیر استفاده می‌کند؛ گزارش تأییدنشده به‌تنهایی تنظیم زنده را عوض نمی‌کند.
-در صفحهٔ `/ai`، نتیجهٔ Manual Hyperopt هم جدول نهایی `minimal_roi` و هم
-پارامترهای زمانی/سودی سازندهٔ آن را برای بهترین نتیجه و پنج کاندیدای برتر نشان
-می‌دهد؛ مسیر مدل پایه نیز این پارامترها را همراه با آستانه‌های ورود ارزیابی
-می‌کند.
+
 
 `ForexEmaStrategy` جهت 4h را با EMA سریع/کند و شیب EMA سریع می‌سنجد؛ در اجرای
 زنده، آخرین کندل در حال تشکیل 4h نیز در این جهت‌سنجی وارد می‌شود. ورود 5m فقط
 پس از بازپس‌گیری EMA سریع و تأیید RSI، و هم‌جهت با روند 4h مجاز است. پارامترهای
 EMAهای هر دو تایم‌فریم، RSI و حداقل ADX روند 4h در Hyperopt قابل تنظیم‌اند؛
-حداقل ADX صفر فیلتر روند را غیرفعال می‌کند. برای AI، مدل
-`LightGBMRegressor` بازده آیندهٔ کندل‌های بسته‌شده را پیش‌بینی می‌کند و پیش‌بینی
-فقط وقتی اجازهٔ ورود دارد که setup تایم‌فریم پایین و جهت 4h نیز تأییدش کنند.
-نتیجهٔ 30 روز صرفاً غربال اولیه است؛ پیش از استفادهٔ عملی، آن را روی بازه‌های
+حداقل ADX صفر فیلتر روند را غیرفعال می‌کند. نتیجهٔ 30 روز صرفاً غربال اولیه
+است؛ پیش از استفادهٔ عملی، آن را روی بازه‌های
 جداگانه و جفت‌ارزهای دیگر نیز ارزیابی کنید.
 
 زیر‌فرمان‌های `show-timeframes` تنظیمات محلی را بدون اتصال به OANDA نمایش
 می‌دهند. پیش از اجرای `dry-run`، مطمئن شوید strategy و timeframe هر جفت‌ارز با
 نسخهٔ تأییدشده در Review مطابقت دارند.
 
-Hyperopt ابتدا مدل را با featureها و targetهای strategy آموزش می‌دهد، یا
-در صورت تطبیق `identifier`، داده، feature schema و تنظیمات مدل از cache
-می‌خواند؛ سپس پارامترهای قابل‌بهینه‌سازی strategy را روی predictionهای
-validation بررسی می‌کند. بک‌تست همان مدل/prediction cache و پارامترهای گزارش
-Hyperopt را reuse می‌کند و نتیجه را فقط برای بازهٔ out-of-sample می‌سنجد.
-گزارش Hyperopt، وزن مدل، prediction cache و گزارش بک‌تست در
-`user_data/hyperopt_results/` ذخیره می‌شوند.
+
 
 در بک‌تست و Hyperopt، حدضرر و حدسود با OHLC کندل‌های موجود شبیه‌سازی می‌شوند؛
 این شبیه‌سازی tick-level نیست و اگر هر دو سطح در یک کندل لمس شوند، حدضرر
@@ -414,11 +402,7 @@ Hyperopt را reuse می‌کند و نتیجه را فقط برای بازهٔ 
 خلاصهٔ جدول‌مانند بک‌تست شامل تعداد معاملات، wins/draws/losses، win rate،
 سود خالص و میانگین هر معامله به ارز حساب، gross profit/loss، profit factor،
 حداکثر drawdown، هزینه‌ها و متوسط مدت معامله است؛ JSON کامل معاملات و منحنی
-equity همچنان پس از جدول چاپ می‌شود. در `user_data/config.json`، بخش
-`freqai` برای `identifier`، train/backtest window، featureها، target horizon،
-split و `model_training_parameters` قابل تنظیم است. CLI برای ترکیب با یک
-strategy، وجود featureهای `%`، targetهای `&`، فراخوانی `self.freqai.start()`
-و مصرف target در منطق ورود/خروج را لازم می‌داند.
+equity همچنان پس از جدول چاپ می‌شود.
 
 ## اجرای تست‌ها
 

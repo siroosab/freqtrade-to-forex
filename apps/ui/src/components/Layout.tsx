@@ -13,8 +13,7 @@ const navItems: NavItem[] = [
   { label: 'Market', to: '/market' },
   { label: 'Strategies', to: '/strategies', requiresRole: 'operator' },
   { label: 'Orders', to: '/orders', requiresRole: 'operator' },
-  { label: 'Backtests', to: '/backtests' },
-  { label: 'AI', to: '/ai' },
+  { label: 'Hyperopt', to: '/hyperopt', requiresRole: 'operator' },
   { label: 'Risk', to: '/risk' },
   { label: 'Settings', to: '/settings', requiresRole: 'admin' },
 ]

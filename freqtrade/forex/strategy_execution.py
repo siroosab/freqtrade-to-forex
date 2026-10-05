@@ -104,8 +104,6 @@ def load_strategy(
     except Exception as exc:
         raise ValueError(f"Strategy initialization failed: {exc}") from exc
     strategy.timeframe = timeframe
-    if isinstance(config.get("freqai"), dict):
-        strategy.freqai_info = config["freqai"]
     for name, value in (parameter_values or {}).items():
         current = getattr(strategy, name, None)
         if hasattr(current, "value"):
@@ -292,22 +290,3 @@ class FreqtradeStrategyAdapter:
             return False
         column = "exit_long" if direction is Signal.LONG else "exit_short"
         return bool(latest.get(column, False))
-
-
-class CachedFreqAIPredictions:
-    """Serve a fitted model's cached timestamp predictions to a strategy."""
-
-    def __init__(self, predictions: dict[int, dict[str, object]]) -> None:
-        self.predictions = predictions
-
-    def start(self, dataframe: pd.DataFrame, metadata: dict, strategy: IStrategy) -> pd.DataFrame:
-        result = dataframe.copy()
-        timestamps = [int(pd.Timestamp(value).value) for value in result["date"]]
-        rows = [self.predictions.get(timestamp, {}) for timestamp in timestamps]
-        prediction_columns = {
-            column for row in rows for column in row if column != "do_predict"
-        }
-        for column in prediction_columns:
-            result[column] = [row.get(column, pd.NA) for row in rows]
-        result["do_predict"] = [int(row.get("do_predict", 0)) for row in rows]
-        return result

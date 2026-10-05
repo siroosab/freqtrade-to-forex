@@ -23,7 +23,7 @@ class StrategyFile:
 
 def strategy_directories() -> tuple[Path, ...]:
     configured = Path(os.environ.get("FOREX_STRATEGIES_DIR", "user_data/strategies"))
-    active = Path(os.environ.get("FOREX_STRATEGY_PATH", "user_data/strategies/ForexAIStrategyBaseline.py"))
+    active = Path(os.environ.get("FOREX_STRATEGY_PATH", "user_data/strategies/ForexMasterStrategy.py"))
     return tuple(dict.fromkeys((configured, active.parent, Path("freqtrade/forex/strategies"), Path("freqtrade/forex"))))
 
 

@@ -75,10 +75,10 @@ saved separately under `user_data/strategies`. Upload validation does not
 execute arbitrary strategy code; imports and constructors are checked when the
 strategy is first selected for a run.
 
-Backtests and AI Hyperopt can select a strategy class independently for each
+Backtests and strategy Hyperopt can select a strategy class independently for each
 pair and timeframe. Freqtrade `@informative` callbacks for the same pair are
 loaded from OANDA at their declared higher timeframe and merged using
-Freqtrade's causal timeframe merge. Generic AI Hyperopt samples declared
+Freqtrade's causal timeframe merge. Strategy Hyperopt samples declared
 Freqtrade parameters; custom strategies without optimizable parameters are
 rejected. Approval, reports, and scheduled Hyperopt retain their pair, class,
 and timeframe scope.
@@ -124,69 +124,36 @@ systemctl --user restart freqtrade-forex
 This gate permits saving a Live account configuration; the only setup modes
 remain Practice and Live.
 
-## Forex CLI research
+## Forex CLI backtest and Hyperopt
 
 The standalone Forex CLI uses OANDA's read-only market-data endpoints for
-downloads, backtests, and AI Hyperopt. It reads credentials from the saved
-Forex config or the `OANDA_TOKEN` and `OANDA_ACCOUNT_ID` environment variables.
-Data is cached by pair, timeframe, and requested range/count in
-`user_data/data/oanda/candles.json` by default. A cache miss downloads the data
-as part of the backtest or Hyperopt command; `--refresh-data` replaces a cache
-entry with newly fetched candles.
+downloads, strategy backtests, and strategy-parameter Hyperopt. It reads
+credentials from the saved Forex config or the `OANDA_TOKEN` and
+`OANDA_ACCOUNT_ID` environment variables. Data is cached by pair, timeframe,
+and requested range/count in `user_data/data/oanda/candles.json` by default.
+A cache miss downloads data as part of the backtest or Hyperopt command;
+`--refresh-data` replaces a cache entry with newly fetched candles.
 
 ```bash
 python -m freqtrade.forex download-data --pair EUR/USD --timeframe 5m --count 5000
-python -m freqtrade.forex backtest --pair EUR/USD --timeframe 5m --count 5000
-python -m freqtrade.forex hyperopt --pair EUR/USD --timeframe 5m --count 5000 --epochs 90 --freqaimodel LightGBMRegressor
 python -m freqtrade.forex hyperopt --pair EUR/USD --timeframe 5m --count 5000 --epochs 90 --strategy ForexEmaStrategy
-python -m freqtrade.forex hyperopt --pair EUR/USD --timeframe 5m --count 5000 --epochs 90 --strategy ForexEmaStrategy --freqaimodel LightGBMRegressor
-python -m freqtrade.forex backtest --pair EUR/USD --timeframe 5m --count 5000 --strategy ForexEmaStrategy --freqaimodel LightGBMRegressor
-python -m freqtrade.forex backtest --pair EUR/USD --timeframe 5m --count 5000 --ai-model user_data/hyperopt_results/EUR_USD_5m_ai.json
+python -m freqtrade.forex backtest --pair EUR/USD --timeframe 5m --count 5000 --strategy ForexEmaStrategy
 python -m freqtrade.forex cache-clear --pair EUR/USD --timeframe 5m
 ```
 
-Hyperopt prints a compact candidate table for every epoch and a ranked final
-table. With `--strategy` and `--freqaimodel` together, the selected strategy's
-FreqAI `%` feature hooks and `&` target are used to train the model once; its
-`self.freqai.start()` receives cached model predictions during strategy
-parameter Hyperopt. The class must declare optimizable Freqtrade parameters
-and use its target in entry/exit logic. Without `--strategy`, the standalone
-AI baseline workflow is used. `--freqaimodel` selects
-`LightGBMRegressor`, `LightGBMClassifier`, or the deterministic
-`ForexAIStrategyBaseline`.
+Hyperopt prints progress for each candidate and a ranked final table. It
+optimizes the declared Freqtrade strategy parameters and its `minimal_roi`
+schedule using a held-out validation segment. Reports are saved under
+`user_data/hyperopt_results/` by default; use `--results-dir` to choose another
+directory. Backtest runs the selected strategy against the requested candle
+window and reports trade, drawdown, and cost summaries.
 
-FreqAI settings are read from the `freqai` section of `user_data/config.json`.
-The `identifier`, training/backtest window, feature periods, shifted candles,
-label horizon, chronological `data_split_parameters.test_size`, and supported
-LightGBM `model_training_parameters` are applied. A saved model is reused only
-when the identifier, pair/timeframe, data/feature hashes, training window, and
-model parameters match; changing these retrains it. Hyperopt then optimizes
-strategy parameters on persisted validation predictions, leaving out-of-sample
-metrics as a separate check. Multi-timeframe/correlation features and PCA are
-not yet supported by the native Forex CLI and are rejected rather than ignored.
-The LightGBM booster, prediction cache, training metrics, feature schema,
-optimized strategy parameters, and candidate report are saved under
-`user_data/hyperopt_results/`. Backtest defaults to the AI baseline;
-`--strategy ema` selects the original EMA strategy. To bypass and replace
-cached candles on either research command, add `--refresh-data`.
-`cache-clear` accepts optional `--pair` and `--timeframe` filters; without them,
-it clears the entire candle cache.
-
-Use `--strategy <ClassName>` to load a custom class from `user_data/strategies`;
-the built-in `ForexEmaStrategy` also supports the combined FreqAI mode.
-Without `--freqaimodel`, this performs ordinary declared-parameter strategy
-Hyperopt. When combined with `--freqaimodel`, the class must implement the
-FreqAI feature hooks and `set_freqai_targets()`, call `self.freqai.start()` in
-`populate_indicators()`, and consume its `&` target in entry/exit logic.
-Classes in another directory can be discovered by setting `FOREX_STRATEGIES_DIR`
-to that folder.
-
-The model-backed `backtest` command uses the same model identifier/cache and
-the best strategy parameters from the matching Hyperopt report. It reports
-only the out-of-sample window; use the same `--strategy`, `--freqaimodel`,
-pair, timeframe, model directory, and FreqAI config as Hyperopt to reuse its
-artifacts. If no trained model exists, the command trains one before testing.
-
+Use `--strategy <ClassName>` to load a custom class from
+`user_data/strategies`; classes in another directory can be discovered by
+setting `FOREX_STRATEGIES_DIR` to that folder. The built-in EMA strategy can
+also be selected with `--strategy ema`. To bypass and replace cached candles,
+add `--refresh-data`. `cache-clear` accepts optional `--pair` and `--timeframe`
+filters; without them, it clears the entire candle cache.
 The non-interactive config-only step can also be rerun safely:
 
 ```bash

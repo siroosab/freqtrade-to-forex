@@ -3,7 +3,7 @@ from decimal import Decimal
 import pandas as pd
 import pytest
 
-from freqtrade.forex.ai_hyperopt import (
+from freqtrade.forex.strategy_hyperopt import (
     _estimate_roi_volatility_per_5m,
     _generate_roi_table,
     _roi_profit_bounds,
@@ -153,88 +153,6 @@ def test_forex_sample_strategy_generates_long_and_short_trend_signals() -> None:
     short_entries = strategy.populate_entry_trend(bearish, {"pair": "EUR/USD"})
     assert bool(short_entries.iloc[-1]["enter_short"])
     assert not bool(short_entries.iloc[-1]["enter_long"])
-
-
-def test_forex_sample_strategy_applies_freqai_prediction_to_base_signals() -> None:
-    strategy = load_strategy("ForexSampleStrategy", "15m", "EUR/USD")
-    dataframe = _entry_frame(strategy)
-    dataframe.loc[161, "max_4h"] = True
-    dataframe.loc[160, "rsi_ha_sma_rounded"] = strategy.buy_rsi.value - 1
-    dataframe.loc[161, "rsi_ha_sma_rounded"] = strategy.buy_rsi.value + 1
-    dataframe["&-s_close"] = 0.001
-    dataframe["do_predict"] = 1
-
-    long_entries = strategy.populate_entry_trend(dataframe, {"pair": "EUR/USD"})
-    assert bool(long_entries.iloc[-1]["enter_long"])
-
-    strategy.freqai_entry_threshold.value = 0.002
-    filtered_prediction = strategy.populate_entry_trend(dataframe, {"pair": "EUR/USD"})
-    assert not bool(filtered_prediction.iloc[-1]["enter_long"])
-
-    strategy.freqai_entry_threshold.value = 0.0001
-    dataframe["&-s_close"] = -0.001
-    short_prediction = strategy.populate_entry_trend(dataframe, {"pair": "EUR/USD"})
-    assert not bool(short_prediction.iloc[-1]["enter_long"])
-    assert not bool(short_prediction.iloc[-1]["enter_short"])
-
-    dataframe["&-s_close"] = "long"
-    dataframe["freqai_confidence"] = 0.4
-    strategy.freqai_confidence_threshold.value = 0.5
-    low_confidence = strategy.populate_entry_trend(dataframe, {"pair": "EUR/USD"})
-    assert not bool(low_confidence.iloc[-1]["enter_long"])
-    strategy.freqai_confidence_threshold.value = 0.35
-    accepted_confidence = strategy.populate_entry_trend(
-        dataframe, {"pair": "EUR/USD"}
-    )
-    assert bool(accepted_confidence.iloc[-1]["enter_long"])
-    assert not hasattr(strategy, "_get_pair_param")
-
-
-def test_forex_sample_strategy_exposes_freqai_features_targets_and_start() -> None:
-    freqai_config = {
-        "enabled": True,
-        "feature_parameters": {"label_period_candles": 2},
-    }
-    strategy = load_strategy(
-        "ForexSampleStrategy",
-        "15m",
-        "EUR/USD",
-        config_overrides={"freqai": freqai_config},
-    )
-    start_calls: list[str] = []
-
-    class FakeFreqAI:
-        def start(self, dataframe, metadata, selected_strategy):
-            start_calls.append(selected_strategy.__class__.__name__)
-            return dataframe
-
-    strategy.freqai = FakeFreqAI()
-    dates = pd.date_range("2026-01-01", periods=20, freq="15min", tz="UTC")
-    candles = pd.DataFrame(
-        {
-            "date": dates,
-            "open": [1.0 + index * 0.001 for index in range(len(dates))],
-            "high": [1.01 + index * 0.001 for index in range(len(dates))],
-            "low": [0.99 + index * 0.001 for index in range(len(dates))],
-            "close": [1.005 + index * 0.001 for index in range(len(dates))],
-        }
-    )
-
-    indicators = strategy.populate_indicators(candles.copy(), {"pair": "EUR/USD"})
-    features = strategy.feature_engineering_expand_all(candles.copy(), 3, {"pair": "EUR/USD"})
-    targets = strategy.set_freqai_targets(candles.copy(), {"pair": "EUR/USD"})
-
-    assert start_calls == ["ForexSampleStrategy"]
-    assert {"%-return-3", "%-range-3", "%-ema-spread-3"} <= set(features.columns)
-    assert "%-session-hour" in strategy.feature_engineering_standard(
-        candles.copy(), {"pair": "EUR/USD"}
-    )
-    assert targets["&-s_close"].iloc[0] == pytest.approx(
-        candles["close"].iloc[2] / candles["close"].iloc[0] - 1.0
-    )
-    assert "ema50" in indicators
-
-
 def test_forex_sample_strategy_builds_only_required_indicators() -> None:
     strategy = load_strategy("ForexSampleStrategy", "15m", "EUR/USD")
     candles = pd.DataFrame(
@@ -320,81 +238,13 @@ def test_forex_sample_strategy_integrates_with_informative_backtest_and_hyperopt
     }
     assert len(candidates[0]["minimal_roi"]) == 4
 
-    freqai_config = {
-        "enabled": True,
-        "feature_parameters": {"label_period_candles": 2},
-    }
-    regression_predictions = {
-        int(pd.Timestamp(date).value): {
-            "&-s_close": 0.001,
-            "do_predict": 1,
-        }
-        for date in dates
-    }
-    regression_candidates = run_strategy_hyperopt(
-        candles,
-        {"4h": informative},
-        OandaInstrument("EUR_USD", "EUR/USD", -4, 5, 0, Decimal(1)),
-        pair="EUR/USD",
-        strategy_class="ForexSampleStrategy",
-        timeframe="5m",
-        starting_balance=Decimal(10000),
-        risk_fraction=Decimal("0.01"),
-        spread=Decimal("0.0001"),
-        max_attempts=1,
-        hyperopt_loss="ProfitDrawDownHyperOptLoss",
-        freqai_config=freqai_config,
-        freqai_predictions=regression_predictions,
-        freqai_target_column="&-s_close",
-    )
-    assert set(regression_candidates[0]["parameters"]) == {
-        "buy_rsi",
-        "sell_rsi",
-        "max_streak",
-        "min_streak",
-        "freqai_entry_threshold",
-    }
-
-    classifier_predictions = {
-        int(pd.Timestamp(date).value): {
-            "&-s_close": "long",
-            "freqai_confidence": 0.9,
-            "do_predict": 1,
-        }
-        for date in dates
-    }
-    classifier_candidates = run_strategy_hyperopt(
-        candles,
-        {"4h": informative},
-        OandaInstrument("EUR_USD", "EUR/USD", -4, 5, 0, Decimal(1)),
-        pair="EUR/USD",
-        strategy_class="ForexSampleStrategy",
-        timeframe="5m",
-        starting_balance=Decimal(10000),
-        risk_fraction=Decimal("0.01"),
-        spread=Decimal("0.0001"),
-        max_attempts=1,
-        hyperopt_loss="ProfitDrawDownHyperOptLoss",
-        freqai_config=freqai_config,
-        freqai_predictions=classifier_predictions,
-        freqai_target_column="&-s_close",
-    )
-    assert set(classifier_candidates[0]["parameters"]) == {
-        "buy_rsi",
-        "sell_rsi",
-        "max_streak",
-        "min_streak",
-        "freqai_confidence_threshold",
-    }
-
-
-def test_strategy_hyperopt_optimizes_roi_on_five_minute_data_without_exit_params(
+def test_strategy_hyperopt_optimizes_exit_params_and_roi_on_five_minute_data(
     monkeypatch,
 ) -> None:
     class RoiOnlyOptimizationStrategy:
         timeframe = "5m"
         minimal_roi = {"0": 0.0005}
-        use_exit_signal = False
+        use_exit_signal = True
         _ft_informative = ()
         exit_level = IntParameter(1, 2, default=1, space="sell")
 
@@ -422,7 +272,7 @@ def test_strategy_hyperopt_optimizes_roi_on_five_minute_data_without_exit_params
             return result
 
     monkeypatch.setattr(
-        "freqtrade.forex.ai_hyperopt.load_strategy",
+        "freqtrade.forex.strategy_hyperopt.load_strategy",
         lambda *args, **kwargs: RoiOnlyOptimizationStrategy(),
     )
     dates = pd.date_range("2026-01-01", periods=80, freq="5min", tz="UTC")
@@ -453,7 +303,7 @@ def test_strategy_hyperopt_optimizes_roi_on_five_minute_data_without_exit_params
     )
 
     candidate = candidates[0]
-    assert candidate["parameters"] == {}
+    assert set(candidate["parameters"]) == {"exit_level"}
     assert candidate["validationTrades"] > 0
     assert candidate["roi_volatility_regime"] == "high"
     assert candidate["roi_volatility_per_5m"] == pytest.approx(0.002)
@@ -490,3 +340,66 @@ def test_strategy_hyperopt_optimizes_roi_on_five_minute_data_without_exit_params
         (rate for _, rate in roi_steps), reverse=True
     )
     assert roi_steps[-1][1] == 0
+
+
+def test_strategy_hyperopt_ranks_no_trade_candidates_last(monkeypatch) -> None:
+    class NoTradeStrategy:
+        timeframe = "5m"
+        minimal_roi = {"0": 0.0005}
+        use_exit_signal = True
+        _ft_informative = ()
+        threshold = IntParameter(1, 2, default=1, space="buy")
+
+        def __init__(self) -> None:
+            self.threshold = IntParameter(1, 2, default=1, space="buy")
+
+        @staticmethod
+        def populate_indicators(dataframe, metadata):
+            return dataframe
+
+        @staticmethod
+        def populate_entry_trend(dataframe, metadata):
+            result = dataframe.copy()
+            result["enter_long"] = False
+            result["enter_short"] = False
+            return result
+
+        @staticmethod
+        def populate_exit_trend(dataframe, metadata):
+            result = dataframe.copy()
+            result["exit_long"] = False
+            result["exit_short"] = False
+            return result
+
+    monkeypatch.setattr(
+        "freqtrade.forex.strategy_hyperopt.load_strategy",
+        lambda *args, **kwargs: NoTradeStrategy(),
+    )
+    dates = pd.date_range("2026-01-01", periods=80, freq="5min", tz="UTC")
+    candles = pd.DataFrame(
+        {
+            "date": dates,
+            "open": [1.0] * len(dates),
+            "high": [1.0001] * len(dates),
+            "low": [0.9999] * len(dates),
+            "close": [1.0] * len(dates),
+            "volume": [0.0] * len(dates),
+        }
+    )
+
+    candidates = run_strategy_hyperopt(
+        candles,
+        {},
+        OandaInstrument("EUR_USD", "EUR/USD", -4, 5, 0, Decimal(1)),
+        pair="EUR/USD",
+        strategy_class="NoTradeStrategy",
+        timeframe="5m",
+        starting_balance=Decimal("10000"),
+        risk_fraction=Decimal("0.01"),
+        spread=Decimal("0"),
+        max_attempts=1,
+        hyperopt_loss="ProfitDrawDownHyperOptLoss",
+    )
+
+    assert candidates[0]["validationTrades"] == 0
+    assert candidates[0]["objective"] == "-Infinity"

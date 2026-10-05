@@ -31,8 +31,6 @@ from freqtrade.forex.exit_rules import AtrStop, FixedStop, TakeProfit, TimeExit,
 from freqtrade.forex.features import (
     ForexFeature,
     ForexFeaturePipeline,
-    ForexFreqAIAdapter,
-    ForexFreqAIExecutionGate,
 )
 from freqtrade.forex.health import OandaHealthCheck, OandaHealthReport
 from freqtrade.forex.hyperopt import ForexHyperopt, HyperoptCandidate, HyperoptResult
@@ -125,10 +123,6 @@ from freqtrade.forex.transactions import (
 
 def __getattr__(name: str):
     """Load strategy and API exports only when callers explicitly request them."""
-    if name == "ForexAIStrategyBaseline":
-        from freqtrade.forex.ai_strategy import ForexAIStrategyBaseline
-
-        return ForexAIStrategyBaseline
     if name == "ForexEmaStrategy":
         from freqtrade.forex.strategies.ema_cross import ForexEmaStrategy
 
@@ -216,9 +210,6 @@ __all__ = [
     "TimeExit",
     "ForexFeature",
     "ForexFeaturePipeline",
-    "ForexFreqAIAdapter",
-    "ForexFreqAIExecutionGate",
-    "ForexAIStrategyBaseline",
     "OandaHealthCheck",
     "OandaHealthReport",
     "ForexHyperopt",

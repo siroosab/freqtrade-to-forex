@@ -3,8 +3,7 @@ import { useEffect, useState } from 'react'
 import { Navigate, Outlet, Route, Routes, useLocation } from 'react-router-dom'
 import { Layout } from '../components/Layout'
 import { getAuthSession, getSetupStatus, getStoredAuthSession } from '../api/mockApi'
-import { AiPage } from '../pages/AiPage'
-import { BacktestAnalyticsPage } from '../pages/BacktestAnalyticsPage'
+import { HyperoptPage } from '../pages/HyperoptPage'
 import { DashboardPage } from '../pages/DashboardPage'
 import { MarketPage } from '../pages/MarketPage'
 import { OrdersPage } from '../pages/OrdersPage'
@@ -89,8 +88,14 @@ export function AppRoutes() {
             </ProtectedRoute>
           }
         />
-        <Route path="/backtests" element={<BacktestAnalyticsPage />} />
-        <Route path="/ai" element={<AiPage />} />
+        <Route
+          path="/hyperopt"
+          element={
+            <ProtectedRoute allowedRoles={['operator', 'admin']}>
+              <HyperoptPage />
+            </ProtectedRoute>
+          }
+        />
         <Route path="/risk" element={<RiskPage />} />
         <Route
           path="/settings"

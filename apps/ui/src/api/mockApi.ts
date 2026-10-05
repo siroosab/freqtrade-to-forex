@@ -125,93 +125,91 @@ export async function logoutUser(): Promise<void> {
   }
 }
 
-export type AiFreqaiFeatureParameters = {
-  labelPeriodCandles: number
-  includeShiftedCandles: number
-  indicatorPeriodsCandles: number[]
-  weightFactor: number
-  diThreshold: number
-}
-
-export type AiFreqaiConfig = {
-  trainPeriodDays: number
-  backtestPeriodDays: number
-  featureParameters: AiFreqaiFeatureParameters
-}
-
-export type AiFreqaiModel = 'ForexAIStrategyBaseline' | 'LightGBMRegressor' | 'LightGBMClassifier'
-
-export type AiConfig = {
-  configRevision?: string
-  updatedAt?: string
-  strategyName: string
-  strategyClass?: string
-  model: 'rule-based' | 'ml' | 'hybrid'
-  timeframe: 'M1' | 'M5' | 'M15' | 'M30' | 'H1' | 'H2' | 'H4' | 'H6' | 'H8' | 'H12' | 'D1' | 'W1' | 'MN1'
-  riskBudget: string
-  featureSet: string[]
-  trainingMode: 'dry-run' | 'practice' | 'backtest'
-  entryThreshold: string
-  exitThreshold: string
-  volatilityWindow: string
-  atrWindow: string
-  maxSpreadPct: string
-  freqai?: AiFreqaiConfig
-}
-
-export type AiReview = {
+export type StrategyReview = {
   status: 'pending' | 'approved' | 'rejected'
-  strategyName: string
-  strategyClass?: string
-  model: string
-  riskPolicy: string
-  guardrails: string[]
+  strategyClass: string
+  pair: string
+  timeframe: string
   notes: string
   lastUpdated: string
+  approvedRevision?: { pair: string; timeframe: string; strategyClass: string; approvedAt: string; hyperopt?: Record<string, unknown> } | null
+}
+
+export type HyperoptCandidateRow = {
+  rank: number
+  parameters: Record<string, string | number | boolean>
+  minimal_roi?: Record<string, number>
+  objective: string
+  trainNetPl: string
+  validationNetPl: string
+  validationDrawdown: string
+  validationTrades: number
+}
+
+export type HyperoptReport = {
+  pair: string
+  timeframe: string
+  status: string
+  strategy: string
+  strategyClass?: string
+  dataSource: string
+  dataRevision: string
+  dataHash: string
+  candidatesTested: number
+  attemptsRequested: number
+  hyperoptLoss: string
+  historyMode: 'candles' | 'days'
+  historyValue: number
+  steps: number
+  trainCandles: number
+  validationCandles: number
+  bestParameters: Record<string, string | number | boolean>
+  bestMinimalRoi?: Record<string, number>
+  objective: string
+  train: { netPl: string; drawdown: string; trades: number }
+  validation: { netPl: string; drawdown: string; trades: number }
+  candidates: HyperoptCandidateRow[]
+  reportText: string
+}
+
+export type HyperoptStatus = {
+  pair: string
+  timeframe?: string
+  strategyClass?: string
+  phase?: string
+  status: 'idle' | 'running' | 'completed' | 'stopped' | 'failed'
+  attemptsCompleted: number
+  attemptsTotal: number
+  startedAt?: string
+  error?: string | null
+  report?: HyperoptReport | null
+  hasLastReport?: boolean
+}
+
+export type BacktestRunResult = {
+  id: string
+  status: string
+  phase?: string
   pair?: string
   timeframe?: string
-  approvedRevision?: { pair: string; timeframe: string; configRevision?: string; approvedAt?: string; hyperopt?: Record<string, unknown>; freqai?: Record<string, unknown> } | null
+  steps?: number
+  message: string
+  historyProgress?: number
+  backtestProgress?: number
+  netPl?: string
+  trades?: number
+  startingBalance?: string
+  endingBalance?: string
+  winRate?: string
+  maxDrawdown?: string
+  strategy?: string
+  backtestWindow?: string
+  dataSource?: string
+  warning?: string
+  tradeDetails?: Array<Record<string, string | number | null | boolean>>
+  summary?: Record<string, string | number | null>
+  result?: BacktestRunResult
 }
-
-export type AiStatus = {
-  pair?: string
-  state: string
-  strategy: string
-  strategyVersion: string
-  modelMode: string
-  configRevision: string
-  modelVersion?: string
-  featureSchemaHash?: string
-  trainingDataHash?: string | null
-  featureSchema: string[]
-  executionMode: string
-  environment: string
-  liveExecution: boolean
-  lastBacktest: { result?: string; netProfit?: string; trades?: number; updatedAt?: string } | null
-  evidence: Record<string, string | string[]>
-  updatedAt: string
-  lastOptimizationAttempt?: string | null
-  optimizationState?: string
-}
-
-export type AiSignalTrace = { time?: string; signal: string; reason: string; signalStrength?: number; entryThreshold?: number; spreadPct?: number; volatility?: number; atr?: number; sessionHour?: number; features?: string[] }
-
-export async function getAiSignals(pair = 'EUR/USD', timeframe = 'M5'): Promise<{ pair: string; timeframe: string; strategy: string; configRevision: string; signals: AiSignalTrace[] }> {
-  const response = await fetch(buildApiUrl(`/api/v1/ai/signals?pair=${encodeURIComponent(pair)}&timeframe=${timeframe}&count=60`))
-  if (!response.ok) {
-    let detail = `HTTP ${response.status}`
-    try { detail = ((await response.json()) as { detail?: string }).detail ?? detail } catch { /* status is enough */ }
-    throw new Error(`AI signals unavailable: ${detail}`)
-  }
-  return response.json() as Promise<{ pair: string; timeframe: string; strategy: string; configRevision: string; signals: AiSignalTrace[] }>
-}
-
-export async function getAiModelComparison(pair = 'EUR/USD', timeframe = 'M5') {
-  const response = await fetch(buildApiUrl(`/api/v1/ai/model-comparison?pair=${encodeURIComponent(pair)}&timeframe=${timeframe}&count=120`))
-  if (!response.ok) throw new Error('Model comparison unavailable')
-  return response.json() as Promise<{ pair: string; timeframe: string; comparison: { dataHash: string; featureSchemaHash: string; dataset: { pair: string; timeframe: string; trainRows: number; validationRows: number; oosRows: number; indicatorPeriods: number[]; includeShiftedCandles: number; trainPeriodDays: number | null; backtestPeriodDays: number | null; weightFactor: number; diThreshold: number }; regressor: { model: string; modelVersion: string; oosMae: string; oosRmse: string; directionalAccuracy: string; accepted: boolean; rejectionReasons: string[]; diFilteredOosRows: number }; classifier: { model: string; modelVersion: string; accuracy: number; f1Macro: number; accepted: boolean; rejectionReasons: string[]; classes: string[]; diFilteredOosRows: number }; baseline: { model: string; oosSamples: number; nonFlatSignals: number } } }>
-}
-
 export type AutoExecutionResult = {
   pair: string
   timeframe: string
@@ -262,187 +260,55 @@ export async function setAutoExecution(
   return response.json() as Promise<AutoExecutionStatus>
 }
 
-export async function validateAiConfig(config: Partial<AiConfig>, pair = 'EUR/USD') {
-  const response = await fetch(buildApiUrl(`/api/v1/ai/config/validate?pair=${encodeURIComponent(pair)}`), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(config),
-  })
-  if (!response.ok) throw new Error('AI config validation rejected')
-  return response.json() as Promise<{ valid: boolean; pair: string; effectiveConfig: AiConfig }>
+async function throwApiError(response: Response, message: string): Promise<never> {
+  let detail = `HTTP ${response.status}`
+  try {
+    detail = ((await response.json()) as { detail?: string }).detail ?? detail
+  } catch {
+    // Preserve the HTTP status when the API did not return JSON.
+  }
+  throw new Error(`${message}: ${detail}`)
 }
 
-export type AiHyperoptCandidateRow = { rank: number; entryThreshold?: string; maxSpreadPct?: string; parameters?: Record<string, string | number | boolean>; minimal_roi?: Record<string, number>; roi_parameters?: Record<string, number>; roi_volatility_per_5m?: number; roi_volatility_regime?: 'low' | 'medium' | 'high'; objective: string; trainNetPl: string; validationNetPl: string; validationDrawdown: string; validationTrades: number; coverage: number }
-
-export type AiHyperoptReport = {
-  pair: string
-  timeframe: string
-  status: string
-  strategy: string
-  strategyClass?: string
-  freqaimodel?: AiFreqaiModel
-  modelReused?: boolean | null
-  modelTraining?: Record<string, unknown> | null
-  trainingContext?: Record<string, unknown> | null
-  trainingContextHash?: string
-  dataSource: string
-  dataRevision: string
-  dataHash: string
-  featureSchemaHash: string
-  modelVersion: string
-  candidatesTested: number
-  pairsTested: number
-  periodsTested: number
-  coverage: number
-  attemptsRequested: number
-  hyperoptLoss?: string
-  historyMode?: 'candles' | 'days'
-  historyValue?: number
-  steps?: number
-  trainCandles: number
-  validationCandles: number
-  bestParameters: Record<string, string | number | boolean>
-  bestMinimalRoi?: Record<string, number>
-  roiParameters?: Record<string, number>
-  bestRoiVolatilityPer5m?: number
-  bestRoiVolatilityRegime?: 'low' | 'medium' | 'high'
-  objective: string
-  train: { netPl: string; drawdown: string; trades: number }
-  validation: { netPl: string; drawdown: string; trades: number }
-  candidates: AiHyperoptCandidateRow[]
-  reportText: string
-}
-
-export type AiHyperoptStatus = {
-  pair: string
-  timeframe?: string
-  strategyClass?: string
-  freqaimodel?: string
-  phase?: string
-  status: 'idle' | 'running' | 'completed' | 'stopped' | 'failed'
-  attemptsCompleted: number
-  attemptsTotal: number
-  startedAt?: string
-  error?: string | null
-  report?: AiHyperoptReport | null
-  hasLastReport?: boolean
-}
-
-export async function startAiHyperopt(payload: { pair: string; timeframe: string; strategyClass?: string; freqaimodel?: AiFreqaiModel; steps: number; attempts: number; historyMode?: 'candles' | 'days'; historyValue?: number; resetPrevious?: boolean; hyperoptLoss?: string }): Promise<{ pair: string; status: string; freqaimodel?: AiFreqaiModel; attemptsTotal: number; warning?: string }> {
-  const response = await fetch(buildApiUrl('/api/v1/ai/hyperopt/start'), {
+export async function startHyperopt(payload: { pair: string; timeframe: string; strategyClass: string; steps: number; attempts: number; historyMode?: 'candles' | 'days'; historyValue?: number; hyperoptLoss?: string }): Promise<{ pair: string; status: string; attemptsTotal: number }> {
+  const response = await fetch(buildApiUrl('/api/v1/hyperopt/start'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ resetPrevious: true, ...payload }),
   })
-  if (!response.ok) {
-    let detail = `HTTP ${response.status}`
-    try {
-      const errorPayload = (await response.json()) as { detail?: string }
-      detail = errorPayload.detail ?? detail
-    } catch {
-      // Keep the HTTP status when the backend did not return JSON.
-    }
-    throw new Error(`AI hyperopt rejected: ${detail}`)
-  }
-  return response.json() as Promise<{ pair: string; status: string; freqaimodel?: AiFreqaiModel; attemptsTotal: number; warning?: string }>
+  if (!response.ok) return throwApiError(response, 'Hyperopt request rejected')
+  return response.json() as Promise<{ pair: string; status: string; attemptsTotal: number }>
 }
 
-export async function getAiHyperoptStatus(pair = 'EUR/USD', strategyClass?: string, timeframe?: string, freqaimodel?: AiFreqaiModel): Promise<AiHyperoptStatus> {
-  const params = new URLSearchParams({ pair })
-  if (strategyClass) params.set('strategy_class', strategyClass)
-  if (timeframe) params.set('timeframe', timeframe)
-  if (freqaimodel) params.set('freqaimodel', freqaimodel)
-  const response = await fetch(buildApiUrl(`/api/v1/ai/hyperopt/status?${params.toString()}`))
-  if (!response.ok) throw new Error('Hyperopt status unavailable')
-  return response.json() as Promise<AiHyperoptStatus>
+export async function getHyperoptStatus(pair: string, strategyClass: string, timeframe: string): Promise<HyperoptStatus> {
+  const params = new URLSearchParams({ pair, strategy_class: strategyClass, timeframe })
+  const response = await fetch(buildApiUrl(`/api/v1/hyperopt/status?${params.toString()}`))
+  if (!response.ok) return throwApiError(response, 'Hyperopt status unavailable')
+  return response.json() as Promise<HyperoptStatus>
 }
 
-export async function stopAiHyperopt(pair = 'EUR/USD', strategyClass?: string, timeframe?: string) {
-  const response = await fetch(buildApiUrl('/api/v1/ai/hyperopt/stop'), {
+export async function stopHyperopt(pair: string, strategyClass: string, timeframe: string): Promise<{ pair: string; status: string }> {
+  const response = await fetch(buildApiUrl('/api/v1/hyperopt/stop'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ pair, strategyClass, timeframe }),
   })
-  if (!response.ok) {
-    let detail = `HTTP ${response.status}`
-    try {
-      const errorPayload = (await response.json()) as { detail?: string }
-      detail = errorPayload.detail ?? detail
-    } catch {
-      // Keep the HTTP status when the backend did not return JSON.
-    }
-    throw new Error(`Stop request rejected: ${detail}`)
-  }
+  if (!response.ok) return throwApiError(response, 'Hyperopt stop request rejected')
   return response.json() as Promise<{ pair: string; status: string }>
 }
 
-export async function getAiHyperoptReport(pair = 'EUR/USD', strategyClass?: string, timeframe?: string, freqaimodel?: AiFreqaiModel) {
-  const params = new URLSearchParams({ pair })
-  if (strategyClass) params.set('strategy_class', strategyClass)
-  if (timeframe) params.set('timeframe', timeframe)
-  if (freqaimodel) params.set('freqaimodel', freqaimodel)
-  const response = await fetch(buildApiUrl(`/api/v1/ai/hyperopt/report?${params.toString()}`))
-  if (!response.ok) throw new Error('Hyperopt report unavailable')
-  return response.json() as Promise<{ pair: string; available: boolean; completedAt?: string; ageDays?: number; report?: AiHyperoptReport }>
+export async function getHyperoptReport(pair: string, strategyClass: string, timeframe: string): Promise<{ pair: string; available: boolean; completedAt?: string; report?: HyperoptReport }> {
+  const params = new URLSearchParams({ pair, strategy_class: strategyClass, timeframe })
+  const response = await fetch(buildApiUrl(`/api/v1/hyperopt/report?${params.toString()}`))
+  if (!response.ok) return throwApiError(response, 'Hyperopt report unavailable')
+  return response.json() as Promise<{ pair: string; available: boolean; completedAt?: string; report?: HyperoptReport }>
 }
 
-export type AiHyperoptScheduler = {
-  enabled: boolean
-  intervalDays: number
-  gapMinutes: number
-  strategyClass: string
-  freqaimodel: AiFreqaiModel
-  timeframe: string
-  pairStrategies: Record<string, string>
-  pairTimeframes: Record<string, string>
-  pairs: string[]
-  approvedPairs: string[]
-  approvedScopes: Record<string, Array<{ strategyClass: string; timeframe: string }>>
-  lastRunAt: string | null
-  nextRunAt: string | null
-  nextRuns: Record<string, string>
-  lastError: string | null
-  running: boolean
-}
-
-export async function getAiHyperoptScheduler(strategyClass?: string, timeframe?: string): Promise<AiHyperoptScheduler> {
-  const params = new URLSearchParams()
-  if (strategyClass) params.set('strategy_class', strategyClass)
-  if (timeframe) params.set('timeframe', timeframe)
-  const query = params.size ? `?${params.toString()}` : ''
-  const response = await fetch(buildApiUrl(`/api/v1/ai/hyperopt/scheduler${query}`))
-  if (!response.ok) throw new Error('Hyperopt scheduler unavailable')
-  return response.json() as Promise<AiHyperoptScheduler>
-}
-
-export async function saveAiHyperoptScheduler(config: { enabled: boolean; intervalDays: number; gapMinutes: number; pairs: string[]; strategyClass: string; freqaimodel: AiFreqaiModel; timeframe: string; pairStrategies: Record<string, string>; pairTimeframes: Record<string, string> }): Promise<AiHyperoptScheduler> {
-  const response = await fetch(buildApiUrl('/api/v1/ai/hyperopt/scheduler'), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(config),
-  })
-  if (!response.ok) {
-    let detail = `HTTP ${response.status}`
-    try { detail = ((await response.json()) as { detail?: string }).detail ?? detail } catch { /* status is enough */ }
-    throw new Error(`Scheduler update rejected: ${detail}`)
-  }
-  return response.json() as Promise<AiHyperoptScheduler>
-}
-
-export async function runAiHyperoptSchedulerNow(): Promise<{ status: string; pairs: string[]; jobs?: Array<{ pair: string; status: string; freqaimodel?: AiFreqaiModel; attemptsCompleted?: number; warning?: string }>; warnings?: string[] }> {
-  const response = await fetch(buildApiUrl('/api/v1/ai/hyperopt/scheduler/run-now'), {
-    method: 'POST',
-  })
-  if (!response.ok) throw new Error('Scheduled Hyperopt start rejected')
-  return response.json() as Promise<{ status: string; pairs: string[]; jobs?: Array<{ pair: string; status: string; freqaimodel?: AiFreqaiModel; attemptsCompleted?: number; warning?: string }>; warnings?: string[] }>
-}
-
-export async function getAiHyperoptLossFunctions(): Promise<{ default: string; options: string[] }> {
-  const response = await fetch(buildApiUrl('/api/v1/ai/hyperopt/loss-functions'))
-  if (!response.ok) throw new Error('Hyperopt loss functions unavailable')
+export async function getHyperoptLossFunctions(): Promise<{ default: string; options: string[] }> {
+  const response = await fetch(buildApiUrl('/api/v1/hyperopt/loss-functions'))
+  if (!response.ok) return throwApiError(response, 'Hyperopt loss functions unavailable')
   return response.json() as Promise<{ default: string; options: string[] }>
 }
-
 const fallbackData = {
   account: {
     equity: '$184,260.48',
@@ -568,39 +434,6 @@ const fallbackData = {
       updatedAt: '2026-09-18T08:42:00Z',
     },
   ],
-  aiConfig: {
-    strategyName: 'FX Trend Pulse',
-    model: 'hybrid',
-    timeframe: 'M5',
-    riskBudget: '0.72%',
-    featureSet: ['trend', 'spread', 'session', 'volatility'],
-    trainingMode: 'dry-run',
-    entryThreshold: '0.5',
-    exitThreshold: '0.0',
-    volatilityWindow: '5',
-    atrWindow: '14',
-    maxSpreadPct: '1.0',
-    freqai: {
-      trainPeriodDays: 30,
-      backtestPeriodDays: 7,
-      featureParameters: {
-        labelPeriodCandles: 2,
-        includeShiftedCandles: 0,
-        indicatorPeriodsCandles: [5, 14],
-        weightFactor: 0.0,
-        diThreshold: 0.0,
-      },
-    },
-  } satisfies AiConfig,
-  aiReview: {
-    status: 'pending',
-    strategyName: 'FX Trend Pulse',
-    model: 'hybrid',
-    riskPolicy: 'Practice-safe',
-    guardrails: ['dry-run only', 'no live order execution', 'manual approval required'],
-    notes: 'Awaiting manual review before Practice-safe execution approval.',
-    lastUpdated: new Date().toISOString(),
-  } satisfies AiReview,
 }
 
 export function buildApiUrl(path: string) {
@@ -999,181 +832,38 @@ export async function getBacktestSummary(): Promise<Array<{
   }>>('/api/v1/backtests', 'backtests')
 }
 
-export async function getAiConfig(pair = 'EUR/USD'): Promise<AiConfig> {
-  return safeFetchWithFallback<AiConfig>(`/api/v1/ai/config?pair=${encodeURIComponent(pair)}`, 'aiConfig')
+export async function getStrategyReview(pair: string, timeframe: string, strategyClass: string): Promise<StrategyReview> {
+  const params = new URLSearchParams({ pair, timeframe, strategy_class: strategyClass })
+  const response = await fetch(buildApiUrl(`/api/v1/strategy/review?${params.toString()}`))
+  if (!response.ok) return throwApiError(response, 'Strategy approval status unavailable')
+  return response.json() as Promise<StrategyReview>
 }
 
-export async function getAiReview(pair = 'EUR/USD', timeframe = 'M5', strategyClass?: string): Promise<AiReview> {
-  const strategyQuery = strategyClass ? `&strategy_class=${encodeURIComponent(strategyClass)}` : ''
-  return safeFetchWithFallback<AiReview>(`/api/v1/ai/review?pair=${encodeURIComponent(pair)}&timeframe=${encodeURIComponent(timeframe)}${strategyQuery}`, 'aiReview')
-}
-
-export async function getAiStatus(pair = 'EUR/USD'): Promise<AiStatus> {
-  try {
-    const response = await fetch(buildApiUrl(`/api/v1/ai/status?pair=${encodeURIComponent(pair)}`))
-    if (!response.ok) throw new Error('AI status unavailable')
-    return (await response.json()) as AiStatus
-  } catch {
-    return {
-      state: 'research/backtest-ready',
-      strategy: 'ForexAIStrategyBaseline',
-      strategyVersion: 'baseline-v1',
-      modelMode: 'hybrid',
-      configRevision: 'fallback',
-      featureSchema: fallbackData.aiConfig.featureSet,
-      executionMode: 'dry_run',
-      environment: 'practice',
-      liveExecution: false,
-      lastBacktest: null,
-      evidence: { historicalData: 'not-run', strategyContract: 'ForexBacktester.signal', validation: 'awaiting backtest', guardrails: ['dry-run only', 'no live order execution'] },
-      updatedAt: new Date().toISOString(),
-    }
-  }
-}
-
-export async function saveAiConfig(config: AiConfig, pair = 'EUR/USD') {
-  const response = await fetch(buildApiUrl(`/api/v1/ai/config?pair=${encodeURIComponent(pair)}`), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(config),
-  })
-
-  if (!response.ok) {
-    throw new Error('AI config save rejected by backend')
-  }
-
-  return response.json() as Promise<AiConfig>
-}
-
-export async function saveAiReview(review: { status: 'pending' | 'approved' | 'rejected'; notes: string; pair?: string; timeframe?: string; strategyClass?: string; requireOptimization?: boolean; guardrails?: string[] }) {
-  const response = await fetch(buildApiUrl('/api/v1/ai/review'), {
+export async function saveStrategyReview(review: { status: 'approved' | 'rejected'; pair: string; timeframe: string; strategyClass: string; requireOptimization: true; notes: string }): Promise<StrategyReview> {
+  const response = await fetch(buildApiUrl('/api/v1/strategy/review'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(review),
   })
-
-  if (!response.ok) {
-    let detail = `HTTP ${response.status}`
-    try { detail = ((await response.json()) as { detail?: string }).detail ?? detail } catch { /* status is enough */ }
-    throw new Error(`AI review update rejected: ${detail}`)
-  }
-
-  return response.json() as Promise<AiReview>
-}
-
-export type BacktestRunResult = {
-  id: string
-  status: string
-  phase?: string
-  pair?: string
-  timeframe?: string
-  steps?: number
-  message: string
-  historyProgress?: number
-  backtestProgress?: number
-  netPl?: string
-  trades?: number
-  startingBalance?: string
-  endingBalance?: string
-  winRate?: string
-  maxDrawdown?: string
-  strategy?: string
-  freqaimodel?: string
-  backtestWindow?: string
-  modelReused?: boolean | null
-  modelTraining?: Record<string, unknown> | null
-  dataSource?: string
-  warning?: string
-  aiParameters?: {
-    model?: string
-    freqaimodel?: string
-    backtestWindow?: string
-    modelReused?: boolean | null
-    modelTraining?: Record<string, unknown> | null
-    strategyParameters?: Record<string, string | number | boolean>
-    minimalRoi?: Record<string, number>
-    backtestReport?: Record<string, unknown> | null
-    [key: string]: unknown
-  }
-  tradeDetails?: Array<Record<string, string | number | null | boolean>>
-  summary?: Record<string, string | number | null>
-  result?: BacktestRunResult
+  if (!response.ok) return throwApiError(response, 'Strategy approval update rejected')
+  return response.json() as Promise<StrategyReview>
 }
 
 export async function getBacktestJob(jobId: string): Promise<BacktestRunResult> {
   const response = await fetch(buildApiUrl(`/api/v1/backtests/${jobId}`))
-  if (!response.ok) throw new Error('Backtest job unavailable')
+  if (!response.ok) return throwApiError(response, 'Backtest job unavailable')
   return response.json() as Promise<BacktestRunResult>
 }
 
-export type AiResearchCacheSummary = {
-  pair: string
-  timeframe: string
-  candleRangeCount: number
-  storedCandleCount: number
-  candleFileCount: number
-  candleFiles: string[]
-  oldestCandle: string | null
-  newestCandle: string | null
-  modelFileCount: number
-  modelFiles: string[]
-  hyperoptReportsPreserved: boolean
-}
-
-export async function inspectAiResearchCache(payload: { pair: string; timeframe: string }): Promise<AiResearchCacheSummary> {
-  const response = await fetch(buildApiUrl('/api/v1/ai/research-cache/inspect'), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  })
-  if (!response.ok) {
-    let detail = `HTTP ${response.status}`
-    try { detail = ((await response.json()) as { detail?: string }).detail ?? detail } catch { /* status is enough */ }
-    throw new Error(`Cache inspection failed: ${detail}`)
-  }
-  return response.json() as Promise<AiResearchCacheSummary>
-}
-
-export async function clearAiResearchCache(payload: { pair: string; timeframe: string; candles?: boolean; models?: boolean }): Promise<{
-  pair: string
-  timeframe: string
-  candleItemsRemoved: number
-  modelFilesRemoved: number
-  removed: string[]
-}> {
-  const response = await fetch(buildApiUrl('/api/v1/ai/research-cache/clear'), {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  })
-  if (!response.ok) {
-    let detail = `HTTP ${response.status}`
-    try { detail = ((await response.json()) as { detail?: string }).detail ?? detail } catch { /* status is enough */ }
-    throw new Error(`Cache clear rejected: ${detail}`)
-  }
-  return response.json() as Promise<{
-    pair: string
-    timeframe: string
-    candleItemsRemoved: number
-    modelFilesRemoved: number
-    removed: string[]
-  }>
-}
-
-export async function runBacktest(payload: { pair: string; timeframe: string; strategyClass?: string; freqaimodel?: string; steps: number; historyMode?: 'candles' | 'days'; historyValue?: number }): Promise<BacktestRunResult> {
+export async function runBacktest(payload: { pair: string; timeframe: string; strategyClass: string; steps: number; historyMode?: 'candles' | 'days'; historyValue?: number }): Promise<BacktestRunResult> {
   const response = await fetch(buildApiUrl('/api/v1/backtests/run'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ...payload, trackProgress: true }),
   })
-
-  if (!response.ok) {
-    throw new Error('Backtest run rejected by backend')
-  }
-
+  if (!response.ok) return throwApiError(response, 'Backtest request rejected')
   return response.json() as Promise<BacktestRunResult>
 }
-
 export async function submitMarketOrder(
   order: {
     symbol: string

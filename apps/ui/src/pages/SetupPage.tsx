@@ -18,7 +18,7 @@ export function SetupPage() {
     environment: 'practice',
     instruments: sharedInstruments.map((item) => item.replace('/', '_')),
     pairTimeframes: Object.fromEntries(sharedInstruments.map((item) => [item.replace('/', '_'), item.includes('GBP') ? '1h' : '5m'])),
-    pairStrategies: Object.fromEntries(sharedInstruments.map((item) => [item.replace('/', '_'), 'ForexAIStrategyBaseline'])),
+    pairStrategies: Object.fromEntries(sharedInstruments.map((item) => [item.replace('/', '_'), 'ForexMasterStrategy'])),
     riskFraction: '0.01',
   })
   const [error, setError] = useState<string | null>(null)
@@ -97,7 +97,7 @@ export function SetupPage() {
         },
         pairStrategies: {
           ...current.pairStrategies,
-          [instrument]: current.pairStrategies[instrument] ?? strategiesQuery.data?.[0]?.name ?? 'ForexAIStrategyBaseline',
+          [instrument]: current.pairStrategies[instrument] ?? strategiesQuery.data?.[0]?.name ?? 'ForexMasterStrategy',
         },
       }
     })

@@ -141,11 +141,13 @@ class OandaAutoStrategyExecutor:
         parameters = revision.get("hyperopt")
         parameters = parameters if isinstance(parameters, dict) else {}
         parameter_values = parameters.get("parameters", parameters.get("bestParameters", {}))
+        minimal_roi = parameters.get("minimal_roi", parameters.get("bestMinimalRoi"))
         strategy = load_strategy(
             str(revision["strategyClass"]),
             freqtrade_timeframe(timeframe),
             pair,
             parameter_values=parameter_values if isinstance(parameter_values, dict) else None,
+            minimal_roi=minimal_roi if isinstance(minimal_roi, dict) else None,
         )
         informative_candles: dict[str, pd.DataFrame] = {}
         for informative_timeframe in strategy_informative_timeframes(strategy, pair):

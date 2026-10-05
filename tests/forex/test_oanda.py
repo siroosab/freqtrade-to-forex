@@ -72,7 +72,7 @@ from freqtrade.forex.execution import (
     OandaExecutionGateway,
 )
 from freqtrade.forex.exit_rules import AtrStop, FixedStop, TakeProfit, TimeExit, TrailingStop
-from freqtrade.forex.features import ForexFeaturePipeline, ForexFreqAIAdapter, ForexFreqAIExecutionGate
+from freqtrade.forex.features import ForexFeaturePipeline
 from freqtrade.forex.health import OandaHealthCheck, OandaHealthReport
 from freqtrade.forex.historical import HistoricalCandleStore
 from freqtrade.forex.hyperopt import ForexHyperopt
@@ -875,7 +875,7 @@ def test_oanda_settings_and_pair_mapping_from_freqtrade_config() -> None:
         {
             "timeframe": "5m",
             "pair_timeframes": {"EUR_USD": "5m", "GBP_USD": "1h"},
-            "pair_strategies": {"EUR_USD": "ForexAIStrategyBaseline", "GBP_USD": "ForexEmaStrategy"},
+            "pair_strategies": {"EUR_USD": "ForexMasterStrategy", "GBP_USD": "ForexEmaStrategy"},
             "pair_approved_revisions": {
                 "GBP_USD": {
                     "pair": "GBP/USD",
@@ -898,7 +898,7 @@ def test_oanda_settings_and_pair_mapping_from_freqtrade_config() -> None:
     assert settings.risk_fraction == "0.02"
     assert settings.execution_mode == "dry_run"
     assert settings.pair_timeframes == {"EUR_USD": "5m", "GBP_USD": "1h"}
-    assert settings.pair_strategies == {"EUR_USD": "ForexAIStrategyBaseline", "GBP_USD": "ForexEmaStrategy"}
+    assert settings.pair_strategies == {"EUR_USD": "ForexMasterStrategy", "GBP_USD": "ForexEmaStrategy"}
     assert settings.pair_approved_revisions["GBP_USD"]["timeframe"] == "H1"
     assert OandaMarketDataProvider.to_oanda_instrument("eur/usd") == "EUR_USD"
     assert OandaMarketDataProvider.to_freqtrade_pair("GBP_USD") == "GBP/USD"
@@ -1133,22 +1133,22 @@ def test_paper_backup_cli_requires_destination() -> None:
     assert args.ledger == "user_data/oanda/paper.sqlite"
 
 
-def test_forex_research_cli_parses_cache_and_ai_options(tmp_path: Path) -> None:
+def test_forex_research_cli_parses_strategy_options(tmp_path: Path) -> None:
     args = build_parser().parse_args([
         "hyperopt", "--pair", "EUR/USD", "--epochs", "12",
-        "--refresh-data", "--model-dir", str(tmp_path),
+        "--refresh-data", "--results-dir", str(tmp_path),
     ])
     assert args.command == "hyperopt"
     assert args.epochs == 12
     assert args.refresh_data is True
     assert args.hyperopt_loss == "ProfitDrawDownHyperOptLoss"
-    assert args.freqaimodel is None
-    assert args.strategy is None
+    assert args.results_dir == str(tmp_path)
+    assert args.strategy == "ForexEmaStrategy"
     assert args.stop_pips == Decimal("10")
-    selected_model = build_parser().parse_args([
-        "hyperopt", "--freqaimodel", "LightGBMRegressor"
-    ])
-    assert selected_model.freqaimodel == "LightGBMRegressor"
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["hyperopt", "--freqaimodel", "LightGBMRegressor"])
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["backtest", "--ai-model", "model.json"])
     selected_strategy = build_parser().parse_args([
         "hyperopt", "--strategy", "ForexEmaStrategy"
     ])
@@ -1184,41 +1184,8 @@ def test_forex_research_cli_parses_cache_and_ai_options(tmp_path: Path) -> None:
     assert download.command == "download-data"
     assert clear.command == "cache-clear"
     assert clear.pair == "EUR/USD"
-
-
-def test_freqai_cli_config_normalizes_official_config_keys(monkeypatch) -> None:
-    from freqtrade.forex.cli import _resolve_cli_freqai_config
-
-    monkeypatch.setattr("freqtrade.forex.cli.load_forex_config", lambda: {
-        "freqai": {
-            "identifier": "forex-experiment-2",
-            "train_period_days": 30,
-            "backtest_period_days": 7,
-            "feature_parameters": {
-                "label_period_candles": 12,
-                "indicator_periods_candles": [7, 21],
-                "include_shifted_candles": 2,
-                "weight_factor": 0.3,
-                "DI_threshold": 0.8,
-            },
-            "data_split_parameters": {"test_size": 0.25, "random_state": 9},
-            "model_training_parameters": {"n_estimators": 321, "num_leaves": 23},
-        }
-    })
-
-    config = _resolve_cli_freqai_config("1h")
-    assert config["identifier"] == "forex-experiment-2"
-    assert config["train_period_days"] == 30
-    assert config["backtest_period_days"] == 7
-    assert config["feature_parameters"]["label_period_candles"] == 12
-    assert config["feature_parameters"]["include_shifted_candles"] == 2
-    assert config["model_training_parameters"]["n_estimators"] == 321
-    assert config["model_training_parameters"]["weight_factor"] == 0.3
-    assert config["model_training_parameters"]["di_threshold"] == 0.8
-
-
 @pytest.mark.asyncio
-async def test_backtest_cli_uses_freqai_model_and_strategy_report(
+async def test_backtest_cli_runs_ema_strategy_without_model_options(
     tmp_path: Path, monkeypatch, capsys
 ) -> None:
     from freqtrade.forex.models import OandaCandle
@@ -1264,21 +1231,20 @@ async def test_backtest_cli_uses_freqai_model_and_strategy_report(
         ending_balance=Decimal("10050"),
         trades=(),
     )
-    helper_call: dict[str, object] = {}
+    selected_strategy: list[object] = []
 
-    def fake_model_backtest(frame, **kwargs):
-        helper_call.update(kwargs)
-        return tmp_path / "report.json", tmp_path / "weights.txt", {
-            "strategy_parameters": {"freqai_entry_threshold": 0.001},
-            "_backtest_result": result,
-        }
+    class FakeBacktester:
+        def __init__(self, strategy, *args, **kwargs):
+            selected_strategy.append(strategy)
+
+        def run(self, frame, **kwargs):
+            return result
 
     monkeypatch.setattr("freqtrade.forex.cli.OandaClient", FakeClient)
-    monkeypatch.setattr("freqtrade.forex.cli._run_lightgbm_hyperopt", fake_model_backtest)
+    monkeypatch.setattr("freqtrade.forex.cli.ForexBacktester", FakeBacktester)
     args = build_parser().parse_args([
         "backtest", "--pair", "EUR/USD", "--timeframe", "1h", "--count", "30",
-        "--strategy", "ForexEmaStrategy", "--freqaimodel", "LightGBMRegressor",
-        "--model-dir", str(tmp_path),
+        "--strategy", "ema",
     ])
 
     assert await run_backtest(OandaSettings("token", "account"), args) == 0
@@ -1287,16 +1253,13 @@ async def test_backtest_cli_uses_freqai_model_and_strategy_report(
     assert "Wins / Draws / Losses" in captured
     assert "Net profit (USD)" in captured
     output = json.loads(captured[captured.index("{\n"):])
-    assert output["strategy"] == "ForexEmaStrategy"
-    assert output["freqaimodel"] == "LightGBMRegressor"
-    assert output["backtest_window"] == "out_of_sample"
-    assert output["ai_parameters"]["freqai_entry_threshold"] == 0.001
+    assert output["strategy"] == "ema"
+    assert "freqaimodel" not in output
     assert output["summary"]["account_currency"] == "USD"
     assert Decimal(output["summary"]["net_pl"]) == Decimal("50")
     assert output["summary"]["wins"] == 0
     assert output["summary"]["profit_factor"] is None
-    assert helper_call["optimize_strategy"] is False
-    assert helper_call["strategy_class"] == "ForexEmaStrategy"
+    assert len(selected_strategy) == 1
 
 
 def test_practice_run_recorder_persists_multiple_sessions(tmp_path) -> None:
@@ -1580,30 +1543,6 @@ async def test_practice_order_rejects_missing_protection_fields() -> None:
 
     with pytest.raises(ValueError, match="require --units"):
         await run_practice(settings, args)
-
-
-def test_candles_to_dataframe_matches_freqtrade_ohlcv_shape() -> None:
-    from freqtrade.forex.models import OandaCandle
-
-    frame = OandaMarketDataProvider.candles_to_dataframe(
-        [
-            OandaCandle(
-                time="2026-09-15T10:00:00.000000000Z",
-                complete=True,
-                open=Decimal("1.10000"),
-                high=Decimal("1.10100"),
-                low=Decimal("1.09900"),
-                close=Decimal("1.10050"),
-                volume=42,
-            )
-        ]
-    )
-
-    assert list(frame.columns) == ["date", "open", "high", "low", "close", "volume"]
-    assert frame.iloc[0]["close"] == 1.1005
-    assert str(frame.iloc[0]["date"].tz) == "UTC"
-
-
 @pytest.mark.asyncio
 async def test_historical_provider_caches_exact_range_and_normalized_data(tmp_path: Path) -> None:
     from freqtrade.forex.models import OandaCandle
@@ -1751,98 +1690,6 @@ async def test_latest_candle_cache_is_reused_refreshed_and_cleared(tmp_path: Pat
     assert client.get_candles.await_count == 2
     assert store.clear(instrument="EUR_USD", timeframe="5m") == 1
     assert store.load_latest("EUR_USD", "5m", count=30) is None
-
-
-@pytest.mark.asyncio
-async def test_native_cli_hyperopt_saves_ai_model_and_caches_download(
-    tmp_path: Path, monkeypatch, capsys
-) -> None:
-    from freqtrade.forex.models import OandaCandle
-
-    candles = [
-        OandaCandle(
-            time=(datetime(2026, 9, 15, 10, tzinfo=UTC) + timedelta(minutes=5 * index))
-            .isoformat().replace("+00:00", "Z"),
-            complete=True,
-            open=Decimal("1.10000"),
-            high=Decimal("1.10100"),
-            low=Decimal("1.09900"),
-            close=Decimal("1.10050"),
-            volume=42,
-        )
-        for index in range(40)
-    ]
-
-    class FakeClient:
-        candle_requests = 0
-
-        def __init__(self, *args, **kwargs) -> None:
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *args) -> None:
-            return None
-
-        async def get_instruments(self, instruments):
-            return [OandaInstrument("EUR_USD", "EUR/USD", -4, 5, 0, Decimal("1"))]
-
-        async def get_account_summary(self):
-            return SimpleNamespace(balance=Decimal("10000"), currency="USD")
-
-        async def get_candles(self, *args, **kwargs):
-            type(self).candle_requests += 1
-            return candles
-
-        async def get_prices(self, instruments):
-            return [SimpleNamespace(instrument="EUR_USD", spread=Decimal("0.0001"))]
-
-    validation_result = SimpleNamespace(
-        ending_balance=Decimal("10100"), net_pl=Decimal("100"),
-        max_drawdown=Decimal("20"), trades=(), win_rate=Decimal("0.6"),
-    )
-    candidate = SimpleNamespace(
-        entry_threshold=Decimal("0.25"), max_spread_pct=Decimal("0.8"),
-        validation_result=validation_result, objective=Decimal("80"),
-    )
-    hyperopt_result = SimpleNamespace(
-        best=candidate, candidates=(candidate,), candidates_tested=1,
-    )
-    optimization_args: dict[str, object] = {}
-
-    def fake_hyperopt(frame, instrument, **kwargs):
-        optimization_args.update(kwargs)
-        kwargs["on_candidate"](1, 1, candidate)
-        return hyperopt_result
-
-    monkeypatch.setattr("freqtrade.forex.cli.OandaClient", FakeClient)
-    monkeypatch.setattr("freqtrade.forex.cli.run_ai_hyperopt", fake_hyperopt)
-    args = build_parser().parse_args([
-        "hyperopt", "--count", "40", "--epochs", "1",
-        "--freqaimodel", "ForexAIStrategyBaseline",
-        "--data-cache", str(tmp_path / "candles.json"),
-        "--model-dir", str(tmp_path / "models"),
-    ])
-
-    assert await run_hyperopt(OandaSettings("token", "account"), args) == 0
-    captured = capsys.readouterr().out
-    assert "Epoch 1/1 | objective=80 | best=80 | entry=0.25 | max_spread=0.8" in captured
-    output = json.loads(captured[captured.index("{\n"):])
-    model_path = Path(output["model_path"])
-    model = json.loads(model_path.read_text(encoding="utf-8"))
-    from freqtrade.forex.cli import _load_ai_model
-
-    assert model["parameters"] == {"entry_threshold": "0.25", "max_spread_pct": "0.8"}
-    assert _load_ai_model(model_path, "EUR_USD", "5m") == model["parameters"]
-    assert optimization_args["max_attempts"] == 1
-    assert optimization_args["quote_to_account_rate"] == Decimal("1")
-    assert HistoricalCandleStore(tmp_path / "candles.json").load_latest(
-        "EUR_USD", "5m", count=40
-    ) is not None
-    assert FakeClient.candle_requests == 1
-
-
 @pytest.mark.asyncio
 async def test_native_cli_selects_strategy_class_for_hyperopt(
     tmp_path: Path, monkeypatch, capsys
@@ -1902,13 +1749,13 @@ async def test_native_cli_selects_strategy_class_for_hyperopt(
 
     monkeypatch.setattr("freqtrade.forex.cli.OandaClient", FakeClient)
     monkeypatch.setattr(
-        "freqtrade.forex.ai_hyperopt.run_strategy_hyperopt", fake_strategy_hyperopt
+        "freqtrade.forex.cli.run_strategy_hyperopt", fake_strategy_hyperopt
     )
     args = build_parser().parse_args([
         "hyperopt", "--pair", "EUR/USD", "--timeframe", "1h",
         "--count", "40", "--epochs", "1", "--strategy", "ForexEmaStrategy",
         "--data-cache", str(tmp_path / "candles.json"),
-        "--model-dir", str(tmp_path / "reports"),
+        "--results-dir", str(tmp_path / "reports"),
     ])
 
     assert await run_hyperopt(OandaSettings("token", "account"), args) == 0
@@ -1922,238 +1769,6 @@ async def test_native_cli_selects_strategy_class_for_hyperopt(
     assert report["best"]["parameters"] == {
         "fast_period_opt": 5, "slow_period_opt": 12
     }
-
-
-@pytest.mark.parametrize("model_name", ("LightGBMRegressor", "LightGBMClassifier"))
-def test_lightgbm_freqaimodel_hyperopt_saves_weights_and_epoch_report(
-    tmp_path, capsys, model_name: str
-) -> None:
-    from freqtrade.forex.cli import _run_lightgbm_hyperopt
-
-    candles = pd.DataFrame({
-        "date": pd.date_range("2026-09-01", periods=120, freq="5min", tz="UTC"),
-        "open": [1.1 + index * 0.00001 for index in range(120)],
-        "high": [1.101 + index * 0.00001 for index in range(120)],
-        "low": [1.099 + index * 0.00001 for index in range(120)],
-        "close": [1.1 + index * 0.00001 + (index % 3) * 0.0001 for index in range(120)],
-        "volume": [100 + index for index in range(120)],
-    })
-
-    report_path, weights_path, report = _run_lightgbm_hyperopt(
-        candles,
-        instrument=OandaInstrument("EUR_USD", "EUR/USD", -4, 5, 0, Decimal("1")),
-        pair="EUR/USD",
-        timeframe="5m",
-        model_name=model_name,
-        epochs=1,
-        model_dir=tmp_path,
-        starting_balance=Decimal("10000"),
-        risk_fraction=Decimal("0.01"),
-        spread=Decimal("0.0001"),
-        slippage=Decimal("0"),
-        financing_rate_per_day=Decimal("0"),
-        quote_to_account_rate=Decimal("1"),
-        stop_pips=Decimal("10"),
-        hyperopt_loss="ProfitDrawDownHyperOptLoss",
-    )
-
-    assert report_path.is_file()
-    assert weights_path.is_file()
-    assert report["freqaimodel"] == model_name
-    assert len(report["candidates"]) == 1
-    assert report["strategy_parameters"] == {
-        "entry_threshold": report["best"]["entry_threshold"],
-        "max_spread_pct": report["best"]["max_spread_pct"],
-    }
-    assert report["model_training"]["validation"]
-    first_output = capsys.readouterr().out
-    assert "AI TRAINING COMPLETE" in first_output
-    assert "STRATEGY HYPEROPT" in first_output
-    assert "Entry threshold" in first_output
-
-    _, _, latest_hyperopt_report = _run_lightgbm_hyperopt(
-        candles,
-        instrument=OandaInstrument("EUR_USD", "EUR/USD", -4, 5, 0, Decimal("1")),
-        pair="EUR/USD",
-        timeframe="5m",
-        model_name=model_name,
-        epochs=1,
-        model_dir=tmp_path,
-        starting_balance=Decimal("10000"),
-        risk_fraction=Decimal("0.01"),
-        spread=Decimal("0.0001"),
-        slippage=Decimal("0"),
-        financing_rate_per_day=Decimal("0"),
-        quote_to_account_rate=Decimal("1"),
-        stop_pips=Decimal("10"),
-        hyperopt_loss="ProfitDrawDownHyperOptLoss",
-    )
-    assert "reusing cached" in capsys.readouterr().out
-
-
-def test_freqaimodel_trains_and_hyperopts_selected_strategy(tmp_path: Path, monkeypatch, capsys) -> None:
-    from freqtrade.forex.cli import _run_lightgbm_hyperopt
-
-    strategy_directory = tmp_path / "strategies"
-    strategy_directory.mkdir()
-    (strategy_directory / "PredictionThresholdStrategy.py").write_text(
-        """from freqtrade.strategy import IStrategy, DecimalParameter
-
-class PredictionThresholdStrategy(IStrategy):
-    can_short = True
-    minimal_roi = {"0": 0.0005}
-    entry_limit = DecimalParameter(0.00001, 0.001, default=0.0001, decimals=5, space='buy')
-
-    def feature_engineering_expand_all(self, dataframe, period, metadata, **kwargs):
-        dataframe[f"%-return-{period}"] = dataframe['close'].pct_change(period).fillna(0)
-        return dataframe
-
-    def set_freqai_targets(self, dataframe, metadata, **kwargs):
-        period = self.freqai_info['feature_parameters']['label_period_candles']
-        dataframe['&-s_close'] = dataframe['close'].shift(-period) / dataframe['close'] - 1
-        return dataframe
-
-    def populate_indicators(self, dataframe, metadata):
-        return self.freqai.start(dataframe, metadata, self)
-
-    def populate_entry_trend(self, dataframe, metadata):
-        dataframe['enter_long'] = (dataframe['do_predict'] == 1) & (dataframe['&-s_close'] > self.entry_limit.value)
-        dataframe['enter_short'] = (dataframe['do_predict'] == 1) & (dataframe['&-s_close'] < -self.entry_limit.value)
-        return dataframe
-
-    def populate_exit_trend(self, dataframe, metadata):
-        dataframe['exit_long'] = (dataframe['do_predict'] == 1) & (dataframe['&-s_close'] < 0)
-        dataframe['exit_short'] = (dataframe['do_predict'] == 1) & (dataframe['&-s_close'] > 0)
-        return dataframe
-""",
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("FOREX_STRATEGIES_DIR", str(strategy_directory))
-    dates = pd.date_range("2026-09-01", periods=240, freq="5min", tz="UTC")
-    close = [1.1 + index * 0.00001 + (index % 7) * 0.00003 for index in range(len(dates))]
-    candles = pd.DataFrame({
-        "date": dates,
-        "open": close,
-        "high": [value + 0.0002 for value in close],
-        "low": [value - 0.0002 for value in close],
-        "close": close,
-        "volume": [100 + index for index in range(len(dates))],
-    })
-    freqai_config = {
-        "enabled": True,
-        "identifier": "cli-integrated-test",
-        "train_period_days": None,
-        "backtest_period_days": None,
-        "data_split_parameters": {"test_size": 0.2},
-        "model_training_parameters": {"n_estimators": 20, "num_leaves": 7},
-        "feature_parameters": {
-            "include_timeframes": ["5m"],
-            "include_corr_pairlist": [],
-            "indicator_periods_candles": [3, 5],
-            "include_shifted_candles": 1,
-            "label_period_candles": 2,
-            "DI_threshold": 0.0,
-            "weight_factor": 0.0,
-            "principal_component_analysis": False,
-        },
-    }
-
-    report_path, weights_path, report = _run_lightgbm_hyperopt(
-        candles,
-        instrument=OandaInstrument("EUR_USD", "EUR/USD", -4, 5, 0, Decimal("1")),
-        pair="EUR/USD",
-        timeframe="5m",
-        model_name="LightGBMRegressor",
-        epochs=2,
-        model_dir=tmp_path / "models",
-        starting_balance=Decimal("10000"),
-        risk_fraction=Decimal("0.01"),
-        spread=Decimal("0.0001"),
-        slippage=Decimal("0"),
-        financing_rate_per_day=Decimal("0"),
-        quote_to_account_rate=Decimal("1"),
-        stop_pips=Decimal("10"),
-        hyperopt_loss="ProfitDrawDownHyperOptLoss",
-        strategy_class="PredictionThresholdStrategy",
-        freqai_config=freqai_config,
-    )
-
-    assert report_path.is_file()
-    assert weights_path.is_file()
-    assert report["strategy"] == "PredictionThresholdStrategy"
-    assert report["identifier"] == "cli-integrated-test"
-    assert report["target_column"] == "&-s_close"
-    assert report["model_training_parameters"]["n_estimators"] == 20
-    assert report["model_training_parameters"]["num_leaves"] == 7
-    assert report["training_context"]["data_split_parameters"]["test_size"] == 0.2
-    assert report["predictions_file"].endswith(".predictions.json")
-    assert "entry_limit" in report["strategy_parameters"]
-    assert len(report["candidates"]) == 2
-    assert report["best"]["minimal_roi"]
-    assert report["best"]["roi_parameters"]
-    assert report["candidates"][0]["minimal_roi"] == report["best"]["minimal_roi"]
-    captured = capsys.readouterr().out
-    assert "AI TRAINING COMPLETE" in captured
-    assert "STRATEGY HYPEROPT" in captured
-    assert "params={'entry_limit':" in captured
-
-    _, _, latest_hyperopt_report = _run_lightgbm_hyperopt(
-        candles,
-        instrument=OandaInstrument("EUR_USD", "EUR/USD", -4, 5, 0, Decimal("1")),
-        pair="EUR/USD",
-        timeframe="5m",
-        model_name="LightGBMRegressor",
-        epochs=2,
-        model_dir=tmp_path / "models",
-        starting_balance=Decimal("10000"),
-        risk_fraction=Decimal("0.01"),
-        spread=Decimal("0.0001"),
-        slippage=Decimal("0"),
-        financing_rate_per_day=Decimal("0"),
-        quote_to_account_rate=Decimal("1"),
-        stop_pips=Decimal("10"),
-        hyperopt_loss="ProfitDrawDownHyperOptLoss",
-        strategy_class="PredictionThresholdStrategy",
-        freqai_config=freqai_config,
-    )
-    cached_output = capsys.readouterr().out
-    assert "reusing cached LightGBMRegressor" in cached_output
-    assert "reusing cached" in cached_output.lower()
-
-    backtest_path, backtest_weights, backtest_report = _run_lightgbm_hyperopt(
-        candles,
-        instrument=OandaInstrument("EUR_USD", "EUR/USD", -4, 5, 0, Decimal("1")),
-        pair="EUR/USD",
-        timeframe="5m",
-        model_name="LightGBMRegressor",
-        epochs=1,
-        model_dir=tmp_path / "models",
-        starting_balance=Decimal("10000"),
-        risk_fraction=Decimal("0.01"),
-        spread=Decimal("0.0001"),
-        slippage=Decimal("0"),
-        financing_rate_per_day=Decimal("0"),
-        quote_to_account_rate=Decimal("1"),
-        stop_pips=Decimal("10"),
-        hyperopt_loss="ProfitDrawDownHyperOptLoss",
-        strategy_class="PredictionThresholdStrategy",
-        freqai_config=freqai_config,
-        optimize_strategy=False,
-        approved_strategy_parameters={"entry_limit": 0.0003},
-        approved_minimal_roi={"0": 0.02, "45": 0.005, "120": 0.0},
-    )
-    assert backtest_path.is_file()
-    assert backtest_weights == weights_path
-    assert backtest_report["backtest_window"] == "out_of_sample"
-    assert backtest_report["strategy_parameters"] == {"entry_limit": 0.0003}
-    assert backtest_report["minimal_roi"] == {
-        "0": 0.02,
-        "45": 0.005,
-        "120": 0.0,
-    }
-    assert "_backtest_result" in backtest_report
-
-
 @pytest.mark.asyncio
 async def test_dry_run_gateway_never_calls_oanda() -> None:
     client = AsyncMock()
@@ -2688,220 +2303,6 @@ def test_read_only_api_returns_paper_report(tmp_path) -> None:
     assert response.json()["trades"][0]["instrument"] == "EUR_USD"
     assert trades.status_code == 200
     assert len(trades.json()) == 1
-
-
-def test_ai_review_workflow_is_exposed_and_approvable(tmp_path, monkeypatch) -> None:
-    config_path = tmp_path / "config.json"
-    monkeypatch.setenv("OANDA_CONFIG_PATH", str(config_path))
-    with TestClient(create_app(tmp_path / "review.sqlite")) as client:
-        initial = client.get("/api/v1/ai/review")
-        updated = client.post(
-            "/api/v1/ai/review",
-            json={"status": "approved", "notes": "Approved in Practice-safe dry-run mode."},
-            headers=_auth_headers(client),
-        )
-
-    assert initial.status_code == 200
-    assert initial.json()["status"] == "pending"
-    assert updated.status_code == 200
-    assert updated.json()["status"] == "approved"
-    assert "Practice-safe" in updated.json()["notes"]
-    runtime_config = json.loads(config_path.read_text(encoding="utf-8"))
-    assert runtime_config["pair_strategies"]["EUR_USD"] == "ForexAIStrategyBaseline"
-    assert runtime_config["pair_timeframes"]["EUR_USD"] == "5m"
-
-
-def test_ai_review_is_scoped_by_pair_and_timeframe(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("OANDA_CONFIG_PATH", str(tmp_path / "config.json"))
-    with TestClient(create_app(tmp_path / "scoped-review.sqlite")) as client:
-        eur = client.post(
-            "/api/v1/ai/review",
-            json={"status": "approved", "pair": "EUR/USD", "timeframe": "M5", "notes": "EUR M5 approved"},
-            headers=_auth_headers(client),
-        )
-        gbp = client.post(
-            "/api/v1/ai/review",
-            json={"status": "rejected", "pair": "GBP/USD", "timeframe": "H1", "notes": "GBP H1 rejected"},
-            headers=_auth_headers(client),
-        )
-        eur_read = client.get("/api/v1/ai/review?pair=EUR%2FUSD&timeframe=M5")
-        gbp_read = client.get("/api/v1/ai/review?pair=GBP%2FUSD&timeframe=H1")
-
-    assert eur.status_code == 200
-    assert gbp.status_code == 200
-    assert eur_read.json()["status"] == "approved"
-    assert eur_read.json()["pair"] == "EUR/USD"
-    assert gbp_read.json()["status"] == "rejected"
-    assert gbp_read.json()["timeframe"] == "H1"
-
-
-def test_rejecting_approval_revokes_runtime_pair_scope(tmp_path, monkeypatch) -> None:
-    config_path = tmp_path / "config.json"
-    monkeypatch.setenv("OANDA_CONFIG_PATH", str(config_path))
-    with TestClient(create_app(tmp_path / "revoke-review.sqlite")) as client:
-        approved = client.post(
-            "/api/v1/ai/review",
-            json={"status": "approved", "pair": "EUR/USD", "timeframe": "M5"},
-            headers=_auth_headers(client),
-        )
-        rejected = client.post(
-            "/api/v1/ai/review",
-            json={"status": "rejected", "pair": "EUR/USD", "timeframe": "M5"},
-            headers=_auth_headers(client),
-        )
-
-    assert approved.status_code == 200
-    assert rejected.status_code == 200
-    runtime_config = json.loads(config_path.read_text(encoding="utf-8"))
-    assert "EUR_USD" not in runtime_config["pair_strategies"]
-    assert "EUR_USD" not in runtime_config["pair_timeframes"]
-
-
-def test_ai_scope_review_survives_api_restart(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("OANDA_CONFIG_PATH", str(tmp_path / "config.json"))
-    database = tmp_path / "persistent-review.sqlite"
-    with TestClient(create_app(database)) as client:
-        response = client.post(
-            "/api/v1/ai/review",
-            json={"status": "approved", "pair": "EUR/USD", "timeframe": "M5", "notes": "persisted"},
-            headers=_auth_headers(client),
-        )
-        assert response.status_code == 200
-
-    with TestClient(create_app(database)) as restarted_client:
-        restored = restarted_client.get("/api/v1/ai/review?pair=EUR%2FUSD&timeframe=M5")
-
-    assert restored.status_code == 200
-    assert restored.json()["status"] == "approved"
-    assert restored.json()["notes"] == "persisted"
-
-
-def test_approval_restores_exact_hyperopt_report_after_restart(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("OANDA_CONFIG_PATH", str(tmp_path / "config.json"))
-    database = tmp_path / "hyperopt-report.sqlite"
-    report = {
-        "pair": "GBP/USD",
-        "timeframe": "H1",
-        "status": "completed",
-        "historyMode": "candles",
-        "historyValue": 500,
-        "attemptsRequested": 30,
-        "bestParameters": {"entryThreshold": "0.25", "maxSpreadPct": "0.4"},
-        "bestMinimalRoi": {"0": 0.015, "30": 0.005, "90": 0.0},
-        "roiParameters": {
-            "roi_t1": 60,
-            "roi_t2": 20,
-            "roi_t3": 10,
-            "roi_p1": 0.005,
-            "roi_p2": 0.005,
-            "roi_p3": 0.005,
-        },
-        "objective": "12.50",
-        "dataHash": "data-hash",
-        "featureSchemaHash": "feature-hash",
-        "modelVersion": "baseline-v1",
-        "hyperoptLoss": "OnlyProfitHyperOptLoss",
-    }
-    connection = sqlite3.connect(database)
-    connection.execute("CREATE TABLE ai_hyperopt_reports (pair TEXT PRIMARY KEY, completed_at TEXT NOT NULL, report_json TEXT NOT NULL)")
-    connection.execute("INSERT INTO ai_hyperopt_reports VALUES (?, ?, ?)", ("GBP/USD", "2026-09-22T10:00:00+00:00", json.dumps(report)))
-    connection.commit()
-    connection.close()
-
-    with TestClient(create_app(database)) as client:
-        response = client.post(
-            "/api/v1/ai/review",
-            json={"status": "approved", "pair": "GBP/USD", "timeframe": "H1", "requireOptimization": True},
-            headers=_auth_headers(client),
-        )
-
-    assert response.status_code == 200
-    approved = response.json()["approvedRevision"]
-    assert approved["timeframe"] == "H1"
-    assert approved["hyperopt"]["entryThreshold"] == "0.25"
-    assert approved["hyperopt"]["maxSpreadPct"] == "0.4"
-    assert approved["hyperopt"]["minimal_roi"] == {
-        "0": 0.015,
-        "30": 0.005,
-        "90": 0.0,
-    }
-    assert approved["hyperopt"]["roi_parameters"]["roi_t1"] == 60
-    runtime_config = json.loads((tmp_path / "config.json").read_text())
-    assert runtime_config["pair_timeframes"]["GBP_USD"] == "1h"
-    assert runtime_config["pair_strategies"]["GBP_USD"] == "ForexAIStrategyBaseline"
-    saved_revision = runtime_config["pair_approved_revisions"]["GBP_USD"]
-    assert saved_revision == approved
-    assert saved_revision["hyperopt"]["minimal_roi"] == {
-        "0": 0.015,
-        "30": 0.005,
-        "90": 0.0,
-    }
-
-
-def test_signal_endpoints_reject_unapproved_pair_timeframes(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("OANDA_CONFIG_PATH", str(tmp_path / "config.json"))
-    with TestClient(create_app(tmp_path / "unapproved.sqlite")) as client:
-        signals = client.get("/api/v1/ai/signals?pair=EUR%2FUSD&timeframe=M5")
-        chart = client.get(
-            "/api/v1/orders/chart?pair=EUR%2FUSD&timeframe=H4&count=100"
-        )
-
-    assert signals.status_code == 409
-    assert chart.status_code == 409
-
-
-def test_hyperopt_scheduler_requires_approved_pairs_and_staggers_all_pairs(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("OANDA_CONFIG_PATH", str(tmp_path / "config.json"))
-    with TestClient(create_app(tmp_path / "scheduler.sqlite")) as client:
-        blocked = client.post(
-            "/api/v1/ai/hyperopt/scheduler",
-            json={"enabled": True, "intervalMinutes": 60, "pairs": ["EUR/USD"]},
-            headers=_auth_headers(client),
-        )
-        approved_pairs = []
-        pair_timeframes = {}
-        for pair, timeframe in (("EUR/USD", "M5"), ("GBP/USD", "H1"), ("USD/JPY", "M15")):
-            config = client.get(f"/api/v1/ai/config?pair={pair.replace('/', '%2F')}").json()
-            if timeframe != config["timeframe"]:
-                config["timeframe"] = timeframe
-                configured = client.post(
-                    f"/api/v1/ai/config?pair={pair.replace('/', '%2F')}",
-                    json=config,
-                    headers=_auth_headers(client, "admin"),
-                )
-                assert configured.status_code == 200
-            response = client.post(
-                "/api/v1/ai/review",
-                    json={"status": "approved", "pair": pair, "timeframe": timeframe, "requireOptimization": True, "notes": "approved"},
-                headers=_auth_headers(client),
-            )
-            assert response.status_code == 200
-            approved_pairs.append(pair)
-            pair_timeframes[pair] = timeframe
-        configured = client.post(
-            "/api/v1/ai/hyperopt/scheduler",
-            json={
-                "enabled": True,
-                "intervalDays": 2,
-                "gapMinutes": 120,
-                "pairs": approved_pairs,
-                "pairStrategies": {pair: "ForexAIStrategyBaseline" for pair in approved_pairs},
-                "pairTimeframes": pair_timeframes,
-            },
-            headers=_auth_headers(client),
-        )
-
-    assert blocked.status_code == 409
-    assert configured.status_code == 200
-    assert configured.json()["pairTimeframes"] == pair_timeframes
-    assert configured.json()["pairs"] == approved_pairs
-    assert configured.json()["approvedPairs"] == approved_pairs
-    next_runs = configured.json()["nextRuns"]
-    assert list(next_runs) == approved_pairs
-    assert (datetime.fromisoformat(next_runs[approved_pairs[1]]) - datetime.fromisoformat(next_runs[approved_pairs[0]])).total_seconds() == 7200
-    assert (datetime.fromisoformat(next_runs[approved_pairs[2]]) - datetime.fromisoformat(next_runs[approved_pairs[1]])).total_seconds() == 7200
-
-
 def test_backtest_api_runs_real_backtest_and_persists_history(monkeypatch, tmp_path) -> None:
     class DummyPrice:
         instrument = "EUR_USD"
@@ -3013,7 +2414,7 @@ def test_backtest_api_runs_real_backtest_and_persists_history(monkeypatch, tmp_p
     assert second_strategy.status_code == 200, second_strategy.text
     assert second_strategy.json()["strategy"] == "ForexEmaStrategy"
     assert history.status_code == 200
-    assert {item["strategy"] for item in history.json()} == {"ForexAIStrategyBaseline", "ForexEmaStrategy"}
+    assert {item["strategy"] for item in history.json()} == {"ForexMasterStrategy", "ForexEmaStrategy"}
 
 
 def test_dashboard_and_setup_serve_react_ui_when_built(tmp_path) -> None:
@@ -3102,445 +2503,6 @@ def test_strategy_adapter_matches_freqtrade_native_contract() -> None:
     assert bool(entry.iloc[-1]["enter_long"]) is True
     assert bool(exit_df.iloc[-1]["exit_long"]) is False
     assert adapter.timeframe == "5m"
-
-
-def test_ai_baseline_strategy_uses_safe_freqai_features_and_dry_run_mode() -> None:
-    from freqtrade.forex.ai_strategy import ForexAIStrategyBaseline
-
-    strategy = ForexAIStrategyBaseline({"forex_ai_label_period": 2, "forex_ai_model": "hybrid"})
-    frame = pd.DataFrame(
-        {
-            "date": [f"2026-09-15T00:{minute:02d}:00Z" for minute in range(0, 8)],
-            "open": [1.10, 1.11, 1.10, 1.12, 1.13, 1.12, 1.14, 1.15],
-            "high": [1.12, 1.12, 1.12, 1.13, 1.14, 1.13, 1.15, 1.16],
-            "low": [1.09, 1.10, 1.09, 1.11, 1.12, 1.11, 1.13, 1.14],
-            "close": [1.10, 1.11, 1.10, 1.12, 1.13, 1.12, 1.14, 1.15],
-        }
-    )
-
-    populated = strategy.populate_indicators(frame.copy(), {"pair": "EUR/USD"})
-    entry = strategy.populate_entry_trend(populated.copy(), {"pair": "EUR/USD"})
-    exit_df = strategy.populate_exit_trend(populated.copy(), {"pair": "EUR/USD"})
-
-    assert strategy.model == "hybrid"
-    assert strategy.execution_mode == "dry-run"
-    assert {"spread_pct", "volatility_5", "atr_14", "session_hour", "signal_strength"}.issubset(populated.columns)
-    assert "enter_long" in entry.columns and "enter_short" in entry.columns
-    assert "exit_long" in exit_df.columns and "exit_short" in exit_df.columns
-
-
-def test_ai_baseline_signal_trace_reports_features_and_spread_block() -> None:
-    from freqtrade.forex.ai_strategy import ForexAIStrategyBaseline
-
-    frame = pd.DataFrame(
-        {
-            "date": pd.date_range("2026-09-15", periods=8, freq="5min", tz="UTC"),
-            "open": [1.10] * 8,
-            "high": [1.20] * 8,
-            "low": [1.00] * 8,
-            "close": [1.10] * 8,
-        }
-    )
-    trace = ForexAIStrategyBaseline({"forex_ai_max_spread_pct": "0.1"}).signal_trace(frame)
-
-    assert trace["signal"] == "flat"
-    assert trace["reason"] == "blocked_spread_limit"
-    assert {"signalStrength", "spreadPct", "volatility", "atr", "sessionHour", "features"} <= trace.keys()
-
-
-def test_ai_model_revision_contract_requires_accepted_evaluation() -> None:
-    from freqtrade.forex.ai_models import ModelArtifact, ModelEvaluation, ModelRevision, ModelSpec
-
-    spec = ModelSpec("lightgbm_regressor", "lgbm-v1", "EUR/USD", "M5", "future_return", "features-hash", 7)
-    artifact = ModelArtifact.create(
-        artifact_id="artifact-1",
-        artifact_payload=b"model-bytes",
-        training_data_hash="data-hash",
-        training_start="2026-01-01T00:00:00Z",
-        training_end="2026-01-31T00:00:00Z",
-    )
-    rejected = ModelRevision("revision-1", spec, artifact, ModelEvaluation({}, {}, {}, {}, False, ("oos_failed",)))
-    with pytest.raises(ValueError, match="failed evaluation"):
-        rejected.approve("operator")
-
-    accepted = ModelRevision("revision-2", spec, artifact, ModelEvaluation({}, {}, {}, {}, True))
-    approved = accepted.approve("operator")
-    assert approved.approved is True
-    assert approved.approved_by == "operator"
-
-
-def test_forex_ai_dataset_manifest_is_reproducible_and_split() -> None:
-    from freqtrade.forex.ai_dataset import build_forex_ai_dataset
-
-    frame = pd.DataFrame(
-        {
-            "date": pd.date_range("2026-01-01", periods=40, freq="5min", tz="UTC"),
-            "open": [1 + index * 0.001 for index in range(40)],
-            "high": [1.001 + index * 0.001 for index in range(40)],
-            "low": [0.999 + index * 0.001 for index in range(40)],
-            "close": [1.0005 + index * 0.001 for index in range(40)],
-            "volume": [100] * 40,
-        }
-    )
-    dataset, manifest = build_forex_ai_dataset(frame, pair="EUR_USD", timeframe="M5", history_value=40)
-    _, repeated = build_forex_ai_dataset(frame, pair="EUR_USD", timeframe="M5", history_value=40)
-
-    assert manifest.pair == "EUR/USD"
-    assert manifest.train_rows + manifest.validation_rows + manifest.out_of_sample_rows == len(dataset)
-    assert manifest.training_data_hash == repeated.training_data_hash
-    assert manifest.feature_schema_hash == repeated.feature_schema_hash
-
-
-def test_lightgbm_research_model_stays_out_of_execution_path() -> None:
-    from freqtrade.forex.ai_dataset import build_forex_ai_dataset
-    from freqtrade.forex.ai_lgbm import LightGBMFutureReturnModel
-
-    frame = pd.DataFrame(
-        {
-            "date": pd.date_range("2026-01-01", periods=60, freq="5min", tz="UTC"),
-            "open": [1 + index * 0.001 for index in range(60)],
-            "high": [1.001 + index * 0.001 for index in range(60)],
-            "low": [0.999 + index * 0.001 for index in range(60)],
-            "close": [1.0005 + index * 0.001 for index in range(60)],
-            "volume": [100] * 60,
-        }
-    )
-    dataset, manifest = build_forex_ai_dataset(frame, pair="EUR_USD", timeframe="M5", history_value=60)
-    result = LightGBMFutureReturnModel(seed=7, estimators=10).fit_and_evaluate(dataset, manifest)
-
-    assert result.revision.spec.model_type == "lightgbm_regressor"
-    assert result.revision.spec.pair == "EUR/USD"
-    assert result.revision.approved is False
-    assert len(result.predictions) == manifest.out_of_sample_rows
-
-
-def test_robust_lightgbm_evaluates_two_pairs_and_two_periods() -> None:
-    from freqtrade.forex.ai_lgbm import run_robust_lightgbm
-
-    def make_frame(offset: float) -> pd.DataFrame:
-        close = [1 + offset + index * 0.001 for index in range(50)]
-        return pd.DataFrame({
-            "date": pd.date_range("2026-01-01", periods=50, freq="5min", tz="UTC"),
-            "open": close,
-            "high": [value + 0.0005 for value in close],
-            "low": [value - 0.0005 for value in close],
-            "close": close,
-            "volume": [100] * 50,
-        })
-
-    result = run_robust_lightgbm(
-        {"EUR/USD": (make_frame(0), make_frame(0.01)), "GBP/USD": (make_frame(0.1), make_frame(0.11))},
-        timeframes={"EUR/USD": "M5", "GBP/USD": "M5"},
-        history_values={"EUR/USD": 50, "GBP/USD": 50},
-    )
-
-    assert result.pairs_tested == 2
-    assert result.periods_tested == 2
-    assert len(result.slices) == 4
-
-
-def test_lightgbm_return_confidence_calibration_is_bounded_and_oos_safe() -> None:
-    from freqtrade.forex.ai_lgbm import calibrate_return_confidence
-
-    calibration = calibrate_return_confidence(
-        pd.Series([0.01, -0.02, 0.03, -0.01, 0.02]),
-        [0.008, -0.01, 0.02, 0.005, 0.01],
-    )
-
-    assert calibration["samples"] == 5
-    assert 0 <= calibration["overallAccuracy"] <= 1
-    assert all(0 <= bucket["meanConfidence"] <= 1 for bucket in calibration["buckets"])
-    assert all(0 <= bucket["directionalAccuracy"] <= 1 for bucket in calibration["buckets"])
-
-
-def test_lightgbm_direction_classifier_is_research_only() -> None:
-    from freqtrade.forex.ai_dataset import build_forex_ai_dataset
-    from freqtrade.forex.ai_lgbm import LightGBMDirectionClassifier
-
-    close = [1 + (0.001 if index % 2 == 0 else -0.0005) * index for index in range(60)]
-    frame = pd.DataFrame({
-        "date": pd.date_range("2026-01-01", periods=60, freq="5min", tz="UTC"),
-        "open": close,
-        "high": [value + 0.0005 for value in close],
-        "low": [value - 0.0005 for value in close],
-        "close": close,
-        "volume": [100] * 60,
-    })
-    dataset, manifest = build_forex_ai_dataset(frame, pair="EUR_USD", timeframe="M5", history_value=60)
-    result = LightGBMDirectionClassifier(seed=7, estimators=10, neutral_band=0.00001).fit_and_evaluate(dataset, manifest)
-
-    assert result.class_labels == ("short", "flat", "long")
-    assert 0 <= result.out_of_sample_metrics["accuracy"] <= 1
-    assert 0 <= result.out_of_sample_metrics["f1Macro"] <= 1
-    assert result.accepted in {True, False}
-
-
-def test_research_models_are_compared_on_same_oos_split() -> None:
-    from freqtrade.forex.ai_dataset import build_forex_ai_dataset
-    from freqtrade.forex.ai_lgbm import compare_research_models
-
-    close = [1 + 0.001 * index for index in range(60)]
-    frame = pd.DataFrame({
-        "date": pd.date_range("2026-01-01", periods=60, freq="5min", tz="UTC"),
-        "open": close,
-        "high": [value + 0.0005 for value in close],
-        "low": [value - 0.0005 for value in close],
-        "close": close,
-        "volume": [100] * 60,
-    })
-    dataset, manifest = build_forex_ai_dataset(frame, pair="EUR_USD", timeframe="M5", history_value=60)
-    comparison = compare_research_models(dataset, manifest)
-
-    assert {"regressor", "classifier", "baseline", "dataHash", "featureSchemaHash"} <= comparison.keys()
-    assert comparison["regressor"]["model"] == "LightGBMRegressor"
-    assert comparison["classifier"]["classes"] == ["short", "flat", "long"]
-
-
-def test_run_ai_hyperopt_reports_progress_and_stops_cooperatively() -> None:
-    from freqtrade.forex.ai_hyperopt import run_ai_hyperopt
-    from freqtrade.forex.models import OandaInstrument
-
-    instrument = OandaInstrument(
-        name="EUR_USD",
-        display_name="EUR/USD",
-        pip_location=-4,
-        display_precision=5,
-        trade_units_precision=0,
-        minimum_trade_size=Decimal("1"),
-    )
-    close = [1.1 + 0.0001 * index for index in range(40)]
-    candles = pd.DataFrame({
-        "date": pd.date_range("2026-01-01", periods=40, freq="5min", tz="UTC"),
-        "open": close,
-        "high": [value + 0.0002 for value in close],
-        "low": [value - 0.0002 for value in close],
-        "close": close,
-        "volume": [100] * 40,
-    })
-
-    progress: list[tuple[int, int]] = []
-    result = run_ai_hyperopt(
-        candles,
-        instrument,
-        starting_balance=Decimal("10000"),
-        risk_fraction=Decimal("0.01"),
-        spread=Decimal("0.0001"),
-        entry_thresholds=(Decimal("0.1"), Decimal("0.2"), Decimal("0.3")),
-        max_spreads=(Decimal("1"),),
-        roi_random_seed=42,
-        on_attempt=lambda done, total: progress.append((done, total)),
-    )
-
-    assert progress == [(1, 3), (2, 3), (3, 3)]
-    assert result.candidates_tested == 3
-    assert all(candidate.minimal_roi for candidate in result.candidates)
-    assert all(candidate.minimal_roi != {"0": 10.0} for candidate in result.candidates)
-    assert all(candidate.roi_parameters for candidate in result.candidates)
-    assert len({
-        tuple(sorted(candidate.minimal_roi.items()))
-        for candidate in result.candidates
-    }) > 1
-    assert all(
-        candidate.roi_volatility_regime in {"low", "medium", "high"}
-        for candidate in result.candidates
-    )
-
-    stopped_progress: list[int] = []
-
-    def should_stop() -> bool:
-        return len(stopped_progress) >= 2
-
-    stopped_result = run_ai_hyperopt(
-        candles,
-        instrument,
-        starting_balance=Decimal("10000"),
-        risk_fraction=Decimal("0.01"),
-        spread=Decimal("0.0001"),
-        entry_thresholds=(Decimal("0.1"), Decimal("0.2"), Decimal("0.3")),
-        max_spreads=(Decimal("1"),),
-        on_attempt=lambda done, total: stopped_progress.append(done),
-        should_stop=should_stop,
-    )
-
-    assert stopped_result.candidates_tested == 2
-    assert all(candidate.minimal_roi for candidate in stopped_result.candidates)
-
-
-def test_run_ai_hyperopt_robust_stops_cooperatively_with_consistent_coverage() -> None:
-    from freqtrade.forex.ai_hyperopt import run_ai_hyperopt_robust
-    from freqtrade.forex.models import OandaInstrument
-
-    def make_instrument(name: str) -> OandaInstrument:
-        return OandaInstrument(name=name, display_name=name.replace("_", "/"), pip_location=-4, display_precision=5, trade_units_precision=0, minimum_trade_size=Decimal("1"))
-
-    def make_frame(offset: float) -> pd.DataFrame:
-        close = [1.1 + offset + 0.0001 * index for index in range(50)]
-        return pd.DataFrame({
-            "date": pd.date_range("2026-01-01", periods=50, freq="5min", tz="UTC"),
-            "open": close,
-            "high": [value + 0.0002 for value in close],
-            "low": [value - 0.0002 for value in close],
-            "close": close,
-            "volume": [100] * 50,
-        })
-
-    candles_by_pair = {"EUR_USD": make_frame(0), "GBP_USD": make_frame(0.05)}
-    instruments = {"EUR_USD": make_instrument("EUR_USD"), "GBP_USD": make_instrument("GBP_USD")}
-    spreads = {"EUR_USD": Decimal("0.0001"), "GBP_USD": Decimal("0.0001")}
-
-    call_count = {"n": 0}
-
-    def on_attempt(done: int, total: int) -> None:
-        call_count["n"] += 1
-
-    def should_stop() -> bool:
-        return call_count["n"] >= 3
-
-    candidates = run_ai_hyperopt_robust(
-        candles_by_pair,
-        instruments,
-        starting_balance=Decimal("10000"),
-        risk_fraction=Decimal("0.01"),
-        spreads=spreads,
-        max_attempts=3,
-        on_attempt=on_attempt,
-        should_stop=should_stop,
-    )
-
-    assert candidates
-    assert all(int(row["coverage"]) == 1 for row in candidates)
-
-
-def test_hyperopt_loss_functions_are_computed_and_change_ranking() -> None:
-    from freqtrade.forex.ai_hyperopt import HYPEROPT_LOSS_FUNCTIONS, compute_hyperopt_objective, run_ai_hyperopt
-    from freqtrade.forex.models import OandaInstrument
-
-    instrument = OandaInstrument(
-        name="EUR_USD",
-        display_name="EUR/USD",
-        pip_location=-4,
-        display_precision=5,
-        trade_units_precision=0,
-        minimum_trade_size=Decimal("1"),
-    )
-    close = [1.1 + 0.0002 * index for index in range(60)]
-    candles = pd.DataFrame({
-        "date": pd.date_range("2026-01-01", periods=60, freq="5min", tz="UTC"),
-        "open": close,
-        "high": [value + 0.0003 for value in close],
-        "low": [value - 0.0003 for value in close],
-        "close": close,
-        "volume": [100] * 60,
-    })
-
-    for loss_name in HYPEROPT_LOSS_FUNCTIONS:
-        result = run_ai_hyperopt(
-            candles,
-            instrument,
-            starting_balance=Decimal("10000"),
-            risk_fraction=Decimal("0.01"),
-            spread=Decimal("0.0001"),
-            entry_thresholds=(Decimal("0.1"), Decimal("0.2")),
-            max_spreads=(Decimal("1"),),
-            hyperopt_loss=loss_name,
-        )
-        assert result.candidates_tested == 2
-        # objective on the best candidate must equal a fresh recomputation for the same loss.
-        recomputed = compute_hyperopt_objective(result.best.validation_result, loss_name)
-        assert recomputed == result.best.objective
-
-    with pytest.raises(ValueError):
-        run_ai_hyperopt(
-            candles,
-            instrument,
-            starting_balance=Decimal("10000"),
-            risk_fraction=Decimal("0.01"),
-            spread=Decimal("0.0001"),
-            entry_thresholds=(Decimal("0.1"),),
-            max_spreads=(Decimal("1"),),
-            hyperopt_loss="NotARealLoss",
-        )
-
-
-def test_freqai_indicator_periods_and_shifted_candles_change_feature_schema() -> None:
-    from freqtrade.forex.ai_dataset import build_forex_ai_dataset
-
-    close = [1 + 0.001 * index for index in range(60)]
-    frame = pd.DataFrame({
-        "date": pd.date_range("2026-01-01", periods=60, freq="5min", tz="UTC"),
-        "open": close,
-        "high": [value + 0.0005 for value in close],
-        "low": [value - 0.0005 for value in close],
-        "close": close,
-        "volume": [100] * 60,
-    })
-    default_dataset, default_manifest = build_forex_ai_dataset(frame, pair="EUR_USD", timeframe="M5", history_value=60)
-    custom_dataset, custom_manifest = build_forex_ai_dataset(
-        frame,
-        pair="EUR_USD",
-        timeframe="M5",
-        history_value=60,
-        indicator_periods=(10, 20, 50),
-        include_shifted_candles=3,
-    )
-
-    assert {"atr_10", "atr_20", "atr_50", "volatility_10", "volatility_20", "volatility_50"}.issubset(custom_dataset.columns)
-    assert {"shift_return_1", "shift_return_2", "shift_return_3"}.issubset(custom_dataset.columns)
-    assert custom_manifest.feature_schema_hash != default_manifest.feature_schema_hash
-    assert custom_manifest.indicator_periods == (10, 20, 50)
-    assert custom_manifest.include_shifted_candles == 3
-
-
-def test_freqai_train_and_backtest_period_days_control_the_split() -> None:
-    from freqtrade.forex.ai_dataset import build_forex_ai_dataset
-
-    close = [1 + 0.0005 * index for index in range(400)]
-    frame = pd.DataFrame({
-        "date": pd.date_range("2026-01-01", periods=400, freq="5min", tz="UTC"),
-        "open": close,
-        "high": [value + 0.0002 for value in close],
-        "low": [value - 0.0002 for value in close],
-        "close": close,
-        "volume": [100] * 400,
-    })
-    _, manifest = build_forex_ai_dataset(
-        frame,
-        pair="EUR_USD",
-        timeframe="M5",
-        history_value=400,
-        train_period_days=1,
-        backtest_period_days=1,
-    )
-
-    assert manifest.train_period_days == 1
-    assert manifest.backtest_period_days == 1
-    assert manifest.train_rows == 288
-    assert manifest.validation_rows == 109
-    assert manifest.out_of_sample_rows == 1
-
-
-def test_freqai_weight_factor_and_di_threshold_are_applied_during_training() -> None:
-    from freqtrade.forex.ai_dataset import build_forex_ai_dataset
-    from freqtrade.forex.ai_lgbm import LightGBMFutureReturnModel
-
-    close = [1 + 0.001 * index for index in range(80)]
-    frame = pd.DataFrame({
-        "date": pd.date_range("2026-01-01", periods=80, freq="5min", tz="UTC"),
-        "open": close,
-        "high": [value + 0.0005 for value in close],
-        "low": [value - 0.0005 for value in close],
-        "close": close,
-        "volume": [100] * 80,
-    })
-    dataset, manifest = build_forex_ai_dataset(frame, pair="EUR_USD", timeframe="M5", history_value=80)
-    result = LightGBMFutureReturnModel(seed=7, estimators=10, weight_factor=0.1, di_threshold=0.01).fit_and_evaluate(dataset, manifest)
-
-    assert result.revision.evaluation.trading_metrics["weightFactor"] == 0.1
-    assert result.revision.evaluation.trading_metrics["diThreshold"] == 0.01
-    assert result.revision.evaluation.trading_metrics["diFilteredOosRows"] >= 0
-    assert len(result.predictions) == manifest.out_of_sample_rows
-
-
 def test_native_ema_strategy_is_loadable_and_configurable() -> None:
     strategy = ForexEmaStrategy(
         {
@@ -3676,50 +2638,6 @@ def test_forex_feature_pipeline_preserves_alignment_and_warmup() -> None:
 
     with pytest.raises(ValueError, match="preserve candle length"):
         ForexFeaturePipeline((lambda data: data.iloc[:-1],)).apply(frame)
-
-
-def test_forex_freqai_adapter_builds_schema_and_labels_without_leakage() -> None:
-    frame = pd.DataFrame(
-        {
-            "date": [f"2026-01-{day:02d}T00:00:00Z" for day in range(1, 8)],
-            "open": [1.1000, 1.1005, 1.1010, 1.1008, 1.1015, 1.1012, 1.1022],
-            "high": [1.1010, 1.1015, 1.1020, 1.1018, 1.1025, 1.1020, 1.1030],
-            "low": [1.0990, 1.0995, 1.1000, 1.0998, 1.1005, 1.1002, 1.1010],
-            "close": [1.1000, 1.1005, 1.1010, 1.1008, 1.1015, 1.1012, 1.1022],
-        }
-    )
-    adapter = ForexFreqAIAdapter(label_period=2)
-    dataset = adapter.build_dataset(frame)
-
-    assert "spread_points" in dataset.columns
-    assert "volatility_5" in dataset.columns
-    assert "atr_14" in dataset.columns
-    assert "session_hour" in dataset.columns
-    assert "label" in dataset.columns
-    assert dataset["label"].notna().sum() == len(frame) - adapter.label_period
-    assert dataset["label"].dropna().iloc[0] > 0
-
-
-def test_forex_freqai_research_and_backtest_must_complete_before_dry_run() -> None:
-    gate = ForexFreqAIExecutionGate()
-
-    with pytest.raises(ValueError, match="research.*backtest.*dry-run"):
-        gate.register("dry_run")
-
-    gate.register("research")
-    with pytest.raises(ValueError, match="research.*backtest.*dry-run"):
-        gate.register("dry_run")
-
-    gate.register("backtest")
-    gate.set_model_metadata(
-        model_version="v1",
-        feature_schema_hash="schema:abc",
-        training_data_hash="data:abc",
-    )
-    gate.register("dry_run")
-    assert gate.completed == ("research", "backtest", "dry_run")
-
-
 def test_native_ema_strategy_loads_through_strategy_resolver(default_conf) -> None:
     default_conf.update(
         {

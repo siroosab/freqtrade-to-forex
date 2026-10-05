@@ -10,8 +10,6 @@ from freqtrade.forex.api import (
     app,
     create_app,
     format_hyperopt_report,
-    freqai_history_config,
-    minimum_freqai_history,
 )
 from freqtrade.forex.models import OandaInstrument
 
@@ -36,33 +34,6 @@ def _auth_headers(test_client, role='operator'):
         'X-User-Role': role,
         'X-CSRF-Token': session['csrfToken'],
     }
-
-
-def test_freqai_minimum_history_uses_seven_days_and_feature_warmup():
-    default_freqai = {
-        'trainPeriodDays': 30,
-        'backtestPeriodDays': 7,
-        'featureParameters': {
-            'labelPeriodCandles': 2,
-            'indicatorPeriodsCandles': [5, 14],
-            'includeShiftedCandles': 0,
-        },
-    }
-
-    assert minimum_freqai_history(default_freqai, 'H1') == 168
-    assert minimum_freqai_history(default_freqai, 'M5') == 2016
-    assert minimum_freqai_history(
-        {**default_freqai, 'featureParameters': {'indicatorPeriodsCandles': [500]}},
-        'H1',
-    ) == 542
-    assert freqai_history_config(default_freqai, 'H1', 168) == {
-        **default_freqai,
-        'trainPeriodDays': 5,
-        'backtestPeriodDays': 2,
-    }
-    assert freqai_history_config(default_freqai, 'H1', 888) == default_freqai
-
-
 def test_account_summary_endpoint_exists():
     response = client.get('/api/v1/account/summary')
     assert response.status_code == 200, response.text
@@ -451,178 +422,6 @@ def test_risk_config_accepts_pips_for_post_trade_controls(tmp_path):
     assert response.json()['stopLossMode'] == 'pips'
     assert response.json()['takeProfitMode'] == 'pips'
     assert response.json()['averageEntryMode'] == 'pips'
-
-
-def test_orders_chart_accepts_supported_timeframe_and_requested_count(monkeypatch):
-    calls = []
-
-    class FakeCandle:
-        time = '2026-09-18T09:00:00Z'
-        open = high = low = close = '1.08'
-
-    class FakeClient:
-        def __init__(self, token, account_id, environment):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, traceback):
-            return None
-
-        async def get_candles(self, instrument, granularity, *, count):
-            calls.append((granularity, count))
-            return [FakeCandle()]
-
-        async def get_open_trades(self):
-            return [{
-                'id': 'manual-chart-trade', 'instrument': 'EUR_USD', 'currentUnits': '1000',
-                'initialUnits': '1000',
-                'price': '1.0800', 'openTime': FakeCandle.time, 'unrealizedPL': '2.00',
-                'tradeClientExtensions': {'id': 'manual-ui-chart'},
-            }]
-
-        async def get_closed_trades(self, *, count=100):
-            return [{
-                'id': 'closed-chart-trade', 'instrument': 'EUR_USD', 'currentUnits': '0',
-                'initialUnits': '-500',
-                'price': '1.0800', 'averageClosePrice': '1.0810', 'openTime': FakeCandle.time,
-                'closeTime': FakeCandle.time, 'realizedPL': '0.50',
-            }]
-
-    class FakeStrategy:
-        def __init__(self, config):
-            pass
-
-        def signal_trace(self, window):
-            return {'signal': 'flat'}
-
-    monkeypatch.setattr('freqtrade.forex.api.OandaClient', FakeClient)
-    settings = type(
-        'Settings', (), {'token': 'token', 'account_id': 'account', 'environment': 'practice'}
-    )()
-    monkeypatch.setattr('freqtrade.forex.api.OandaSettings.from_environment', lambda: settings)
-    monkeypatch.setattr('freqtrade.forex.api.ForexAIStrategyBaseline', FakeStrategy)
-
-    configured = client.post(
-        '/api/v1/ai/config?pair=EUR%2FUSD',
-        json={'timeframe': 'H1', 'strategyClass': 'ForexAIStrategyBaseline'},
-        headers=_auth_headers(client),
-    )
-    approved = client.post(
-        '/api/v1/ai/review',
-        json={
-            'status': 'approved',
-            'pair': 'EUR/USD',
-            'timeframe': 'H1',
-            'strategyClass': 'ForexAIStrategyBaseline',
-        },
-        headers=_auth_headers(client),
-    )
-    response = client.get('/api/v1/orders/chart?pair=EUR%2FUSD&timeframe=H4&count=1000')
-    repeated_response = client.get('/api/v1/orders/chart?pair=EUR%2FUSD&timeframe=H4&count=1000')
-
-    assert configured.status_code == 200, configured.text
-    assert approved.status_code == 200, approved.text
-    assert response.status_code == 200, response.text
-    assert response.json()['timeframe'] == 'H4'
-    chart_trades = response.json()['trades']
-    assert len(chart_trades) == 3
-    manual_entry = next(trade for trade in chart_trades if trade['markerType'] == 'entry')
-    assert manual_entry['source'] == 'manual'
-    assert {trade['markerType'] for trade in chart_trades} == {'entry', 'exit'}
-    assert repeated_response.status_code == 200
-    assert calls[0] == ('H4', 1000)
-    assert calls[1][1] == 4000
-    assert len(calls) == 2
-
-
-def test_orders_chart_uses_approved_strategy_and_timeframe_after_config_change(tmp_path, monkeypatch):
-    calls = []
-    strategy_loads = []
-    config_path = tmp_path / 'runtime-config.json'
-    monkeypatch.setenv('OANDA_CONFIG_PATH', str(config_path))
-
-    class FakeCandle:
-        time = '2026-09-18T09:00:00Z'
-        open = high = low = close = '1.08'
-
-    class FakeClient:
-        def __init__(self, token, account_id, environment):
-            pass
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, traceback):
-            return None
-
-        async def get_candles(self, instrument, granularity, *, count):
-            calls.append((granularity, count))
-            return [FakeCandle()]
-
-        async def get_open_trades(self):
-            return []
-
-        async def get_closed_trades(self, *, count=100):
-            return []
-
-    class FakeStrategy:
-        timeframe = '1h'
-        _ft_informative = ()
-
-    class FakeAdapter:
-        def __init__(self, strategy, pair, informative_candles=None):
-            pass
-
-        def signal(self, candles):
-            return type('Signal', (), {'value': 'flat'})()
-
-    monkeypatch.setattr('freqtrade.forex.api.OandaClient', FakeClient)
-    monkeypatch.setattr('freqtrade.forex.api.OandaSettings.from_environment', lambda: type(
-        'Settings', (), {'token': 'token', 'account_id': 'account', 'environment': 'practice'}
-    )())
-    monkeypatch.setattr('freqtrade.forex.api.discover_strategy_files', lambda: [
-        type('StrategyFile', (), {'name': name})()
-        for name in ('ForexAIStrategyBaseline', 'FakeApprovedStrategy')
-    ])
-    monkeypatch.setattr('freqtrade.forex.api.load_strategy', lambda name, timeframe, pair, **kwargs: (
-        strategy_loads.append((name, timeframe, pair)) or FakeStrategy()
-    ))
-    monkeypatch.setattr('freqtrade.forex.api.FreqtradeStrategyAdapter', FakeAdapter)
-
-    with TestClient(create_app(tmp_path / 'approved-chart.sqlite')) as scoped_client:
-        configured = scoped_client.post(
-            '/api/v1/ai/config?pair=EUR%2FUSD',
-            json={'timeframe': 'H1', 'strategyClass': 'FakeApprovedStrategy'},
-            headers=_auth_headers(scoped_client),
-        )
-        approved = scoped_client.post(
-            '/api/v1/ai/review',
-            json={'status': 'approved', 'pair': 'EUR/USD', 'timeframe': 'H1', 'strategyClass': 'FakeApprovedStrategy'},
-            headers=_auth_headers(scoped_client),
-        )
-        changed = scoped_client.post(
-            '/api/v1/ai/config?pair=EUR%2FUSD',
-            json={'timeframe': 'M5', 'strategyClass': 'ForexAIStrategyBaseline'},
-            headers=_auth_headers(scoped_client),
-        )
-        chart = scoped_client.get('/api/v1/orders/chart?pair=EUR%2FUSD&timeframe=H4&count=120')
-
-    assert configured.status_code == 200
-    assert approved.status_code == 200
-    assert changed.status_code == 200
-    assert chart.status_code == 200, chart.text
-    payload = chart.json()
-    assert payload['approvedStrategy'] == 'FakeApprovedStrategy'
-    assert payload['approvedTimeframe'] == 'H1'
-    assert ('FakeApprovedStrategy', '1h', 'EUR/USD') in strategy_loads
-    assert ('H1', 480) in calls
-    runtime_config = json.loads(config_path.read_text(encoding='utf-8'))
-    assert runtime_config['pair_strategies']['EUR_USD'] == 'FakeApprovedStrategy'
-    assert runtime_config['pair_timeframes']['EUR_USD'] == '1h'
-
-
 def test_websocket_market_channel_connects():
     with client.websocket_connect('/ws/market') as websocket:
         message = websocket.receive_json()
@@ -633,6 +432,144 @@ def test_websocket_market_channel_connects():
         assert 'instruments' in message['data']
 
 
+def test_hyperopt_approval_flows_into_chart_strategy(tmp_path, monkeypatch):
+    from datetime import timezone
+    from types import SimpleNamespace
+
+    database_path = tmp_path / 'hyperopt-approval.sqlite'
+
+    class FakeCandle:
+        def __init__(self, index):
+            self.time = (
+                datetime(2026, 1, 1, tzinfo=timezone.utc)
+                + timedelta(minutes=15 * index)
+            ).isoformat()
+            self.open = str(1.1 + index * 0.00001)
+            self.high = str(1.101 + index * 0.00001)
+            self.low = str(1.099 + index * 0.00001)
+            self.close = str(1.1 + index * 0.00001)
+            self.volume = 100
+
+    class FakeClient:
+        def __init__(self, token, account_id, environment):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+        async def get_account_summary(self):
+            return SimpleNamespace(balance=Decimal('10000'))
+
+        async def get_instruments(self, instruments):
+            return [OandaInstrument(
+                name='EUR_USD',
+                display_name='EUR/USD',
+                pip_location=-4,
+                display_precision=5,
+                trade_units_precision=0,
+                minimum_trade_size=Decimal('1'),
+            )]
+
+        async def get_prices(self, instruments):
+            return [SimpleNamespace(spread=Decimal('0.0001'))]
+
+        async def get_candles(self, instrument, granularity, *, count):
+            return [FakeCandle(index) for index in range(100)]
+
+        async def get_open_trades(self):
+            return []
+
+        async def get_closed_trades(self, *, count=100):
+            return []
+
+    class FakeAdapter:
+        def __init__(self, strategy, pair, informative_candles=None):
+            pass
+
+        def signal(self, candles):
+            return type('Signal', (), {'value': 'flat'})()
+
+    def fake_hyperopt(*args, **kwargs):
+        return [{
+            'parameters': {'band_length': 20},
+            'minimal_roi': {'0': 0.01},
+            'roi_parameters': {},
+            'objective': '1.0',
+            'trainNetPl': '0.5',
+            'trainDrawdown': '0.1',
+            'trainTrades': 2,
+            'validationNetPl': '0.4',
+            'validationDrawdown': '0.1',
+            'validationTrades': 1,
+        }]
+
+    monkeypatch.setenv('OANDA_CONFIG_PATH', str(tmp_path / 'runtime-config.json'))
+    monkeypatch.setattr('freqtrade.forex.api.OandaClient', FakeClient)
+    monkeypatch.setattr(
+        'freqtrade.forex.api.OandaSettings.from_environment',
+        lambda: SimpleNamespace(
+            token='token',
+            account_id='account',
+            environment='practice',
+            execution_mode='dry_run',
+            risk_fraction='0.01',
+        ),
+    )
+    monkeypatch.setattr('freqtrade.forex.api.run_strategy_hyperopt', fake_hyperopt)
+    monkeypatch.setattr('freqtrade.forex.api.FreqtradeStrategyAdapter', FakeAdapter)
+
+    with TestClient(create_app(database_path)) as scoped_client:
+        headers = _auth_headers(scoped_client)
+        started = scoped_client.post(
+            '/api/v1/hyperopt/start',
+            headers=headers,
+            json={
+                'pair': 'EUR/USD',
+                'timeframe': 'M15',
+                'strategyClass': 'ForexMasterStrategy',
+                'historyMode': 'candles',
+                'historyValue': 100,
+                'attempts': 1,
+            },
+        )
+        assert started.status_code == 200, started.text
+
+        status_url = (
+            '/api/v1/hyperopt/status?pair=EUR%2FUSD'
+            '&strategy_class=ForexMasterStrategy&timeframe=M15'
+        )
+        for _ in range(100):
+            status = scoped_client.get(status_url).json()
+            if status.get('status') != 'running':
+                break
+            time.sleep(0.01)
+        assert status.get('status') == 'completed', status
+
+        approved = scoped_client.post(
+            '/api/v1/strategy/review',
+            headers=headers,
+            json={
+                'status': 'approved',
+                'pair': 'EUR/USD',
+                'timeframe': 'M15',
+                'strategyClass': 'ForexMasterStrategy',
+                'requireOptimization': True,
+            },
+        )
+        chart = scoped_client.get(
+            '/api/v1/orders/chart?pair=EUR%2FUSD&timeframe=H4&count=120'
+        )
+
+    assert approved.status_code == 200, approved.text
+    assert approved.json()['approvedRevision']['hyperopt']['parameters'] == {
+        'band_length': 20,
+    }
+    assert chart.status_code == 200, chart.text
+    assert chart.json()['approvedStrategy'] == 'ForexMasterStrategy'
+    assert chart.json()['approvedTimeframe'] == 'M15'
 def test_cors_allows_vite_frontend_origin():
     response = client.options(
         '/api/v1/account/summary',
@@ -660,12 +597,8 @@ def test_app_starts_without_built_ui_assets(tmp_path, monkeypatch):
     assert created.state.ui_assets_available is False
 
 
-def test_backtest_run_preserves_cache_and_uses_requested_candles(monkeypatch):
-    clear_calls = []
+def test_backtest_run_uses_requested_candles(monkeypatch):
     download_requests = []
-
-    def fake_clear(pair: str, timeframe: str):
-        clear_calls.append((pair, timeframe))
 
     class FakeResult:
         net_pl = Decimal('123.45')
@@ -712,7 +645,6 @@ def test_backtest_run_preserves_cache_and_uses_requested_candles(monkeypatch):
         def run(self, frame, **kwargs):
             return FakeResult()
 
-    monkeypatch.setattr('freqtrade.forex.api._clear_cached_historical_data', fake_clear)
     monkeypatch.setattr('freqtrade.forex.api.OandaClient', FakeClient)
     monkeypatch.setattr('freqtrade.forex.api.OandaSettings.from_environment', lambda: type('Settings', (), {'token': 't', 'account_id': 'a', 'environment': type('Env', (), {'value': 'practice'})(), 'execution_mode': 'practice', 'risk_fraction': '0.01'})())
     monkeypatch.setattr('freqtrade.forex.api.ForexBacktester', FakeBacktester)
@@ -729,203 +661,11 @@ def test_backtest_run_preserves_cache_and_uses_requested_candles(monkeypatch):
 
     assert response.status_code == 200, response.text
     payload = response.json()
-    assert clear_calls == []
     assert download_requests[0] == ('EUR_USD', 'M5', 1234)
     assert payload['steps'] == 2
     assert 'OANDA returned 2' in payload['message']
-
-
-def test_hyperopt_start_preserves_cache_and_uses_requested_days(monkeypatch):
-    clear_calls = []
-    download_requests = []
-
-    def fake_clear(pair: str, timeframe: str):
-        clear_calls.append((pair, timeframe))
-
-    class FakeClient:
-        def __init__(self, token, account_id, environment, **kwargs):
-            self.token = token
-            self.account_id = account_id
-            self.environment = environment
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return None
-
-        async def get_account_summary(self):
-            return type('Account', (), {'balance': '10000'})()
-
-        async def get_instruments(self, instruments):
-            return [type('Instrument', (), {'name': 'EUR_USD'})()]
-
-        async def get_candles(self, instrument, granularity, count=None, **kwargs):
-            download_requests.append((instrument, granularity, count))
-            return [
-                type('Candle', (), {'time': '2024-01-01T00:00:00Z', 'complete': True, 'open': '1.0', 'high': '1.1', 'low': '0.9', 'close': '1.05', 'volume': 1000})(),
-                type('Candle', (), {'time': '2024-01-01T00:05:00Z', 'complete': True, 'open': '1.05', 'high': '1.12', 'low': '1.0', 'close': '1.08', 'volume': 1000})(),
-            ]
-
-        async def get_prices(self, instruments):
-            return [type('Price', (), {'instrument': 'EUR_USD', 'spread': 0.0003})()]
-
-    class FakeCandidate:
-        def __init__(self):
-            self.entry_threshold = '0.7'
-            self.max_spread_pct = '0.8'
-            self.minimal_roi = {'0': 0.001, '30': 0.0005, '60': 0.0}
-            self.roi_parameters = {'roi_t1': 60, 'roi_p1': 0.0005}
-            self.roi_volatility_per_5m = 0.0002
-            self.roi_volatility_regime = 'medium'
-            self.objective = Decimal('1.2')
-            self.train_result = type(
-                'TrainResult',
-                (),
-                {'net_pl': Decimal('120.0'), 'trades': []},
-            )()
-            self.validation_result = type('ValidationResult', (), {'net_pl': Decimal('110.0'), 'max_drawdown': Decimal('20.0'), 'trades': []})()
-
-    def fake_hyperopt(*args, **kwargs):
-        return type('HyperoptResult', (), {'candidates': [FakeCandidate()]})()
-
-    monkeypatch.setattr('freqtrade.forex.api._clear_cached_historical_data', fake_clear)
-    monkeypatch.setattr('freqtrade.forex.api.OandaClient', FakeClient)
-    monkeypatch.setattr('freqtrade.forex.api.OandaSettings.from_environment', lambda: type('Settings', (), {'token': 't', 'account_id': 'a', 'environment': type('Env', (), {'value': 'practice'})(), 'execution_mode': 'practice', 'risk_fraction': '0.01'})())
-    monkeypatch.setattr('freqtrade.forex.ai_hyperopt.run_ai_hyperopt', fake_hyperopt)
-    monkeypatch.setattr('freqtrade.forex.ai_hyperopt.run_ai_hyperopt_robust', lambda *args, **kwargs: [])
-
-    login = client.post('/api/v1/auth/login', json={'username': 'operator', 'password': 'test-operator-password'})
-    token = login.json()['sessionToken']
-    csrf_token = login.json()['csrfToken']
-
-    response = client.post(
-        '/api/v1/ai/hyperopt/start',
-        json={'pair': 'EUR/USD', 'timeframe': 'M5', 'historyMode': 'days', 'historyValue': 2, 'attempts': 2},
-        headers={'X-Session-Token': token, 'X-User-Role': 'operator', 'X-CSRF-Token': csrf_token},
-    )
-
-    assert response.status_code == 200, response.text
-    payload = response.json()
-    assert clear_calls == []
-    assert download_requests[0] == ('EUR_USD', 'M5', 576)
-    report_url = (
-        '/api/v1/ai/hyperopt/report?pair=EUR%2FUSD'
-        f'&strategy_class={payload["strategyClass"]}&timeframe=M5'
-        f'&freqaimodel={payload["freqaimodel"]}'
-    )
-    status_url = report_url.replace('/report?', '/status?')
-    for _ in range(100):
-        status_response = client.get(status_url)
-        status_payload = status_response.json()
-        if status_payload.get('status') != 'running':
-            break
-        time.sleep(0.01)
-    assert status_payload.get('status') in {'completed', 'stopped'}, status_payload
-    report_response = client.get(report_url)
-    assert report_response.status_code == 200, report_response.text
-    assert report_response.json().get('available'), report_response.json()
-    report = report_response.json()['report']
-    assert report['historyMode'] == 'days'
-    assert report['historyValue'] == 2
-    assert report['steps'] == 2
-    assert report['bestMinimalRoi'] == FakeCandidate().minimal_roi
-    assert report['roiParameters'] == FakeCandidate().roi_parameters
-    assert report['candidates'][0]['minimal_roi'] == FakeCandidate().minimal_roi
-
-
-def test_ai_research_cache_inspection_reports_scope_before_clear(tmp_path, monkeypatch):
-    original_cwd = Path.cwd()
-    monkeypatch.chdir(tmp_path)
-    candle_cache = Path('user_data/data/oanda/candles.json')
-    candle_cache.parent.mkdir(parents=True)
-    candle_cache.write_text(json.dumps({
-        'version': 1,
-        'ranges': {
-            'CAD_JPY|5m|start|end': {
-                'instrument': 'CAD_JPY',
-                'timeframe': '5m',
-                'raw': [
-                    {'time': '2024-01-01T00:00:00Z'},
-                    {'time': '2024-01-01T00:05:00Z'},
-                ],
-            },
-            'GBP_USD|5m|start|end': {'instrument': 'GBP_USD', 'timeframe': '5m', 'raw': []},
-        },
-    }), encoding='utf-8')
-    model_dir = Path('user_data/hyperopt_results')
-    model_dir.mkdir(parents=True)
-    (model_dir / 'CAD_JPY_1h_cached.txt').write_text('cached model', encoding='utf-8')
-    (model_dir / 'CAD_JPY_1h_LightGBMRegressor.json').write_text('hyperopt report', encoding='utf-8')
-
-    response = client.post(
-        '/api/v1/ai/research-cache/inspect',
-        json={'pair': 'CAD/JPY', 'timeframe': 'M5'},
-        headers=_auth_headers(client),
-    )
-
-    assert response.status_code == 200, response.text
-    summary = response.json()
-    assert summary['candleRangeCount'] == 1
-    assert summary['storedCandleCount'] == 2
-    assert summary['oldestCandle'] == '2024-01-01T00:00:00Z'
-    assert summary['newestCandle'] == '2024-01-01T00:05:00Z'
-    assert summary['modelFileCount'] == 1
-    assert summary['hyperoptReportsPreserved'] is True
-    monkeypatch.chdir(original_cwd)
-
-
-def test_ai_research_cache_clear_is_scoped_and_preserves_reports(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    candle_cache = Path('user_data/data/oanda/candles.json')
-    candle_cache.parent.mkdir(parents=True)
-    candle_cache.write_text(json.dumps({
-        'version': 1,
-        'ranges': {
-            'CAD_JPY|5m|start|end': {'instrument': 'CAD_JPY', 'timeframe': '5m'},
-            'GBP_USD|5m|start|end': {'instrument': 'GBP_USD', 'timeframe': '5m'},
-        },
-    }), encoding='utf-8')
-    data_dir = Path('user_data/data/oanda')
-    target_candles = data_dir / 'CAD_JPY-M5.feather'
-    other_candles = data_dir / 'GBP_USD-M5.feather'
-    target_candles.write_bytes(b'cached candles')
-    other_candles.write_bytes(b'other pair candles')
-
-    model_dir = Path('user_data/hyperopt_results')
-    model_dir.mkdir(parents=True)
-    model_artifacts = [
-        model_dir / 'CAD_JPY_1h_default_LightGBMRegressor.txt',
-        model_dir / 'CAD_JPY_1h_default_LightGBMRegressor.model.json',
-        model_dir / 'CAD_JPY_1h_default_LightGBMRegressor.predictions.json',
-    ]
-    for artifact in model_artifacts:
-        artifact.write_text('cached model', encoding='utf-8')
-    report = model_dir / 'CAD_JPY_1h_LightGBMRegressor.json'
-    report.write_text('hyperopt report', encoding='utf-8')
-    other_model = model_dir / 'GBP_USD_1h_default_LightGBMRegressor.txt'
-    other_model.write_text('other pair model', encoding='utf-8')
-
-    response = client.post(
-        '/api/v1/ai/research-cache/clear',
-        json={'pair': 'CAD/JPY', 'timeframe': 'M5'},
-        headers=_auth_headers(client),
-    )
-
-    assert response.status_code == 200, response.text
-    payload = response.json()
-    assert payload['candleItemsRemoved'] == 2
-    assert payload['modelFilesRemoved'] == 3
-    assert not target_candles.exists()
-    assert other_candles.exists()
-    assert all(not artifact.exists() for artifact in model_artifacts)
-    assert report.exists()
-    assert other_model.exists()
-    remaining_ranges = json.loads(candle_cache.read_text(encoding='utf-8'))['ranges']
-    assert list(remaining_ranges) == ['GBP_USD|5m|start|end']
-
-
-def test_order_submit_requires_operator_role_and_csrf_token():
+def test_order_submit_requires_operator_role_and_csrf_token(monkeypatch):
+    monkeypatch.setattr('freqtrade.forex.api.OandaSettings.from_environment', lambda: None)
     denied = client.post(
         '/api/v1/orders/market',
         json={'symbol': 'EUR/USD', 'side': 'BUY', 'volume': '1200'},
@@ -1327,7 +1067,7 @@ def test_setup_mutations_require_authenticated_session():
         client.post('/api/v1/setup', json={'token': 'not-used'}),
         client.post('/api/v1/setup/runtime', json={'action': 'pause'}),
         client.post('/api/v1/setup/files/config', json={'content': '{}'}),
-        client.post('/api/v1/ai/config', json={'strategyClass': 'ForexAIStrategyBaseline'}),
+        client.post('/api/v1/strategy/review', json={'status': 'approved'}),
     )
     assert [response.status_code for response in requests] == [401, 401, 401, 401, 401]
 
@@ -1721,7 +1461,7 @@ def test_setup_runtime_and_file_endpoints_work_with_configured_paths(monkeypatch
             'executionMode': 'dry_run',
             'instruments': ['EUR_USD', 'GBP_USD'],
             'pairTimeframes': {'EUR_USD': '5m', 'GBP_USD': '1h'},
-            'pairStrategies': {'EUR_USD': 'ForexAIStrategyBaseline', 'GBP_USD': 'ForexEmaStrategy'},
+            'pairStrategies': {'EUR_USD': 'ForexMasterStrategy', 'GBP_USD': 'ForexEmaStrategy'},
             'riskFraction': '0.01',
             'configPath': str(config_path),
         },
@@ -1732,7 +1472,7 @@ def test_setup_runtime_and_file_endpoints_work_with_configured_paths(monkeypatch
     assert payload['configured'] is True
     assert payload['executionMode'] == 'practice'
     assert payload['accountTypeCode'] == '003'
-    assert payload['pairStrategies'] == {'EUR_USD': 'ForexAIStrategyBaseline', 'GBP_USD': 'ForexEmaStrategy'}
+    assert payload['pairStrategies'] == {'EUR_USD': 'ForexMasterStrategy', 'GBP_USD': 'ForexEmaStrategy'}
 
 
 def test_setup_discovery_returns_only_supported_accounts_and_never_token(monkeypatch):
@@ -1932,26 +1672,6 @@ def test_untagged_practice_v20_account_can_be_confirmed(monkeypatch, tmp_path):
         headers=_auth_headers(client),
     )
     assert invalid_strategy.status_code == 400
-
-
-def test_ai_hyperopt_days_history_resolves_timeframe_before_loss_validation():
-    response = client.post(
-        '/api/v1/ai/hyperopt/start',
-        json={
-            'pair': 'EUR/USD',
-            'timeframe': 'M5',
-            'historyMode': 'days',
-            'historyValue': 1,
-            'attempts': 1,
-            'hyperoptLoss': 'NotARealLoss',
-        },
-        headers=_auth_headers(client),
-    )
-
-    assert response.status_code == 400
-    assert 'Unsupported hyperoptLoss' in response.json()['detail']
-
-
 def test_hyperopt_report_formats_generic_strategy_parameters():
     report = {
         'pair': 'EUR/USD',
