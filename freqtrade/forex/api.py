@@ -154,6 +154,17 @@ def format_hyperopt_report(report: dict) -> str:
             else "  Cost settings: not recorded"
         ),
         (
+            "  Position sizing: "
+            + (
+                f"risk-based at {Decimal(report['positionSizing']['riskFraction']) * 100}% "
+                f"balance risk with {report['positionSizing']['stopPips']} pip stop"
+                if report["positionSizing"]["mode"] == "risk"
+                else f"{report['positionSizing']['value']} {report['positionSizing']['unit']}"
+            )
+            if report.get("positionSizing")
+            else "  Position sizing: not recorded"
+        ),
+        (
             f"  ROI volatility: {report['bestRoiVolatilityRegime']} "
             f"({float(report['bestRoiVolatilityPer5m']) * 100:.4f}% typical range per 5m)"
             if report.get("bestRoiVolatilityRegime") is not None
@@ -2757,6 +2768,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             "instruments": instruments,
             "pairTimeframes": pair_timeframes,
             "pairStrategies": pair_strategies,
+            "riskFraction": OandaSettings.from_environment().risk_fraction,
             "accountIdConfigured": bool(account_id),
             "tokenConfigured": bool(token),
             "strategyFile": str(strategy_path),
@@ -3354,6 +3366,10 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         slippage: Decimal,
         financing_rate_per_day: Decimal,
         commission_rate: Decimal,
+        position_size_mode: str,
+        position_size: Decimal,
+        account_currency: str,
+        quote_to_account_rate: Decimal,
         candles: pd.DataFrame,
         instrument: OandaInstrument,
         spread: Decimal,
@@ -3384,6 +3400,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 slippage=slippage,
                 financing_rate_per_day=financing_rate_per_day,
                 commission_rate=commission_rate,
+                position_size_mode=position_size_mode,
+                position_size=position_size,
+                quote_to_account_rate=quote_to_account_rate,
                 on_attempt=on_attempt,
                 should_stop=stop_event.is_set,
             )
@@ -3433,6 +3452,23 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     "commissionRatePercent": format(
                         (commission_rate * Decimal("100")).normalize(), "f"
                     ),
+                },
+                "positionSizing": {
+                    "mode": position_size_mode,
+                    "value": (
+                        None if position_size_mode == "risk" else str(position_size)
+                    ),
+                    "unit": (
+                        "units"
+                        if position_size_mode == "units"
+                        else account_currency
+                        if position_size_mode == "account_amount"
+                        else "risk"
+                    ),
+                    "accountCurrency": account_currency,
+                    "riskFraction": str(risk_fraction),
+                    "stopPips": "0.5",
+                    "quoteToAccountRate": str(quote_to_account_rate),
                 },
                 "historyMode": history_mode,
                 "historyValue": history_value,
@@ -3640,7 +3676,13 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             raise HTTPException(
                 status_code=400, detail=f"Unsupported hyperopt loss: {hyperopt_loss}"
             )
+        position_size_mode = str(payload.get("positionSizeMode", "risk"))
+        if position_size_mode not in {"risk", "units", "account_amount"}:
+            raise HTTPException(
+                status_code=400, detail="Unsupported position size mode"
+            )
         try:
+            position_size = Decimal(str(payload.get("positionSize", "1000")))
             requested_spread = (
                 Decimal(str(payload["spread"])) if payload.get("spread") is not None else None
             )
@@ -3653,17 +3695,23 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             )
         except (ArithmeticError, TypeError, ValueError) as exc:
             raise HTTPException(
-                status_code=400, detail="Hyperopt cost settings must be valid numbers"
+                status_code=400,
+                detail="Hyperopt cost and position size settings must be valid numbers",
             ) from exc
         cost_values = (slippage, financing_rate_per_day, commission_rate)
         invalid_spread = requested_spread is not None and (
             not requested_spread.is_finite() or requested_spread < 0
         )
         invalid_rate = any(not value.is_finite() or value < 0 for value in cost_values)
-        if invalid_spread or invalid_rate:
+        if (
+            invalid_spread
+            or invalid_rate
+            or not position_size.is_finite()
+            or position_size <= 0
+        ):
             raise HTTPException(
                 status_code=400,
-                detail="Hyperopt spread, slippage, financing, and commission must be finite and non-negative",
+                detail="Hyperopt costs must be finite and non-negative; position size must be finite and positive",
             )
         try:
             strategy = load_strategy(strategy_class, freqtrade_timeframe(timeframe), pair)
@@ -3738,6 +3786,16 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     history_value = steps
                 market_spread = (await client.get_prices((instrument_name,)))[0].spread
                 spread = requested_spread if requested_spread is not None else market_spread
+                account_currency = str(account.currency).upper()
+                quote_to_account_value, conversion_error = await currency_conversion_rate(
+                    client, instrument.quote_currency, account_currency
+                )
+                if quote_to_account_value is None:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Cannot size Hyperopt trades in {account_currency}: {conversion_error}",
+                    )
+                quote_to_account_rate = Decimal(quote_to_account_value)
                 informative_candles: dict[str, pd.DataFrame] = {}
                 for informative_timeframe in informative_timeframes:
                     informative_count = min(
@@ -3796,6 +3854,10 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 slippage=slippage,
                 financing_rate_per_day=financing_rate_per_day,
                 commission_rate=commission_rate,
+                position_size_mode=position_size_mode,
+                position_size=position_size,
+                account_currency=account_currency,
+                quote_to_account_rate=quote_to_account_rate,
                 candles=candles,
                 instrument=instrument,
                 spread=spread,

@@ -164,6 +164,15 @@ export type HyperoptReport = {
     financingRatePerDayPercent: string
     commissionRatePercent: string
   }
+  positionSizing?: {
+    mode: 'risk' | 'units' | 'account_amount'
+    value: string | null
+    unit: string
+    accountCurrency: string
+    riskFraction: string
+    stopPips: string
+    quoteToAccountRate: string
+  }
   historyMode: 'candles' | 'days' | 'date_range'
   historyValue: number
   steps: number
@@ -294,7 +303,7 @@ async function throwApiError(response: Response, message: string): Promise<never
   throw new Error(`${message}: ${detail}`)
 }
 
-export async function startHyperopt(payload: { pair: string; timeframe: string; strategyClass: string; steps: number; attempts: number; historyMode?: 'candles' | 'days' | 'date_range'; historyValue?: number; startDate?: string; endDate?: string; hyperoptLoss?: string; spread?: string; slippage?: string; financingRatePerDayPercent?: string; commissionRatePercent?: string }): Promise<{ pair: string; status: string; attemptsTotal: number }> {
+export async function startHyperopt(payload: { pair: string; timeframe: string; strategyClass: string; steps: number; attempts: number; historyMode?: 'candles' | 'days' | 'date_range'; historyValue?: number; startDate?: string; endDate?: string; hyperoptLoss?: string; spread?: string; slippage?: string; financingRatePerDayPercent?: string; commissionRatePercent?: string; positionSizeMode?: 'risk' | 'units' | 'account_amount'; positionSize?: string }): Promise<{ pair: string; status: string; attemptsTotal: number }> {
   const response = await fetch(buildApiUrl('/api/v1/hyperopt/start'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -704,6 +713,7 @@ export type SetupStatus = {
   instruments: string[]
   pairTimeframes: Record<string, string>
   pairStrategies: Record<string, string>
+  riskFraction: string
   accountIdConfigured: boolean
   tokenConfigured: boolean
   strategyFile?: string

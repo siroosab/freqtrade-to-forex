@@ -2910,6 +2910,51 @@ def test_backtester_applies_slippage_financing_and_commission_costs() -> None:
     assert result.total_costs == Decimal("14.20210") + trade.commission_cost
 
 
+def test_backtester_supports_fixed_unit_and_account_currency_position_sizes() -> None:
+    instrument = OandaInstrument(
+        name="EUR_USD",
+        display_name="EUR/USD",
+        pip_location=-4,
+        display_precision=5,
+        trade_units_precision=0,
+        minimum_trade_size=Decimal("1"),
+    )
+    candles = pd.DataFrame(
+        {
+            "date": ["2026-01-01T00:00:00Z", "2026-01-01T00:15:00Z"],
+            "open": [1.1, 1.1],
+            "high": [1.101, 1.101],
+            "low": [1.099, 1.099],
+            "close": [1.1, 1.1],
+        }
+    )
+
+    fixed_units_result = ForexBacktester(
+        MagicMock(signal=MagicMock(side_effect=[Signal.LONG, Signal.SHORT])),
+        instrument,
+        starting_balance=Decimal("10000"),
+        risk_fraction=Decimal("0.01"),
+        stop_pips=Decimal("10"),
+        spread=Decimal("0"),
+        position_size_mode="units",
+        position_size=Decimal("1234"),
+    ).run(candles)
+    account_amount_result = ForexBacktester(
+        MagicMock(signal=MagicMock(side_effect=[Signal.LONG, Signal.SHORT])),
+        instrument,
+        starting_balance=Decimal("10000"),
+        risk_fraction=Decimal("0.01"),
+        stop_pips=Decimal("10"),
+        spread=Decimal("0"),
+        position_size_mode="account_amount",
+        position_size=Decimal("880"),
+        quote_to_account_rate=Decimal("0.8"),
+    ).run(candles)
+
+    assert fixed_units_result.trades[0].units == 1234
+    assert account_amount_result.trades[0].units == 1000
+
+
 def test_backtester_supports_multi_instrument_portfolio_and_max_open_positions() -> None:
     instrument_a = OandaInstrument(
         name="EUR_USD",

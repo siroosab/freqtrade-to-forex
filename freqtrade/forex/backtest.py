@@ -278,6 +278,8 @@ class ForexBacktester:
         slippage: Decimal = Decimal("0"),
         financing_rate_per_day: Decimal = Decimal("0"),
         commission_rate: Decimal = Decimal("0"),
+        position_size_mode: str = "risk",
+        position_size: Decimal = Decimal("1000"),
         quote_to_account_rate: Decimal = Decimal("1"),
         take_profit_pips: Decimal | None = None,
         max_open_positions: int | None = None,
@@ -304,6 +306,7 @@ class ForexBacktester:
                     slippage,
                     financing_rate_per_day,
                     commission_rate,
+                    position_size,
                     quote_to_account_rate,
                     fill_ratio,
                 )
@@ -313,6 +316,8 @@ class ForexBacktester:
             or slippage < 0
             or financing_rate_per_day < 0
             or commission_rate < 0
+            or position_size <= 0
+            or position_size_mode not in {"risk", "units", "account_amount"}
             or (take_profit_pips is not None and take_profit_pips <= 0)
             or not Decimal("0") < fill_ratio <= Decimal("1")
         ):
@@ -332,6 +337,8 @@ class ForexBacktester:
         self.slippage = slippage
         self.financing_rate_per_day = financing_rate_per_day
         self.commission_rate = commission_rate
+        self.position_size_mode = position_size_mode
+        self.position_size = position_size
         self.quote_to_account_rate = quote_to_account_rate
         self.take_profit_pips = take_profit_pips
         self.max_open_positions = max_open_positions
@@ -547,8 +554,22 @@ class ForexBacktester:
                     entry, signal, instrument, self.stop_pips, stop=True
                 )
                 stop_distance = abs(entry - stop_price)
-                raw_units = balance * self.risk_fraction / (stop_distance * self.quote_to_account_rate)
-                units = int(raw_units)
+                if self.position_size_mode == "risk":
+                    raw_units = (
+                        balance
+                        * self.risk_fraction
+                        / (stop_distance * self.quote_to_account_rate)
+                    )
+                elif self.position_size_mode == "units":
+                    raw_units = self.position_size
+                else:
+                    raw_units = self.position_size / (
+                        entry * self.quote_to_account_rate
+                    )
+                unit_precision = Decimal(1).scaleb(
+                    -instrument.trade_units_precision
+                )
+                units = int(raw_units.quantize(unit_precision, rounding=ROUND_FLOOR))
                 if units > 0:
                     requested_units = units if signal is Signal.LONG else -units
                     filled_units = self._filled_units(requested_units, entry_time)

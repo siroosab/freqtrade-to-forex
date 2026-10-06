@@ -499,7 +499,7 @@ def test_hyperopt_approval_flows_into_chart_strategy(tmp_path, monkeypatch):
             return None
 
         async def get_account_summary(self):
-            return SimpleNamespace(balance=Decimal("10000"))
+            return SimpleNamespace(balance=Decimal("10000"), currency="GBP")
 
         async def get_instruments(self, instruments):
             return [
@@ -514,7 +514,10 @@ def test_hyperopt_approval_flows_into_chart_strategy(tmp_path, monkeypatch):
             ]
 
         async def get_prices(self, instruments):
-            return [SimpleNamespace(spread=Decimal("0.0001"))]
+            if instruments == ("EUR_USD",):
+                return [SimpleNamespace(spread=Decimal("0.0001"))]
+            assert instruments == ("USD_GBP",)
+            return [SimpleNamespace(bid=Decimal("0.78"))]
 
         async def get_candles(self, instrument, granularity, *, count):
             candle_requests.append((instrument, granularity, count))
@@ -586,6 +589,8 @@ def test_hyperopt_approval_flows_into_chart_strategy(tmp_path, monkeypatch):
                 "slippage": "0.00001",
                 "financingRatePerDayPercent": "0.02",
                 "commissionRatePercent": "0.1",
+                "positionSizeMode": "account_amount",
+                "positionSize": "780",
             },
         )
         assert started.status_code == 200, started.text
@@ -605,6 +610,15 @@ def test_hyperopt_approval_flows_into_chart_strategy(tmp_path, monkeypatch):
             "slippage": "0.00001",
             "financingRatePerDayPercent": "0.02",
             "commissionRatePercent": "0.1",
+        }
+        assert status["report"]["positionSizing"] == {
+            "mode": "account_amount",
+            "value": "780",
+            "unit": "GBP",
+            "accountCurrency": "GBP",
+            "riskFraction": "0.01",
+            "stopPips": "0.5",
+            "quoteToAccountRate": "0.78",
         }
 
         approved = scoped_client.post(
@@ -629,6 +643,9 @@ def test_hyperopt_approval_flows_into_chart_strategy(tmp_path, monkeypatch):
     assert hyperopt_options["slippage"] == Decimal("0.00001")
     assert hyperopt_options["financing_rate_per_day"] == Decimal("0.0002")
     assert hyperopt_options["commission_rate"] == Decimal("0.001")
+    assert hyperopt_options["position_size_mode"] == "account_amount"
+    assert hyperopt_options["position_size"] == Decimal("780")
+    assert hyperopt_options["quote_to_account_rate"] == Decimal("0.78")
     assert chart.status_code == 200, chart.text
     assert chart.json()["approvedStrategy"] == "ForexMasterStrategy"
     assert chart.json()["approvedTimeframe"] == "M15"
@@ -642,14 +659,22 @@ def test_hyperopt_approval_flows_into_chart_strategy(tmp_path, monkeypatch):
 
 def test_hyperopt_rejects_invalid_cost_settings(tmp_path):
     with TestClient(create_app(tmp_path / "invalid-hyperopt-cost.sqlite")) as scoped_client:
+        headers = _auth_headers(scoped_client)
         response = scoped_client.post(
             "/api/v1/hyperopt/start",
-            headers=_auth_headers(scoped_client),
+            headers=headers,
             json={"spread": "-0.0001"},
+        )
+        invalid_size = scoped_client.post(
+            "/api/v1/hyperopt/start",
+            headers=headers,
+            json={"positionSizeMode": "units", "positionSize": "0"},
         )
 
     assert response.status_code == 400
     assert "finite and non-negative" in response.json()["detail"]
+    assert invalid_size.status_code == 400
+    assert "position size must be finite and positive" in invalid_size.json()["detail"]
 
 
 def test_hyperopt_date_download_reports_and_clears_cache(tmp_path, monkeypatch):
@@ -795,7 +820,7 @@ def test_hyperopt_uses_selected_date_range_instead_of_candle_default(tmp_path, m
             return None
 
         async def get_account_summary(self):
-            return SimpleNamespace(balance=Decimal("10000"))
+            return SimpleNamespace(balance=Decimal("10000"), currency="USD")
 
         async def get_instruments(self, instruments):
             assert instruments == ("EUR_USD",)
@@ -890,10 +915,21 @@ def test_hyperopt_uses_selected_date_range_instead_of_candle_default(tmp_path, m
         "financingRatePerDayPercent": "0",
         "commissionRatePercent": "0",
     }
+    assert status["report"]["positionSizing"] == {
+        "mode": "risk",
+        "value": None,
+        "unit": "risk",
+        "accountCurrency": "USD",
+        "riskFraction": "0.01",
+        "stopPips": "0.5",
+        "quoteToAccountRate": "1",
+    }
     assert received_cost_settings["spread"] == Decimal("0.0001")
     assert received_cost_settings["slippage"] == Decimal("0")
     assert received_cost_settings["financing_rate_per_day"] == Decimal("0")
     assert received_cost_settings["commission_rate"] == Decimal("0")
+    assert received_cost_settings["position_size_mode"] == "risk"
+    assert received_cost_settings["position_size"] == Decimal("1000")
 
 
 def test_cors_allows_vite_frontend_origin():

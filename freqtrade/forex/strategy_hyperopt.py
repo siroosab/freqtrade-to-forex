@@ -255,6 +255,8 @@ def _create_candidate_evaluator(
     slippage: Decimal,
     financing_rate_per_day: Decimal,
     commission_rate: Decimal,
+    position_size_mode: str,
+    position_size: Decimal,
     quote_to_account_rate: Decimal,
 ) -> Callable[..., BacktestResult]:
     def evaluate(
@@ -289,6 +291,8 @@ def _create_candidate_evaluator(
             slippage=slippage,
             financing_rate_per_day=financing_rate_per_day,
             commission_rate=commission_rate,
+            position_size_mode=position_size_mode,
+            position_size=position_size,
             quote_to_account_rate=quote_to_account_rate,
         ).run(data, detail_candles=data)
 
@@ -310,6 +314,8 @@ def run_strategy_hyperopt(
     slippage: Decimal = Decimal(0),
     financing_rate_per_day: Decimal = Decimal(0),
     commission_rate: Decimal = Decimal(0),
+    position_size_mode: str = "risk",
+    position_size: Decimal = Decimal("1000"),
     quote_to_account_rate: Decimal = Decimal(1),
     max_attempts: int,
     hyperopt_loss: str,
@@ -371,6 +377,8 @@ def run_strategy_hyperopt(
             slippage=slippage,
             financing_rate_per_day=financing_rate_per_day,
             commission_rate=commission_rate,
+            position_size_mode=position_size_mode,
+            position_size=position_size,
             quote_to_account_rate=quote_to_account_rate,
         )
         train_result = evaluate(train)

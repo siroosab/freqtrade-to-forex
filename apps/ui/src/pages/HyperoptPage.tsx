@@ -10,6 +10,7 @@ import {
   getHyperoptReport,
   getHyperoptStatus,
   getMarketQuote,
+  getSetupStatus,
   getStrategyReview,
   runBacktest,
   saveStrategyReview,
@@ -52,6 +53,9 @@ export function HyperoptPage() {
   const [slippage, setSlippage] = useState('0')
   const [financingRatePerDay, setFinancingRatePerDay] = useState('0')
   const [commissionRatePercent, setCommissionRatePercent] = useState('0')
+  const [positionSizeMode, setPositionSizeMode] = useState<'risk' | 'units' | 'account_amount'>('risk')
+  const [unitSize, setUnitSize] = useState('1000')
+  const [accountAmount, setAccountAmount] = useState('1000')
   const [backtestJobId, setBacktestJobId] = useState<string | null>(null)
   const strategiesQuery = useQuery({
     queryKey: ['available-strategies'],
@@ -65,6 +69,10 @@ export function HyperoptPage() {
     queryKey: ['hyperopt-cost-quote', pair],
     queryFn: () => getMarketQuote(pair),
     enabled: Boolean(pair),
+  })
+  const setupQuery = useQuery({
+    queryKey: ['setup-status'],
+    queryFn: getSetupStatus,
   })
   const cacheQuery = useQuery({
     queryKey: ['candle-cache', pair, timeframe],
@@ -186,6 +194,12 @@ export function HyperoptPage() {
   const costSettingsValid = costValues.every((value) => value.trim() !== ''
     && Number.isFinite(Number(value))
     && Number(value) >= 0)
+  const selectedPositionSize = positionSizeMode === 'units' ? unitSize : accountAmount
+  const positionSizeValid = positionSizeMode === 'risk'
+    || (selectedPositionSize.trim() !== ''
+      && Number.isFinite(Number(selectedPositionSize))
+      && Number(selectedPositionSize) > 0)
+  const riskFraction = setupQuery.data?.riskFraction ?? '0.01'
 
   useEffect(() => {
     if (backtestQuery.data?.status === 'completed') {
@@ -218,6 +232,8 @@ export function HyperoptPage() {
       slippage,
       financingRatePerDayPercent: financingRatePerDay,
       commissionRatePercent,
+      positionSizeMode,
+      positionSize: selectedPositionSize,
     })
   }
 
@@ -413,7 +429,7 @@ export function HyperoptPage() {
           <div className="panel-header compact">
             <div><p className="eyebrow">02 · Manual Hyperopt</p><h3>Optimize strategy parameters</h3></div>
             <div className="summary-grid">
-              <button className="primary-action" type="button" onClick={runOptimization} disabled={!scopeEnabled || !historyValueValid || !costSettingsValid || quoteQuery.isPending || quoteQuery.isError || researchBusy || !strategies.length}>
+              <button className="primary-action" type="button" onClick={runOptimization} disabled={!scopeEnabled || !historyValueValid || !costSettingsValid || !positionSizeValid || quoteQuery.isPending || quoteQuery.isError || setupQuery.isPending || setupQuery.isError || researchBusy || !strategies.length}>
                 {running || hyperoptMutation.isPending ? 'Optimizing…' : 'Run hyperopt'}
               </button>
               <button className="secondary-action" type="button" onClick={() => stopMutation.mutate()} disabled={!running || stopMutation.isPending}>
@@ -458,8 +474,32 @@ export function HyperoptPage() {
               <input type="number" min="0" step="any" value={commissionRatePercent} onChange={(event) => setCommissionRatePercent(event.target.value)} />
               <small>Default: 0. Applied to notional at both entry and exit.</small>
             </label>
+            <label className="field-block">
+              <span>Initial position sizing</span>
+              <select value={positionSizeMode} onChange={(event) => setPositionSizeMode(event.target.value as typeof positionSizeMode)}>
+                <option value="risk">Risk-based (default)</option>
+                <option value="units">Fixed units</option>
+                <option value="account_amount">Fixed amount in account currency</option>
+              </select>
+              <small>Default: risk-based, using {Number(riskFraction) * 100}% of account balance and a 0.5 pip stop.</small>
+            </label>
+            {positionSizeMode === 'units' && (
+              <label className="field-block">
+                <span>Initial size (units)</span>
+                <input type="number" min="1" step="1" value={unitSize} onChange={(event) => setUnitSize(event.target.value)} />
+                <small>Default: 1,000 units. Rounded down to the instrument's supported precision.</small>
+              </label>
+            )}
+            {positionSizeMode === 'account_amount' && (
+              <label className="field-block">
+                <span>Initial notional ({quoteQuery.data?.accountCurrency ?? 'account currency'})</span>
+                <input type="number" min="0.01" step="any" value={accountAmount} onChange={(event) => setAccountAmount(event.target.value)} />
+                <small>Default: 1,000 {quoteQuery.data?.accountCurrency ?? 'account currency'}. Converted to units using the live quote and currency conversion rate.</small>
+              </label>
+            )}
           </div>
           {quoteQuery.error && <p role="alert">Could not load the default broker spread: {quoteQuery.error.message}</p>}
+          {setupQuery.error && <p role="alert">Could not load the account risk default: {setupQuery.error.message}</p>}
           {running && statusQuery.data && (
             <p aria-live="polite">Progress: {statusQuery.data.attemptsCompleted} / {statusQuery.data.attemptsTotal} attempts</p>
           )}
@@ -476,6 +516,13 @@ export function HyperoptPage() {
                 {report.costSettings && (
                   <div><span>Cost assumptions</span><strong>
                     Spread {report.costSettings.spread} · Slippage {report.costSettings.slippage} · Financing {report.costSettings.financingRatePerDayPercent}%/day · Commission {report.costSettings.commissionRatePercent}%/side
+                  </strong></div>
+                )}
+                {report.positionSizing && (
+                  <div><span>Initial position sizing</span><strong>
+                    {report.positionSizing.mode === 'risk'
+                      ? `Risk-based · ${Number(report.positionSizing.riskFraction) * 100}% balance risk · ${report.positionSizing.stopPips} pip stop`
+                      : `${report.positionSizing.value ?? ''} ${report.positionSizing.unit}`}
                   </strong></div>
                 )}
                 <div><span>Best parameters</span><strong>{Object.entries(report.bestParameters).map(([key, value]) => `${key}: ${value}`).join(' · ') || 'No tunable parameters'}</strong></div>
