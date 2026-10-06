@@ -9,6 +9,7 @@ import {
   getHyperoptLossFunctions,
   getHyperoptReport,
   getHyperoptStatus,
+  getMarketQuote,
   getStrategyReview,
   runBacktest,
   saveStrategyReview,
@@ -47,6 +48,10 @@ export function HyperoptPage() {
   const [dateRange, setDateRange] = useState(initialDateRange)
   const [attempts, setAttempts] = useState(30)
   const [lossFunction, setLossFunction] = useState('ProfitDrawDownHyperOptLoss')
+  const [spreadOverride, setSpreadOverride] = useState<{ pair: string; value: string } | null>(null)
+  const [slippage, setSlippage] = useState('0')
+  const [financingRatePerDay, setFinancingRatePerDay] = useState('0')
+  const [commissionRatePercent, setCommissionRatePercent] = useState('0')
   const [backtestJobId, setBacktestJobId] = useState<string | null>(null)
   const strategiesQuery = useQuery({
     queryKey: ['available-strategies'],
@@ -55,6 +60,11 @@ export function HyperoptPage() {
   const lossFunctionsQuery = useQuery({
     queryKey: ['hyperopt-loss-functions'],
     queryFn: getHyperoptLossFunctions,
+  })
+  const quoteQuery = useQuery({
+    queryKey: ['hyperopt-cost-quote', pair],
+    queryFn: () => getMarketQuote(pair),
+    enabled: Boolean(pair),
   })
   const cacheQuery = useQuery({
     queryKey: ['candle-cache', pair, timeframe],
@@ -170,6 +180,12 @@ export function HyperoptPage() {
     : Number.isInteger(historyValue)
       && historyValue >= (historyMode === 'candles' ? 40 : 1)
       && historyValue <= 10000
+  const spreadOverrideValue = spreadOverride?.pair === pair ? spreadOverride.value : ''
+  const effectiveSpread = spreadOverrideValue || quoteQuery.data?.spread || ''
+  const costValues = [effectiveSpread, slippage, financingRatePerDay, commissionRatePercent]
+  const costSettingsValid = costValues.every((value) => value.trim() !== ''
+    && Number.isFinite(Number(value))
+    && Number(value) >= 0)
 
   useEffect(() => {
     if (backtestQuery.data?.status === 'completed') {
@@ -198,6 +214,10 @@ export function HyperoptPage() {
       ...(historyMode === 'date_range' ? dateRange : {}),
       attempts,
       hyperoptLoss: lossFunction,
+      spread: effectiveSpread,
+      slippage,
+      financingRatePerDayPercent: financingRatePerDay,
+      commissionRatePercent,
     })
   }
 
@@ -393,7 +413,7 @@ export function HyperoptPage() {
           <div className="panel-header compact">
             <div><p className="eyebrow">02 · Manual Hyperopt</p><h3>Optimize strategy parameters</h3></div>
             <div className="summary-grid">
-              <button className="primary-action" type="button" onClick={runOptimization} disabled={!scopeEnabled || !historyValueValid || researchBusy || !strategies.length}>
+              <button className="primary-action" type="button" onClick={runOptimization} disabled={!scopeEnabled || !historyValueValid || !costSettingsValid || quoteQuery.isPending || quoteQuery.isError || researchBusy || !strategies.length}>
                 {running || hyperoptMutation.isPending ? 'Optimizing…' : 'Run hyperopt'}
               </button>
               <button className="secondary-action" type="button" onClick={() => stopMutation.mutate()} disabled={!running || stopMutation.isPending}>
@@ -412,7 +432,34 @@ export function HyperoptPage() {
                 {(lossFunctionsQuery.data?.options ?? [lossFunction]).map((item) => <option key={item}>{item}</option>)}
               </select>
             </label>
+            <label className="field-block">
+              <span>Spread (price units)</span>
+              <input
+                type="number"
+                min="0"
+                step="any"
+                value={spreadOverrideValue || quoteQuery.data?.spread || ''}
+                onChange={(event) => setSpreadOverride({ pair, value: event.target.value })}
+              />
+              <small>Default: current broker spread ({quoteQuery.data?.spread ?? 'loading'}). Applied as half-spread on entry and exit across the selected history.</small>
+            </label>
+            <label className="field-block">
+              <span>Slippage (price units)</span>
+              <input type="number" min="0" step="any" value={slippage} onChange={(event) => setSlippage(event.target.value)} />
+              <small>Default: 0. Applied at entry and exit.</small>
+            </label>
+            <label className="field-block">
+              <span>Financing rate per day (%)</span>
+              <input type="number" min="0" step="any" value={financingRatePerDay} onChange={(event) => setFinancingRatePerDay(event.target.value)} />
+              <small>Default: 0. Enter the daily rate as a percentage; debited from longs and credited to shorts.</small>
+            </label>
+            <label className="field-block">
+              <span>Commission per side (%)</span>
+              <input type="number" min="0" step="any" value={commissionRatePercent} onChange={(event) => setCommissionRatePercent(event.target.value)} />
+              <small>Default: 0. Applied to notional at both entry and exit.</small>
+            </label>
           </div>
+          {quoteQuery.error && <p role="alert">Could not load the default broker spread: {quoteQuery.error.message}</p>}
           {running && statusQuery.data && (
             <p aria-live="polite">Progress: {statusQuery.data.attemptsCompleted} / {statusQuery.data.attemptsTotal} attempts</p>
           )}
@@ -426,6 +473,11 @@ export function HyperoptPage() {
                 <div><span>Data coverage</span><strong>{report.steps} candles · train {report.trainCandles} / validate {report.validationCandles}</strong></div>
                 <div><span>Validation result</span><strong>{report.validation.netPl} P/L · {report.validation.trades} trades · drawdown {report.validation.drawdown}</strong></div>
                 <div><span>Best objective</span><strong>{report.objective}</strong></div>
+                {report.costSettings && (
+                  <div><span>Cost assumptions</span><strong>
+                    Spread {report.costSettings.spread} · Slippage {report.costSettings.slippage} · Financing {report.costSettings.financingRatePerDayPercent}%/day · Commission {report.costSettings.commissionRatePercent}%/side
+                  </strong></div>
+                )}
                 <div><span>Best parameters</span><strong>{Object.entries(report.bestParameters).map(([key, value]) => `${key}: ${value}`).join(' · ') || 'No tunable parameters'}</strong></div>
                 {report.bestMinimalRoi && <div><span>Minimal ROI</span><strong>{Object.entries(report.bestMinimalRoi).map(([key, value]) => `${key}m: ${value}`).join(' · ')}</strong></div>}
               </div>

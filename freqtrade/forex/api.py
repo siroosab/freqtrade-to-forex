@@ -145,6 +145,15 @@ def format_hyperopt_report(report: dict) -> str:
         f"  Best minimal ROI: {parameter_text(best_minimal_roi)}",
         f"  ROI search parameters: {parameter_text(report.get('roiParameters') or {})}",
         (
+            "  Cost settings: "
+            f"spread={report['costSettings']['spread']}, "
+            f"slippage={report['costSettings']['slippage']}, "
+            f"financing/day={report['costSettings']['financingRatePerDayPercent']}%, "
+            f"commission/side={report['costSettings']['commissionRatePercent']}%"
+            if report.get("costSettings")
+            else "  Cost settings: not recorded"
+        ),
+        (
             f"  ROI volatility: {report['bestRoiVolatilityRegime']} "
             f"({float(report['bestRoiVolatilityPer5m']) * 100:.4f}% typical range per 5m)"
             if report.get("bestRoiVolatilityRegime") is not None
@@ -3342,6 +3351,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         history_value: int,
         attempts: int,
         hyperopt_loss: str,
+        slippage: Decimal,
+        financing_rate_per_day: Decimal,
+        commission_rate: Decimal,
         candles: pd.DataFrame,
         instrument: OandaInstrument,
         spread: Decimal,
@@ -3369,6 +3381,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 spread=spread,
                 max_attempts=attempts,
                 hyperopt_loss=hyperopt_loss,
+                slippage=slippage,
+                financing_rate_per_day=financing_rate_per_day,
+                commission_rate=commission_rate,
                 on_attempt=on_attempt,
                 should_stop=stop_event.is_set,
             )
@@ -3409,6 +3424,16 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "coverage": 2,
                 "attemptsRequested": attempts,
                 "hyperoptLoss": hyperopt_loss,
+                "costSettings": {
+                    "spread": str(spread),
+                    "slippage": str(slippage),
+                    "financingRatePerDayPercent": format(
+                        (financing_rate_per_day * Decimal("100")).normalize(), "f"
+                    ),
+                    "commissionRatePercent": format(
+                        (commission_rate * Decimal("100")).normalize(), "f"
+                    ),
+                },
                 "historyMode": history_mode,
                 "historyValue": history_value,
                 "steps": len(candles),
@@ -3616,6 +3641,31 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 status_code=400, detail=f"Unsupported hyperopt loss: {hyperopt_loss}"
             )
         try:
+            requested_spread = (
+                Decimal(str(payload["spread"])) if payload.get("spread") is not None else None
+            )
+            slippage = Decimal(str(payload.get("slippage", "0")))
+            financing_rate_per_day = Decimal(
+                str(payload.get("financingRatePerDayPercent", "0"))
+            ) / Decimal("100")
+            commission_rate = Decimal(str(payload.get("commissionRatePercent", "0"))) / Decimal(
+                "100"
+            )
+        except (ArithmeticError, TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=400, detail="Hyperopt cost settings must be valid numbers"
+            ) from exc
+        cost_values = (slippage, financing_rate_per_day, commission_rate)
+        invalid_spread = requested_spread is not None and (
+            not requested_spread.is_finite() or requested_spread < 0
+        )
+        invalid_rate = any(not value.is_finite() or value < 0 for value in cost_values)
+        if invalid_spread or invalid_rate:
+            raise HTTPException(
+                status_code=400,
+                detail="Hyperopt spread, slippage, financing, and commission must be finite and non-negative",
+            )
+        try:
             strategy = load_strategy(strategy_class, freqtrade_timeframe(timeframe), pair)
             informative_timeframes = strategy_informative_timeframes(strategy, pair)
             oanda_granularity(freqtrade_timeframe(timeframe))
@@ -3686,7 +3736,8 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                         )
                     steps = len(candles)
                     history_value = steps
-                spread = (await client.get_prices((instrument_name,)))[0].spread
+                market_spread = (await client.get_prices((instrument_name,)))[0].spread
+                spread = requested_spread if requested_spread is not None else market_spread
                 informative_candles: dict[str, pd.DataFrame] = {}
                 for informative_timeframe in informative_timeframes:
                     informative_count = min(
@@ -3742,6 +3793,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 history_value=history_value,
                 attempts=attempts,
                 hyperopt_loss=hyperopt_loss,
+                slippage=slippage,
+                financing_rate_per_day=financing_rate_per_day,
+                commission_rate=commission_rate,
                 candles=candles,
                 instrument=instrument,
                 spread=spread,

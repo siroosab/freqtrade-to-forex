@@ -158,6 +158,12 @@ export type HyperoptReport = {
   candidatesTested: number
   attemptsRequested: number
   hyperoptLoss: string
+  costSettings?: {
+    spread: string
+    slippage: string
+    financingRatePerDayPercent: string
+    commissionRatePercent: string
+  }
   historyMode: 'candles' | 'days' | 'date_range'
   historyValue: number
   steps: number
@@ -288,7 +294,7 @@ async function throwApiError(response: Response, message: string): Promise<never
   throw new Error(`${message}: ${detail}`)
 }
 
-export async function startHyperopt(payload: { pair: string; timeframe: string; strategyClass: string; steps: number; attempts: number; historyMode?: 'candles' | 'days' | 'date_range'; historyValue?: number; startDate?: string; endDate?: string; hyperoptLoss?: string }): Promise<{ pair: string; status: string; attemptsTotal: number }> {
+export async function startHyperopt(payload: { pair: string; timeframe: string; strategyClass: string; steps: number; attempts: number; historyMode?: 'candles' | 'days' | 'date_range'; historyValue?: number; startDate?: string; endDate?: string; hyperoptLoss?: string; spread?: string; slippage?: string; financingRatePerDayPercent?: string; commissionRatePercent?: string }): Promise<{ pair: string; status: string; attemptsTotal: number }> {
   const response = await fetch(buildApiUrl('/api/v1/hyperopt/start'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

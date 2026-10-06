@@ -2867,7 +2867,7 @@ def test_backtester_uses_roi_and_ignores_exit_signals_when_disabled() -> None:
     assert result.trades[0].net_pl > 0
 
 
-def test_backtester_applies_slippage_and_financing_costs() -> None:
+def test_backtester_applies_slippage_financing_and_commission_costs() -> None:
     instrument = OandaInstrument(
         name="EUR_USD",
         display_name="EUR/USD",
@@ -2896,14 +2896,18 @@ def test_backtester_applies_slippage_and_financing_costs() -> None:
         spread=Decimal("0.00010"),
         slippage=Decimal("0.00001"),
         financing_rate_per_day=Decimal("0.00001"),
+        commission_rate=Decimal("0.00001"),
     ).run(candles)
 
     assert len(result.trades) == 1
     trade = result.trades[0]
     assert trade.slippage_cost == Decimal("2.00000")
     assert trade.financing_cost == Decimal("2.20210")
-    assert trade.net_pl == Decimal("-14.20210")
-    assert result.total_costs == Decimal("14.20210")
+    assert trade.commission_cost == (
+        (trade.entry_price + trade.exit_price) * abs(trade.units) * Decimal("0.00001")
+    )
+    assert trade.net_pl == Decimal("-14.20210") - trade.commission_cost
+    assert result.total_costs == Decimal("14.20210") + trade.commission_cost
 
 
 def test_backtester_supports_multi_instrument_portfolio_and_max_open_positions() -> None:

@@ -28,6 +28,7 @@ class BacktestTrade:
     slippage_cost: Decimal
     financing_cost: Decimal
     net_pl: Decimal
+    commission_cost: Decimal = Decimal("0")
     account_currency: str | None = None
 
     def as_dict(self) -> dict[str, object]:
@@ -43,6 +44,7 @@ class BacktestTrade:
             "spread_cost": str(self.spread_cost),
             "slippage_cost": str(self.slippage_cost),
             "financing_cost": str(self.financing_cost),
+            "commission_cost": str(self.commission_cost),
             "net_pl": str(self.net_pl),
             "account_currency": self.account_currency,
         }
@@ -79,9 +81,16 @@ class BacktestResult:
     @property
     def total_costs(self) -> Decimal:
         return sum(
-            (trade.spread_cost + trade.slippage_cost + trade.financing_cost for trade in self.trades),
+            (
+                trade.spread_cost
+                + trade.slippage_cost
+                + trade.financing_cost
+                + trade.commission_cost
+                for trade in self.trades
+            ),
             Decimal("0"),
         )
+
     @property
     def win_rate(self) -> Decimal:
         if not self.trades:
@@ -268,6 +277,7 @@ class ForexBacktester:
         spread: Decimal | dict[object, Decimal],
         slippage: Decimal = Decimal("0"),
         financing_rate_per_day: Decimal = Decimal("0"),
+        commission_rate: Decimal = Decimal("0"),
         quote_to_account_rate: Decimal = Decimal("1"),
         take_profit_pips: Decimal | None = None,
         max_open_positions: int | None = None,
@@ -275,18 +285,40 @@ class ForexBacktester:
         rates: tuple[ForexQuoteRate, ...] = (),
         fill_ratio: Decimal = Decimal("1"),
     ) -> None:
-        if starting_balance <= 0 or not Decimal("0") < risk_fraction < Decimal("1"):
-            raise ValueError("starting balance must be positive and risk fraction must be between 0 and 1")
+        if (
+            not starting_balance.is_finite()
+            or not risk_fraction.is_finite()
+            or starting_balance <= 0
+            or not Decimal("0") < risk_fraction < Decimal("1")
+        ):
+            raise ValueError(
+                "starting balance must be positive and risk fraction must be between 0 and 1"
+            )
         spread_values = [Decimal(value) for value in (spread.values() if isinstance(spread, dict) else [spread])]
         if (
-            stop_pips <= 0
+            any(not value.is_finite() for value in spread_values)
+            or not all(
+                value.is_finite()
+                for value in (
+                    stop_pips,
+                    slippage,
+                    financing_rate_per_day,
+                    commission_rate,
+                    quote_to_account_rate,
+                    fill_ratio,
+                )
+            )
+            or stop_pips <= 0
             or any(value < 0 for value in spread_values)
             or slippage < 0
             or financing_rate_per_day < 0
+            or commission_rate < 0
             or (take_profit_pips is not None and take_profit_pips <= 0)
             or not Decimal("0") < fill_ratio <= Decimal("1")
         ):
-            raise ValueError("stop, spread, slippage, fill ratio, and financing rate must be valid")
+            raise ValueError(
+                "stop, spread, slippage, fill ratio, financing rate, and commission must be valid"
+            )
         if quote_to_account_rate <= 0:
             raise ValueError("conversion rate must be positive")
         if max_open_positions is not None and max_open_positions < 1:
@@ -299,6 +331,7 @@ class ForexBacktester:
         self.spread = spread
         self.slippage = slippage
         self.financing_rate_per_day = financing_rate_per_day
+        self.commission_rate = commission_rate
         self.quote_to_account_rate = quote_to_account_rate
         self.take_profit_pips = take_profit_pips
         self.max_open_positions = max_open_positions
@@ -634,6 +667,7 @@ class ForexBacktester:
                 spread_cost=trade.spread_cost,
                 slippage_cost=trade.slippage_cost,
                 financing_cost=trade.financing_cost,
+                commission_cost=trade.commission_cost,
                 net_pl=trade.net_pl,
                 account_currency=self.account_currency,
             )
@@ -654,6 +688,7 @@ class ForexBacktester:
             spread_cost=trade.spread_cost * conversion,
             slippage_cost=trade.slippage_cost * conversion,
             financing_cost=trade.financing_cost * conversion,
+            commission_cost=trade.commission_cost * conversion,
             net_pl=trade.net_pl * conversion,
             account_currency=self.account_currency,
         )
@@ -687,8 +722,9 @@ class ForexBacktester:
         spread_cost = entry_spread * abs(units)
         slippage_cost = self.slippage * Decimal(2) * abs(units)
         financing_cost = self._financing_cost(entry_time, candle["date"], entry, units)
+        commission_cost = (entry_price + exit_price) * abs(units) * self.commission_rate
         gross = price_pl + spread_cost + slippage_cost
-        net_pl = price_pl - financing_cost
+        net_pl = price_pl - financing_cost - commission_cost
         return BacktestTrade(
             instrument=instrument.name,
             direction=direction,
@@ -701,6 +737,7 @@ class ForexBacktester:
             spread_cost=spread_cost,
             slippage_cost=slippage_cost,
             financing_cost=financing_cost,
+            commission_cost=commission_cost,
             net_pl=net_pl,
             account_currency=self.account_currency,
         )

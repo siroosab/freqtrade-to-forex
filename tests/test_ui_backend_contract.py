@@ -472,6 +472,7 @@ def test_hyperopt_approval_flows_into_chart_strategy(tmp_path, monkeypatch):
 
     database_path = tmp_path / "hyperopt-approval.sqlite"
     candle_requests = []
+    hyperopt_options = {}
 
     class FakeCandle:
         def __init__(self, index):
@@ -537,6 +538,7 @@ def test_hyperopt_approval_flows_into_chart_strategy(tmp_path, monkeypatch):
             return type("Signal", (), {"value": signal})()
 
     def fake_hyperopt(*args, **kwargs):
+        hyperopt_options.update(kwargs)
         return [
             {
                 "parameters": {"band_length": 20},
@@ -580,6 +582,10 @@ def test_hyperopt_approval_flows_into_chart_strategy(tmp_path, monkeypatch):
                 "historyMode": "days",
                 "historyValue": 2,
                 "attempts": 1,
+                "spread": "0.0002",
+                "slippage": "0.00001",
+                "financingRatePerDayPercent": "0.02",
+                "commissionRatePercent": "0.1",
             },
         )
         assert started.status_code == 200, started.text
@@ -594,6 +600,12 @@ def test_hyperopt_approval_flows_into_chart_strategy(tmp_path, monkeypatch):
                 break
             time.sleep(0.01)
         assert status.get("status") == "completed", status
+        assert status["report"]["costSettings"] == {
+            "spread": "0.0002",
+            "slippage": "0.00001",
+            "financingRatePerDayPercent": "0.02",
+            "commissionRatePercent": "0.1",
+        }
 
         approved = scoped_client.post(
             "/api/v1/strategy/review",
@@ -613,6 +625,10 @@ def test_hyperopt_approval_flows_into_chart_strategy(tmp_path, monkeypatch):
         "band_length": 20,
     }
     assert approved.json()["approvedRevision"]["hyperopt"]["minimal_roi"] == {"0": 0.01}
+    assert hyperopt_options["spread"] == Decimal("0.0002")
+    assert hyperopt_options["slippage"] == Decimal("0.00001")
+    assert hyperopt_options["financing_rate_per_day"] == Decimal("0.0002")
+    assert hyperopt_options["commission_rate"] == Decimal("0.001")
     assert chart.status_code == 200, chart.text
     assert chart.json()["approvedStrategy"] == "ForexMasterStrategy"
     assert chart.json()["approvedTimeframe"] == "M15"
@@ -622,6 +638,18 @@ def test_hyperopt_approval_flows_into_chart_strategy(tmp_path, monkeypatch):
     assert abs(chart_signals[0]["roiTargetPrice"] - 1.111) < 1e-12
     assert abs(chart_signals[1]["roiTargetPrice"] - (1.10001 * 0.99)) < 1e-12
     assert candle_requests[0] == ("EUR_USD", "M15", 192)
+
+
+def test_hyperopt_rejects_invalid_cost_settings(tmp_path):
+    with TestClient(create_app(tmp_path / "invalid-hyperopt-cost.sqlite")) as scoped_client:
+        response = scoped_client.post(
+            "/api/v1/hyperopt/start",
+            headers=_auth_headers(scoped_client),
+            json={"spread": "-0.0001"},
+        )
+
+    assert response.status_code == 400
+    assert "finite and non-negative" in response.json()["detail"]
 
 
 def test_hyperopt_date_download_reports_and_clears_cache(tmp_path, monkeypatch):
@@ -744,6 +772,7 @@ def test_hyperopt_uses_selected_date_range_instead_of_candle_default(tmp_path, m
 
     database_path = tmp_path / "date-range-hyperopt.sqlite"
     received_candle_counts = []
+    received_cost_settings = {}
 
     class FakeCandle:
         def __init__(self, timestamp):
@@ -787,6 +816,7 @@ def test_hyperopt_uses_selected_date_range_instead_of_candle_default(tmp_path, m
 
     def fake_hyperopt(candles, *args, **kwargs):
         received_candle_counts.append(len(candles))
+        received_cost_settings.update(kwargs)
         return [
             {
                 "parameters": {},
@@ -854,6 +884,16 @@ def test_hyperopt_uses_selected_date_range_instead_of_candle_default(tmp_path, m
     assert status["report"]["steps"] == 80
     assert status["report"]["trainCandles"] == 40
     assert status["report"]["validationCandles"] == 40
+    assert status["report"]["costSettings"] == {
+        "spread": "0.0001",
+        "slippage": "0",
+        "financingRatePerDayPercent": "0",
+        "commissionRatePercent": "0",
+    }
+    assert received_cost_settings["spread"] == Decimal("0.0001")
+    assert received_cost_settings["slippage"] == Decimal("0")
+    assert received_cost_settings["financing_rate_per_day"] == Decimal("0")
+    assert received_cost_settings["commission_rate"] == Decimal("0")
 
 
 def test_cors_allows_vite_frontend_origin():
