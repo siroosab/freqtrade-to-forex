@@ -281,6 +281,8 @@ class ForexBacktester:
         position_size_mode: str = "risk",
         position_size: Decimal = Decimal("1000"),
         quote_to_account_rate: Decimal = Decimal("1"),
+        stop_loss_mode: str = "pips",
+        stop_loss_value: Decimal | None = None,
         take_profit_pips: Decimal | None = None,
         max_open_positions: int | None = None,
         account_currency: str | None = None,
@@ -318,6 +320,11 @@ class ForexBacktester:
             or commission_rate < 0
             or position_size <= 0
             or position_size_mode not in {"risk", "units", "account_amount"}
+            or stop_loss_mode not in {"pips", "percent", "money"}
+            or (
+                stop_loss_value is not None
+                and (not stop_loss_value.is_finite() or stop_loss_value <= 0)
+            )
             or (take_profit_pips is not None and take_profit_pips <= 0)
             or not Decimal("0") < fill_ratio <= Decimal("1")
         ):
@@ -340,6 +347,8 @@ class ForexBacktester:
         self.position_size_mode = position_size_mode
         self.position_size = position_size
         self.quote_to_account_rate = quote_to_account_rate
+        self.stop_loss_mode = stop_loss_mode
+        self.stop_loss_value = stop_loss_value if stop_loss_value is not None else stop_pips
         self.take_profit_pips = take_profit_pips
         self.max_open_positions = max_open_positions
         self.account_currency = account_currency
@@ -550,8 +559,11 @@ class ForexBacktester:
                 entry = Decimal(str(candles.iloc[index + 1]["open"]))
                 entry = entry + entry_spread / 2 if signal is Signal.LONG else entry - entry_spread / 2
                 entry = self._round_price(entry, instrument)
+                sizing_stop_pips = self._stop_loss_distance_pips(
+                    entry, instrument, units=None
+                )
                 stop_price = self._protection_price(
-                    entry, signal, instrument, self.stop_pips, stop=True
+                    entry, signal, instrument, sizing_stop_pips, stop=True
                 )
                 stop_distance = abs(entry - stop_price)
                 if self.position_size_mode == "risk":
@@ -841,8 +853,12 @@ class ForexBacktester:
         minimal_roi: dict[int, Decimal] | None = None,
     ) -> tuple[object, Decimal] | None:
         direction, _, entry, _, entry_time = position
+        units = position[1]
+        stop_distance_pips = self._stop_loss_distance_pips(
+            entry, instrument, units=units
+        )
         stop = self._protection_price(
-            entry, direction, instrument, self.stop_pips, stop=True
+            entry, direction, instrument, stop_distance_pips, stop=True
         )
         target = None
         if self.take_profit_pips is not None:
@@ -889,6 +905,22 @@ class ForexBacktester:
                 if roi_trigger is not None:
                     return roi_trigger
         return None
+
+    def _stop_loss_distance_pips(
+        self,
+        entry: Decimal,
+        instrument: OandaInstrument,
+        *,
+        units: int | None,
+    ) -> Decimal:
+        if self.stop_loss_mode == "pips":
+            return self.stop_loss_value
+        if self.stop_loss_mode == "percent":
+            return entry * self.stop_loss_value / Decimal("100") / instrument.pip_size
+        if units is None:
+            return self.stop_pips
+        quote_loss = self.stop_loss_value / self.quote_to_account_rate
+        return quote_loss / (Decimal(abs(units)) * instrument.pip_size)
 
     def _roi_trigger(
         self,

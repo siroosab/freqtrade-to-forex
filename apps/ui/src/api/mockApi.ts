@@ -164,6 +164,12 @@ export type HyperoptReport = {
     financingRatePerDayPercent: string
     commissionRatePercent: string
   }
+  stopLoss?: {
+    mode: 'pips' | 'percent' | 'money'
+    value: string
+    unit: string
+    optimized: false
+  }
   positionSizing?: {
     mode: 'risk' | 'units' | 'account_amount'
     value: string | null
@@ -250,6 +256,10 @@ export type BacktestRunResult = {
     positionSizeUnit: string
     accountCurrency: string
     quoteToAccountRate: string
+    stopLossMode: 'pips' | 'percent' | 'money'
+    stopLossValue: string
+    stopLossUnit: string
+    stopLossOptimized: false
   }
   tradeDetails?: Array<Record<string, string | number | null | boolean>>
   summary?: Record<string, string | number | null>
@@ -315,7 +325,7 @@ async function throwApiError(response: Response, message: string): Promise<never
   throw new Error(`${message}: ${detail}`)
 }
 
-export async function startHyperopt(payload: { pair: string; timeframe: string; strategyClass: string; steps: number; attempts: number; historyMode?: 'candles' | 'days' | 'date_range'; historyValue?: number; startDate?: string; endDate?: string; hyperoptLoss?: string; spread?: string; slippage?: string; financingRatePerDayPercent?: string; commissionRatePercent?: string; positionSizeMode?: 'risk' | 'units' | 'account_amount'; positionSize?: string }): Promise<{ pair: string; status: string; attemptsTotal: number }> {
+export async function startHyperopt(payload: { pair: string; timeframe: string; strategyClass: string; steps: number; attempts: number; historyMode?: 'candles' | 'days' | 'date_range'; historyValue?: number; startDate?: string; endDate?: string; hyperoptLoss?: string; spread?: string; slippage?: string; financingRatePerDayPercent?: string; commissionRatePercent?: string; positionSizeMode?: 'risk' | 'units' | 'account_amount'; positionSize?: string; stopLossMode?: 'pips' | 'percent' | 'money'; stopLossValue?: string }): Promise<{ pair: string; status: string; attemptsTotal: number }> {
   const response = await fetch(buildApiUrl('/api/v1/hyperopt/start'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -958,7 +968,7 @@ export async function getBacktestJob(jobId: string): Promise<BacktestRunResult> 
   return response.json() as Promise<BacktestRunResult>
 }
 
-export async function runBacktest(payload: { pair: string; timeframe: string; strategyClass: string; steps: number; historyMode?: 'candles' | 'days' | 'date_range'; historyValue?: number; startDate?: string; endDate?: string; spread?: string; slippage?: string; financingRatePerDayPercent?: string; commissionRatePercent?: string; positionSizeMode?: 'risk' | 'units' | 'account_amount'; positionSize?: string | null }): Promise<BacktestRunResult> {
+export async function runBacktest(payload: { pair: string; timeframe: string; strategyClass: string; steps: number; historyMode?: 'candles' | 'days' | 'date_range'; historyValue?: number; startDate?: string; endDate?: string; spread?: string; slippage?: string; financingRatePerDayPercent?: string; commissionRatePercent?: string; positionSizeMode?: 'risk' | 'units' | 'account_amount'; positionSize?: string | null; stopLossMode?: 'pips' | 'percent' | 'money'; stopLossValue?: string }): Promise<BacktestRunResult> {
   const response = await fetch(buildApiUrl('/api/v1/backtests/run'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

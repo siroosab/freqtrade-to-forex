@@ -2955,6 +2955,61 @@ def test_backtester_supports_fixed_unit_and_account_currency_position_sizes() ->
     assert account_amount_result.trades[0].units == 1000
 
 
+@pytest.mark.parametrize(
+    ("mode", "value", "quote_to_account_rate", "expected_stop"),
+    [
+        ("pips", "5", Decimal("1"), Decimal("1.09950")),
+        ("percent", "0.1", Decimal("1"), Decimal("1.09890")),
+        ("money", "1", Decimal("1"), Decimal("1.09900")),
+        ("money", "1", Decimal("0.8"), Decimal("1.09875")),
+    ],
+)
+def test_backtester_executes_static_stop_loss_units(
+    mode: str,
+    value: str,
+    quote_to_account_rate: Decimal,
+    expected_stop: Decimal,
+) -> None:
+    instrument = OandaInstrument(
+        name="EUR_USD",
+        display_name="EUR/USD",
+        pip_location=-4,
+        display_precision=5,
+        trade_units_precision=0,
+        minimum_trade_size=Decimal("1"),
+    )
+    dates = pd.date_range("2026-01-01", periods=4, freq="5min", tz="UTC")
+    candles = pd.DataFrame(
+        {
+            "date": dates,
+            "open": [1.1] * 4,
+            "high": [1.101] * 4,
+            "low": [1.0998, 1.0998, 1.098, 1.0998],
+            "close": [1.1] * 4,
+        }
+    )
+    strategy = MagicMock()
+    strategy.signal.side_effect = [Signal.LONG, Signal.FLAT, Signal.FLAT, Signal.FLAT]
+    result = ForexBacktester(
+        strategy,
+        instrument,
+        starting_balance=Decimal("10000"),
+        risk_fraction=Decimal("0.01"),
+        stop_pips=Decimal("0.5"),
+        spread=Decimal("0"),
+        position_size_mode="units",
+        position_size=Decimal("1000"),
+        quote_to_account_rate=quote_to_account_rate,
+        stop_loss_mode=mode,
+        stop_loss_value=Decimal(value),
+    ).run(candles, detail_candles=candles)
+
+    assert len(result.trades) == 1
+    assert result.trades[0].exit_time == dates[2]
+    assert result.trades[0].exit_price == expected_stop
+    assert result.trades[0].net_pl < 0
+
+
 def test_backtester_supports_multi_instrument_portfolio_and_max_open_positions() -> None:
     instrument_a = OandaInstrument(
         name="EUR_USD",

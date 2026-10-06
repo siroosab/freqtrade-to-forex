@@ -53,6 +53,10 @@ export function HyperoptPage() {
   const [slippage, setSlippage] = useState('0')
   const [financingRatePerDay, setFinancingRatePerDay] = useState('0')
   const [commissionRatePercent, setCommissionRatePercent] = useState('0')
+  const [stopLossMode, setStopLossMode] = useState<'pips' | 'percent' | 'money'>('pips')
+  const [stopLossPips, setStopLossPips] = useState('0.5')
+  const [stopLossPercent, setStopLossPercent] = useState('0.5')
+  const [stopLossMoney, setStopLossMoney] = useState('50')
   const [positionSizeMode, setPositionSizeMode] = useState<'risk' | 'units' | 'account_amount'>('risk')
   const [unitSize, setUnitSize] = useState('1000')
   const [accountAmount, setAccountAmount] = useState('1000')
@@ -201,6 +205,12 @@ export function HyperoptPage() {
       && Number.isFinite(Number(selectedPositionSize))
       && Number(selectedPositionSize) > 0)
   const riskFraction = setupQuery.data?.riskFraction ?? '0.01'
+  const stopLossValue = stopLossMode === 'pips'
+    ? stopLossPips
+    : stopLossMode === 'percent'
+      ? stopLossPercent
+      : stopLossMoney
+  const stopLossValid = Number.isFinite(Number(stopLossValue)) && Number(stopLossValue) > 0
 
   useEffect(() => {
     if (backtestQuery.data?.status === 'completed') {
@@ -226,6 +236,8 @@ export function HyperoptPage() {
       commissionRatePercent,
       positionSizeMode,
       positionSize: positionSizeMode === 'risk' ? null : selectedPositionSize,
+      stopLossMode,
+      stopLossValue,
     })
   }
 
@@ -246,6 +258,8 @@ export function HyperoptPage() {
       commissionRatePercent,
       positionSizeMode,
       positionSize: selectedPositionSize,
+      stopLossMode,
+      stopLossValue,
     })
   }
 
@@ -415,7 +429,7 @@ export function HyperoptPage() {
         <div className="panel research-panel">
           <div className="panel-header compact">
             <div><p className="eyebrow">Research · 01</p><h3>Backtest</h3></div>
-            <button className="primary-action" type="button" onClick={runResearch} disabled={!scopeEnabled || !historyValueValid || !costSettingsValid || !positionSizeValid || quoteQuery.isPending || quoteQuery.isError || setupQuery.isPending || setupQuery.isError || researchBusy}>
+            <button className="primary-action" type="button" onClick={runResearch} disabled={!scopeEnabled || !historyValueValid || !costSettingsValid || !positionSizeValid || !stopLossValid || quoteQuery.isPending || quoteQuery.isError || setupQuery.isPending || setupQuery.isError || researchBusy}>
               {backtestMutation.isPending || backtestRunning ? 'Backtest running…' : 'Run backtest'}
             </button>
           </div>
@@ -454,7 +468,7 @@ export function HyperoptPage() {
                 <option value="units">Fixed units</option>
                 <option value="account_amount">Fixed amount in account currency</option>
               </select>
-              <small>Default: risk-based, {Number(riskFraction) * 100}% of account balance and 0.5 pip stop.</small>
+              <small>Default: risk-based, {Number(riskFraction) * 100}% of account balance. Size follows the selected pip/percent stop; money stops use the default 0.5-pip sizing distance.</small>
             </label>
             {positionSizeMode === 'units' && (
               <label className="field-block">
@@ -470,6 +484,37 @@ export function HyperoptPage() {
                 <small>Default: 1,000 {quoteQuery.data?.accountCurrency ?? 'account currency'}, converted to units using live currency conversion.</small>
               </label>
             )}
+            <label className="field-block">
+              <span>Static stop loss</span>
+              <select value={stopLossMode} onChange={(event) => setStopLossMode(event.target.value as typeof stopLossMode)}>
+                <option value="pips">Pips</option>
+                <option value="percent">Percent of entry price</option>
+                <option value="money">Money ({quoteQuery.data?.accountCurrency ?? 'account currency'})</option>
+              </select>
+              <small>Static per-trade setting; not optimized. Defaults: 0.5 pips, 0.5% of entry price, or 50 {quoteQuery.data?.accountCurrency ?? 'account currency'}.</small>
+            </label>
+            <label className="field-block">
+              <span>
+                {stopLossMode === 'pips' ? 'Stop distance (pips)' : stopLossMode === 'percent' ? 'Stop distance (% of entry)' : `Maximum price-loss (${quoteQuery.data?.accountCurrency ?? 'account currency'})`}
+              </span>
+              <input
+                type="number"
+                min="0.000001"
+                step="any"
+                value={stopLossValue}
+                onChange={(event) => {
+                  if (stopLossMode === 'pips') setStopLossPips(event.target.value)
+                  else if (stopLossMode === 'percent') setStopLossPercent(event.target.value)
+                  else setStopLossMoney(event.target.value)
+                }}
+              />
+              <small>
+                {stopLossMode === 'money'
+                  ? 'Default: 50. Converted to a price distance after position size and currency conversion; commissions and financing are additional costs.'
+                  : `Default: ${stopLossMode === 'pips' ? '0.5 pips' : '0.5% of entry price'}.`}
+                {stopLossMode === 'money' && positionSizeMode === 'risk' ? ' Risk-based volume still uses the default 0.5-pip sizing distance.' : ''}
+              </small>
+            </label>
           </div>
           {quoteQuery.error && <p role="alert">Could not load the default broker spread: {quoteQuery.error.message}</p>}
           {setupQuery.error && <p role="alert">Could not load the account risk default: {setupQuery.error.message}</p>}
@@ -484,6 +529,7 @@ export function HyperoptPage() {
                   Spread {backtest.execution.spread} · Slippage {backtest.execution.slippage} · Financing {backtest.execution.financingRatePerDayPercent}%/day · Commission {backtest.execution.commissionRatePercent}%/side · Size {backtest.execution.positionSizeMode === 'risk' ? `risk-based (${Number(backtest.execution.riskFraction) * 100}%)` : `${backtest.execution.positionSize} ${backtest.execution.positionSizeUnit}`}
                 </strong></div>
               )}
+              {backtest.execution && <div><span>Static stop loss</span><strong>{backtest.execution.stopLossValue} {backtest.execution.stopLossUnit} · not optimized</strong></div>}
               {backtest.warning && <div><span>Data note</span><strong>{backtest.warning}</strong></div>}
             </div>
           )}
@@ -499,7 +545,7 @@ export function HyperoptPage() {
           <div className="panel-header compact">
             <div><p className="eyebrow">02 · Manual Hyperopt</p><h3>Optimize strategy parameters</h3></div>
             <div className="summary-grid">
-              <button className="primary-action" type="button" onClick={runOptimization} disabled={!scopeEnabled || !historyValueValid || !costSettingsValid || !positionSizeValid || quoteQuery.isPending || quoteQuery.isError || setupQuery.isPending || setupQuery.isError || researchBusy || !strategies.length}>
+              <button className="primary-action" type="button" onClick={runOptimization} disabled={!scopeEnabled || !historyValueValid || !costSettingsValid || !positionSizeValid || !stopLossValid || quoteQuery.isPending || quoteQuery.isError || setupQuery.isPending || setupQuery.isError || researchBusy || !strategies.length}>
                 {running || hyperoptMutation.isPending ? 'Optimizing…' : 'Run hyperopt'}
               </button>
               <button className="secondary-action" type="button" onClick={() => stopMutation.mutate()} disabled={!running || stopMutation.isPending}>
@@ -535,7 +581,7 @@ export function HyperoptPage() {
                 <option value="units">Fixed units</option>
                 <option value="account_amount">Fixed amount in account currency</option>
               </select>
-              <small>Default: risk-based, {Number(riskFraction) * 100}% of account balance.</small>
+              <small>Default: risk-based, {Number(riskFraction) * 100}% of account balance. Size follows the selected pip/percent stop; money stops use the default 0.5-pip sizing distance.</small>
             </label>
             {positionSizeMode === 'units' && (
               <label className="field-block">
@@ -551,6 +597,37 @@ export function HyperoptPage() {
                 <small>Default: 1,000 {quoteQuery.data?.accountCurrency ?? 'account currency'}.</small>
               </label>
             )}
+            <label className="field-block">
+              <span>Static stop loss</span>
+              <select value={stopLossMode} onChange={(event) => setStopLossMode(event.target.value as typeof stopLossMode)}>
+                <option value="pips">Pips</option>
+                <option value="percent">Percent of entry price</option>
+                <option value="money">Money ({quoteQuery.data?.accountCurrency ?? 'account currency'})</option>
+              </select>
+              <small>Static per-trade setting; not optimized. Defaults: 0.5 pips, 0.5% of entry price, or 50 {quoteQuery.data?.accountCurrency ?? 'account currency'}.</small>
+            </label>
+            <label className="field-block">
+              <span>
+                {stopLossMode === 'pips' ? 'Stop distance (pips)' : stopLossMode === 'percent' ? 'Stop distance (% of entry)' : `Maximum price-loss (${quoteQuery.data?.accountCurrency ?? 'account currency'})`}
+              </span>
+              <input
+                type="number"
+                min="0.000001"
+                step="any"
+                value={stopLossValue}
+                onChange={(event) => {
+                  if (stopLossMode === 'pips') setStopLossPips(event.target.value)
+                  else if (stopLossMode === 'percent') setStopLossPercent(event.target.value)
+                  else setStopLossMoney(event.target.value)
+                }}
+              />
+              <small>
+                {stopLossMode === 'money'
+                  ? 'Default: 50. Converted to a price distance after position size and currency conversion; commissions and financing are additional costs.'
+                  : `Default: ${stopLossMode === 'pips' ? '0.5 pips' : '0.5% of entry price'}.`}
+                {stopLossMode === 'money' && positionSizeMode === 'risk' ? ' Risk-based volume still uses the default 0.5-pip sizing distance.' : ''}
+              </small>
+            </label>
             <label className="field-block">
               <span>Attempts</span>
               <input type="number" min="1" max="900" value={attempts} onChange={(event) => setAttempts(Number(event.target.value))} />
@@ -582,10 +659,13 @@ export function HyperoptPage() {
                     Spread {report.costSettings.spread} · Slippage {report.costSettings.slippage} · Financing {report.costSettings.financingRatePerDayPercent}%/day · Commission {report.costSettings.commissionRatePercent}%/side
                   </strong></div>
                 )}
+                {report.stopLoss && (
+                  <div><span>Static stop loss</span><strong>{report.stopLoss.value} {report.stopLoss.unit} · not optimized</strong></div>
+                )}
                 {report.positionSizing && (
                   <div><span>Initial position sizing</span><strong>
                     {report.positionSizing.mode === 'risk'
-                      ? `Risk-based · ${Number(report.positionSizing.riskFraction) * 100}% balance risk · ${report.positionSizing.stopPips} pip stop`
+                      ? `Risk-based · ${Number(report.positionSizing.riskFraction) * 100}% balance risk`
                       : `${report.positionSizing.value ?? ''} ${report.positionSizing.unit}`}
                   </strong></div>
                 )}

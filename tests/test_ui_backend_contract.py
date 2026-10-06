@@ -591,6 +591,8 @@ def test_hyperopt_approval_flows_into_chart_strategy(tmp_path, monkeypatch):
                 "commissionRatePercent": "0.1",
                 "positionSizeMode": "account_amount",
                 "positionSize": "780",
+                "stopLossMode": "percent",
+                "stopLossValue": "1.25",
             },
         )
         assert started.status_code == 200, started.text
@@ -620,6 +622,12 @@ def test_hyperopt_approval_flows_into_chart_strategy(tmp_path, monkeypatch):
             "stopPips": "0.5",
             "quoteToAccountRate": "0.78",
         }
+        assert status["report"]["stopLoss"] == {
+            "mode": "percent",
+            "value": "1.25",
+            "unit": "% of entry price",
+            "optimized": False,
+        }
 
         approved = scoped_client.post(
             "/api/v1/strategy/review",
@@ -646,6 +654,12 @@ def test_hyperopt_approval_flows_into_chart_strategy(tmp_path, monkeypatch):
     assert hyperopt_options["position_size_mode"] == "account_amount"
     assert hyperopt_options["position_size"] == Decimal("780")
     assert hyperopt_options["quote_to_account_rate"] == Decimal("0.78")
+    assert hyperopt_options["stop_loss_mode"] == "percent"
+    assert hyperopt_options["stop_loss_value"] == Decimal("1.25")
+    assert all(
+        "stopLoss" not in candidate["parameters"]
+        for candidate in status["report"]["candidates"]
+    )
     assert chart.status_code == 200, chart.text
     assert chart.json()["approvedStrategy"] == "ForexMasterStrategy"
     assert chart.json()["approvedTimeframe"] == "M15"
@@ -670,11 +684,18 @@ def test_hyperopt_rejects_invalid_cost_settings(tmp_path):
             headers=headers,
             json={"positionSizeMode": "units", "positionSize": "0"},
         )
+        invalid_stop_loss = scoped_client.post(
+            "/api/v1/hyperopt/start",
+            headers=headers,
+            json={"stopLossMode": "money", "stopLossValue": "0"},
+        )
 
     assert response.status_code == 400
     assert "finite and non-negative" in response.json()["detail"]
     assert invalid_size.status_code == 400
     assert "position size must be finite and positive" in invalid_size.json()["detail"]
+    assert invalid_stop_loss.status_code == 400
+    assert "stop loss must be finite and positive" in invalid_stop_loss.json()["detail"]
 
 
 def test_hyperopt_date_download_reports_and_clears_cache(tmp_path, monkeypatch):
@@ -1092,6 +1113,8 @@ def test_backtest_run_uses_requested_candles(monkeypatch, tmp_path):
             "commissionRatePercent": "0.25",
             "positionSizeMode": "units",
             "positionSize": "2500",
+            "stopLossMode": "money",
+            "stopLossValue": "25",
         },
         headers={"X-Session-Token": token, "X-User-Role": "operator", "X-CSRF-Token": csrf_token},
     )
@@ -1128,6 +1151,16 @@ def test_backtest_run_uses_requested_candles(monkeypatch, tmp_path):
         },
         headers={"X-Session-Token": token, "X-User-Role": "operator", "X-CSRF-Token": csrf_token},
     )
+    invalid_stop_loss_response = client.post(
+        "/api/v1/backtests/run",
+        json={
+            "pair": "EUR/USD",
+            "timeframe": "M5",
+            "stopLossMode": "percent",
+            "stopLossValue": "0",
+        },
+        headers={"X-Session-Token": token, "X-User-Role": "operator", "X-CSRF-Token": csrf_token},
+    )
 
     assert response.status_code == 200, response.text
     payload = response.json()
@@ -1141,9 +1174,14 @@ def test_backtest_run_uses_requested_candles(monkeypatch, tmp_path):
     assert backtester_options[0]["position_size_mode"] == "units"
     assert backtester_options[0]["position_size"] == Decimal("2500")
     assert backtester_options[0]["quote_to_account_rate"] == Decimal("1")
+    assert backtester_options[0]["stop_loss_mode"] == "money"
+    assert backtester_options[0]["stop_loss_value"] == Decimal("25")
     assert payload["execution"]["spread"] == "0.0005"
     assert payload["execution"]["positionSizeMode"] == "units"
     assert payload["execution"]["positionSize"] == "2500"
+    assert payload["execution"]["stopLossMode"] == "money"
+    assert payload["execution"]["stopLossValue"] == "25"
+    assert payload["execution"]["stopLossOptimized"] is False
     assert date_range_response.status_code == 200, date_range_response.text
     assert date_range_response.json()["steps"] == 2
     assert backtester_options[1]["spread"] == Decimal("0.0003")
@@ -1152,6 +1190,8 @@ def test_backtest_run_uses_requested_candles(monkeypatch, tmp_path):
     assert backtester_options[1]["commission_rate"] == Decimal("0")
     assert backtester_options[1]["position_size_mode"] == "risk"
     assert backtester_options[1]["position_size"] == Decimal("1000")
+    assert backtester_options[1]["stop_loss_mode"] == "pips"
+    assert backtester_options[1]["stop_loss_value"] == Decimal("0.5")
     assert date_range_response.json()["execution"]["positionSizeMode"] == "risk"
     assert account_amount_response.status_code == 200, account_amount_response.text
     assert backtester_options[2]["position_size_mode"] == "account_amount"
@@ -1160,6 +1200,8 @@ def test_backtest_run_uses_requested_candles(monkeypatch, tmp_path):
     assert account_amount_response.json()["execution"]["accountCurrency"] == "GBP"
     assert account_amount_response.json()["execution"]["quoteToAccountRate"] == "0.8"
     assert invalid_size_response.status_code == 400
+    assert invalid_stop_loss_response.status_code == 400
+    assert "stop loss must be finite and positive" in invalid_stop_loss_response.json()["detail"]
     assert download_requests[1][2] is None
     assert download_requests[1][3]["from_time"] == "2024-01-01T00:00:00Z"
     assert download_requests[1][3]["to_time"] == "2024-01-02T00:00:00Z"

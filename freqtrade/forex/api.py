@@ -154,10 +154,17 @@ def format_hyperopt_report(report: dict) -> str:
             else "  Cost settings: not recorded"
         ),
         (
+            "  Static stop loss: "
+            f"{report['stopLoss']['value']} {report['stopLoss']['unit']} "
+            "(not optimized)"
+            if report.get("stopLoss")
+            else "  Static stop loss: not recorded"
+        ),
+        (
             "  Position sizing: "
             + (
                 f"risk-based at {Decimal(report['positionSizing']['riskFraction']) * 100}% "
-                f"balance risk with {report['positionSizing']['stopPips']} pip stop"
+                "balance risk"
                 if report["positionSizing"]["mode"] == "risk"
                 else f"{report['positionSizing']['value']} {report['positionSizing']['unit']}"
             )
@@ -3366,6 +3373,8 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         slippage: Decimal,
         financing_rate_per_day: Decimal,
         commission_rate: Decimal,
+        stop_loss_mode: str,
+        stop_loss_value: Decimal,
         position_size_mode: str,
         position_size: Decimal,
         account_currency: str,
@@ -3395,6 +3404,8 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 starting_balance=starting_balance,
                 risk_fraction=risk_fraction,
                 spread=spread,
+                stop_loss_mode=stop_loss_mode,
+                stop_loss_value=stop_loss_value,
                 max_attempts=attempts,
                 hyperopt_loss=hyperopt_loss,
                 slippage=slippage,
@@ -3443,6 +3454,18 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "coverage": 2,
                 "attemptsRequested": attempts,
                 "hyperoptLoss": hyperopt_loss,
+                "stopLoss": {
+                    "mode": stop_loss_mode,
+                    "value": str(stop_loss_value),
+                    "unit": (
+                        "pips"
+                        if stop_loss_mode == "pips"
+                        else "% of entry price"
+                        if stop_loss_mode == "percent"
+                        else account_currency
+                    ),
+                    "optimized": False,
+                },
                 "costSettings": {
                     "spread": str(spread),
                     "slippage": str(slippage),
@@ -3683,6 +3706,8 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             )
         try:
             position_size = Decimal(str(payload.get("positionSize", "1000")))
+            stop_loss_mode = str(payload.get("stopLossMode", "pips"))
+            stop_loss_value = Decimal(str(payload.get("stopLossValue", "0.5")))
             requested_spread = (
                 Decimal(str(payload["spread"])) if payload.get("spread") is not None else None
             )
@@ -3696,13 +3721,20 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         except (ArithmeticError, TypeError, ValueError) as exc:
             raise HTTPException(
                 status_code=400,
-                detail="Hyperopt cost and position size settings must be valid numbers",
+                detail="Hyperopt cost, position size, and stop-loss settings must be valid numbers",
             ) from exc
         cost_values = (slippage, financing_rate_per_day, commission_rate)
+        if stop_loss_mode not in {"pips", "percent", "money"}:
+            raise HTTPException(status_code=400, detail="Unsupported Hyperopt stop-loss mode")
         invalid_spread = requested_spread is not None and (
             not requested_spread.is_finite() or requested_spread < 0
         )
         invalid_rate = any(not value.is_finite() or value < 0 for value in cost_values)
+        if not stop_loss_value.is_finite() or stop_loss_value <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Hyperopt stop loss must be finite and positive",
+            )
         if (
             invalid_spread
             or invalid_rate
@@ -3854,6 +3886,8 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 slippage=slippage,
                 financing_rate_per_day=financing_rate_per_day,
                 commission_rate=commission_rate,
+                stop_loss_mode=stop_loss_mode,
+                stop_loss_value=stop_loss_value,
                 position_size_mode=position_size_mode,
                 position_size=position_size,
                 account_currency=account_currency,
@@ -4142,6 +4176,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         position_size_mode = str(payload.get("positionSizeMode", "risk"))
         if position_size_mode not in {"risk", "units", "account_amount"}:
             raise HTTPException(status_code=400, detail="Unsupported position size mode")
+        stop_loss_mode = str(payload.get("stopLossMode", "pips"))
+        if stop_loss_mode not in {"pips", "percent", "money"}:
+            raise HTTPException(status_code=400, detail="Unsupported Backtest stop-loss mode")
         try:
             requested_position_size = payload.get("positionSize")
             position_size = (
@@ -4159,10 +4196,11 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             commission_rate = Decimal(str(payload.get("commissionRatePercent", "0"))) / Decimal(
                 "100"
             )
+            stop_loss_value = Decimal(str(payload.get("stopLossValue", "0.5")))
         except (ArithmeticError, TypeError, ValueError) as exc:
             raise HTTPException(
                 status_code=400,
-                detail="Backtest cost and position size settings must be valid numbers",
+                detail="Backtest cost, position size, and stop-loss settings must be valid numbers",
             ) from exc
         invalid_spread = requested_spread is not None and (
             not requested_spread.is_finite() or requested_spread < 0
@@ -4171,7 +4209,17 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             not value.is_finite() or value < 0
             for value in (slippage, financing_rate_per_day, commission_rate)
         )
-        if invalid_spread or invalid_rate or not position_size.is_finite() or position_size <= 0:
+        if not stop_loss_value.is_finite() or stop_loss_value <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Backtest stop loss must be finite and positive",
+            )
+        if (
+            invalid_spread
+            or invalid_rate
+            or not position_size.is_finite()
+            or position_size <= 0
+        ):
             raise HTTPException(
                 status_code=400,
                 detail="Backtest costs must be finite and non-negative; position size must be finite and positive",
@@ -4448,6 +4496,8 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     position_size_mode=position_size_mode,
                     position_size=position_size,
                     quote_to_account_rate=Decimal(quote_to_account_rate),
+                    stop_loss_mode=stop_loss_mode,
+                    stop_loss_value=stop_loss_value,
                 ).run(frame, detail_candles=frame)
                 strategy_parameters = dict(
                     approved_hyperopt.get("parameters", {})
@@ -4560,6 +4610,16 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                         "timeframe": timeframe,
                         "riskFraction": str(settings.risk_fraction),
                         "stopPips": "0.5",
+                        "stopLossMode": stop_loss_mode,
+                        "stopLossValue": str(stop_loss_value),
+                        "stopLossUnit": (
+                            "pips"
+                            if stop_loss_mode == "pips"
+                            else "% of entry price"
+                            if stop_loss_mode == "percent"
+                            else account_currency
+                        ),
+                        "stopLossOptimized": False,
                         "spread": str(spread),
                         "slippage": str(slippage),
                         "financingRatePerDayPercent": str(financing_rate_per_day * Decimal("100")),
