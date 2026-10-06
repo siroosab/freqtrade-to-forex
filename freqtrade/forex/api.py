@@ -4139,6 +4139,43 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         session_token: str | None = Header(default=None, alias="X-Session-Token"),
     ) -> dict:
         validate_write_access(user_role, csrf_token, session_token)
+        position_size_mode = str(payload.get("positionSizeMode", "risk"))
+        if position_size_mode not in {"risk", "units", "account_amount"}:
+            raise HTTPException(status_code=400, detail="Unsupported position size mode")
+        try:
+            requested_position_size = payload.get("positionSize")
+            position_size = (
+                Decimal("1000")
+                if requested_position_size is None
+                else Decimal(str(requested_position_size))
+            )
+            requested_spread = (
+                Decimal(str(payload["spread"])) if payload.get("spread") is not None else None
+            )
+            slippage = Decimal(str(payload.get("slippage", "0")))
+            financing_rate_per_day = Decimal(
+                str(payload.get("financingRatePerDayPercent", "0"))
+            ) / Decimal("100")
+            commission_rate = Decimal(str(payload.get("commissionRatePercent", "0"))) / Decimal(
+                "100"
+            )
+        except (ArithmeticError, TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=400,
+                detail="Backtest cost and position size settings must be valid numbers",
+            ) from exc
+        invalid_spread = requested_spread is not None and (
+            not requested_spread.is_finite() or requested_spread < 0
+        )
+        invalid_rate = any(
+            not value.is_finite() or value < 0
+            for value in (slippage, financing_rate_per_day, commission_rate)
+        )
+        if invalid_spread or invalid_rate or not position_size.is_finite() or position_size <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Backtest costs must be finite and non-negative; position size must be finite and positive",
+            )
         if payload.get("trackProgress") and not payload.get("_job_id"):
             job_id = f"bt-job-{secrets.token_hex(4)}"
             BACKTEST_JOBS[job_id] = {
@@ -4376,6 +4413,18 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     }
                 )
                 price_row = (await client.get_prices((instrument_name,)))[0]
+                spread = requested_spread if requested_spread is not None else Decimal(
+                    str(price_row.spread)
+                )
+                account_currency = str(account.currency).upper()
+                quote_to_account_rate, conversion_error = await currency_conversion_rate(
+                    client, metadata[0].quote_currency, account_currency
+                )
+                if quote_to_account_rate is None:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Cannot size Backtest trades in {account_currency}: {conversion_error}",
+                    )
                 update_backtest_job(
                     job_id,
                     phase="backtest",
@@ -4392,10 +4441,13 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     starting_balance=Decimal(str(account.balance)),
                     risk_fraction=Decimal(str(settings.risk_fraction)),
                     stop_pips=Decimal("0.5"),
-                    spread=price_row.spread,
-                    slippage=Decimal("0"),
-                    financing_rate_per_day=Decimal("0"),
-                    quote_to_account_rate=Decimal("1"),
+                    spread=spread,
+                    slippage=slippage,
+                    financing_rate_per_day=financing_rate_per_day,
+                    commission_rate=commission_rate,
+                    position_size_mode=position_size_mode,
+                    position_size=position_size,
+                    quote_to_account_rate=Decimal(quote_to_account_rate),
                 ).run(frame, detail_candles=frame)
                 strategy_parameters = dict(
                     approved_hyperopt.get("parameters", {})
@@ -4508,6 +4560,23 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                         "timeframe": timeframe,
                         "riskFraction": str(settings.risk_fraction),
                         "stopPips": "0.5",
+                        "spread": str(spread),
+                        "slippage": str(slippage),
+                        "financingRatePerDayPercent": str(financing_rate_per_day * Decimal("100")),
+                        "commissionRatePercent": str(commission_rate * Decimal("100")),
+                        "positionSizeMode": position_size_mode,
+                        "positionSize": (
+                            None if position_size_mode == "risk" else str(position_size)
+                        ),
+                        "positionSizeUnit": (
+                            "units"
+                            if position_size_mode == "units"
+                            else account_currency
+                            if position_size_mode == "account_amount"
+                            else "risk"
+                        ),
+                        "accountCurrency": account_currency,
+                        "quoteToAccountRate": str(quote_to_account_rate),
                         "executionMode": settings.execution_mode,
                         "configSource": "approved-hyperopt" if approved_hyperopt else "default",
                         "approvedObjective": str(approved_hyperopt.get("objective"))

@@ -239,6 +239,18 @@ export type BacktestRunResult = {
   backtestWindow?: string
   dataSource?: string
   warning?: string
+  execution?: {
+    riskFraction: string
+    spread: string
+    slippage: string
+    financingRatePerDayPercent: string
+    commissionRatePercent: string
+    positionSizeMode: 'risk' | 'units' | 'account_amount'
+    positionSize: string | null
+    positionSizeUnit: string
+    accountCurrency: string
+    quoteToAccountRate: string
+  }
   tradeDetails?: Array<Record<string, string | number | null | boolean>>
   summary?: Record<string, string | number | null>
   result?: BacktestRunResult
@@ -946,7 +958,7 @@ export async function getBacktestJob(jobId: string): Promise<BacktestRunResult> 
   return response.json() as Promise<BacktestRunResult>
 }
 
-export async function runBacktest(payload: { pair: string; timeframe: string; strategyClass: string; steps: number; historyMode?: 'candles' | 'days' | 'date_range'; historyValue?: number; startDate?: string; endDate?: string }): Promise<BacktestRunResult> {
+export async function runBacktest(payload: { pair: string; timeframe: string; strategyClass: string; steps: number; historyMode?: 'candles' | 'days' | 'date_range'; historyValue?: number; startDate?: string; endDate?: string; spread?: string; slippage?: string; financingRatePerDayPercent?: string; commissionRatePercent?: string; positionSizeMode?: 'risk' | 'units' | 'account_amount'; positionSize?: string | null }): Promise<BacktestRunResult> {
   const response = await fetch(buildApiUrl('/api/v1/backtests/run'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

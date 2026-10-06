@@ -188,8 +188,9 @@ export function HyperoptPage() {
     : Number.isInteger(historyValue)
       && historyValue >= (historyMode === 'candles' ? 40 : 1)
       && historyValue <= 10000
-  const spreadOverrideValue = spreadOverride?.pair === pair ? spreadOverride.value : ''
-  const effectiveSpread = spreadOverrideValue || quoteQuery.data?.spread || ''
+  const effectiveSpread = spreadOverride?.pair === pair
+    ? spreadOverride.value
+    : quoteQuery.data?.spread ?? ''
   const costValues = [effectiveSpread, slippage, financingRatePerDay, commissionRatePercent]
   const costSettingsValid = costValues.every((value) => value.trim() !== ''
     && Number.isFinite(Number(value))
@@ -214,7 +215,18 @@ export function HyperoptPage() {
       steps: historyValue,
       ...(historyMode === 'date_range' ? dateRange : {}),
     }
-    backtestMutation.mutate({ pair, timeframe, strategyClass, ...history })
+    backtestMutation.mutate({
+      pair,
+      timeframe,
+      strategyClass,
+      ...history,
+      spread: effectiveSpread,
+      slippage,
+      financingRatePerDayPercent: financingRatePerDay,
+      commissionRatePercent,
+      positionSizeMode,
+      positionSize: positionSizeMode === 'risk' ? null : selectedPositionSize,
+    })
   }
 
   const runOptimization = () => {
@@ -403,17 +415,75 @@ export function HyperoptPage() {
         <div className="panel research-panel">
           <div className="panel-header compact">
             <div><p className="eyebrow">Research · 01</p><h3>Backtest</h3></div>
-            <button className="primary-action" type="button" onClick={runResearch} disabled={!scopeEnabled || !historyValueValid || researchBusy}>
+            <button className="primary-action" type="button" onClick={runResearch} disabled={!scopeEnabled || !historyValueValid || !costSettingsValid || !positionSizeValid || quoteQuery.isPending || quoteQuery.isError || setupQuery.isPending || setupQuery.isError || researchBusy}>
               {backtestMutation.isPending || backtestRunning ? 'Backtest running…' : 'Run backtest'}
             </button>
           </div>
           <p>{pair} · {timeframe} · {strategyClass || 'Select a strategy'}</p>
+          <div className="settings-grid">
+            <label className="field-block">
+              <span>Spread (price units)</span>
+              <input
+                type="number"
+                min="0"
+                step="any"
+                value={effectiveSpread}
+                onChange={(event) => setSpreadOverride({ pair, value: event.target.value })}
+              />
+              <small>Default: current broker spread ({quoteQuery.data?.spread ?? 'loading'}). Applied as half-spread at entry and exit.</small>
+            </label>
+            <label className="field-block">
+              <span>Slippage (price units)</span>
+              <input type="number" min="0" step="any" value={slippage} onChange={(event) => setSlippage(event.target.value)} />
+              <small>Default: 0. Applied adversely at entry and exit.</small>
+            </label>
+            <label className="field-block">
+              <span>Financing rate per day (%)</span>
+              <input type="number" min="0" step="any" value={financingRatePerDay} onChange={(event) => setFinancingRatePerDay(event.target.value)} />
+              <small>Default: 0. Debited from longs and credited to shorts.</small>
+            </label>
+            <label className="field-block">
+              <span>Commission per side (%)</span>
+              <input type="number" min="0" step="any" value={commissionRatePercent} onChange={(event) => setCommissionRatePercent(event.target.value)} />
+              <small>Default: 0. Charged on notional at entry and exit.</small>
+            </label>
+            <label className="field-block">
+              <span>Initial position sizing</span>
+              <select value={positionSizeMode} onChange={(event) => setPositionSizeMode(event.target.value as typeof positionSizeMode)}>
+                <option value="risk">Risk-based (default)</option>
+                <option value="units">Fixed units</option>
+                <option value="account_amount">Fixed amount in account currency</option>
+              </select>
+              <small>Default: risk-based, {Number(riskFraction) * 100}% of account balance and 0.5 pip stop.</small>
+            </label>
+            {positionSizeMode === 'units' && (
+              <label className="field-block">
+                <span>Initial size (units)</span>
+                <input type="number" min="1" step="1" value={unitSize} onChange={(event) => setUnitSize(event.target.value)} />
+                <small>Default: 1,000 units. Rounded down to instrument precision.</small>
+              </label>
+            )}
+            {positionSizeMode === 'account_amount' && (
+              <label className="field-block">
+                <span>Initial notional ({quoteQuery.data?.accountCurrency ?? 'account currency'})</span>
+                <input type="number" min="0.01" step="any" value={accountAmount} onChange={(event) => setAccountAmount(event.target.value)} />
+                <small>Default: 1,000 {quoteQuery.data?.accountCurrency ?? 'account currency'}, converted to units using live currency conversion.</small>
+              </label>
+            )}
+          </div>
+          {quoteQuery.error && <p role="alert">Could not load the default broker spread: {quoteQuery.error.message}</p>}
+          {setupQuery.error && <p role="alert">Could not load the account risk default: {setupQuery.error.message}</p>}
           {backtest && (
             <div className="bullet-list">
               <div><span>Status</span><strong>{backtest.status}</strong></div>
               <div><span>Net P/L</span><strong>{backtest.netPl ?? '—'}</strong></div>
               <div><span>Trades</span><strong>{backtest.trades ?? '—'}</strong></div>
               <div><span>Max drawdown</span><strong>{backtest.maxDrawdown ?? '—'}</strong></div>
+              {backtest.execution && (
+                <div><span>Applied assumptions</span><strong>
+                  Spread {backtest.execution.spread} · Slippage {backtest.execution.slippage} · Financing {backtest.execution.financingRatePerDayPercent}%/day · Commission {backtest.execution.commissionRatePercent}%/side · Size {backtest.execution.positionSizeMode === 'risk' ? `risk-based (${Number(backtest.execution.riskFraction) * 100}%)` : `${backtest.execution.positionSize} ${backtest.execution.positionSizeUnit}`}
+                </strong></div>
+              )}
               {backtest.warning && <div><span>Data note</span><strong>{backtest.warning}</strong></div>}
             </div>
           )}
@@ -439,6 +509,49 @@ export function HyperoptPage() {
           </div>
           <div className="settings-grid">
             <label className="field-block">
+              <span>Spread (price units)</span>
+              <input type="number" min="0" step="any" value={effectiveSpread} onChange={(event) => setSpreadOverride({ pair, value: event.target.value })} />
+              <small>Default: current broker spread ({quoteQuery.data?.spread ?? 'loading'}).</small>
+            </label>
+            <label className="field-block">
+              <span>Slippage (price units)</span>
+              <input type="number" min="0" step="any" value={slippage} onChange={(event) => setSlippage(event.target.value)} />
+              <small>Default: 0.</small>
+            </label>
+            <label className="field-block">
+              <span>Financing rate per day (%)</span>
+              <input type="number" min="0" step="any" value={financingRatePerDay} onChange={(event) => setFinancingRatePerDay(event.target.value)} />
+              <small>Default: 0.</small>
+            </label>
+            <label className="field-block">
+              <span>Commission per side (%)</span>
+              <input type="number" min="0" step="any" value={commissionRatePercent} onChange={(event) => setCommissionRatePercent(event.target.value)} />
+              <small>Default: 0.</small>
+            </label>
+            <label className="field-block">
+              <span>Initial position sizing</span>
+              <select value={positionSizeMode} onChange={(event) => setPositionSizeMode(event.target.value as typeof positionSizeMode)}>
+                <option value="risk">Risk-based (default)</option>
+                <option value="units">Fixed units</option>
+                <option value="account_amount">Fixed amount in account currency</option>
+              </select>
+              <small>Default: risk-based, {Number(riskFraction) * 100}% of account balance.</small>
+            </label>
+            {positionSizeMode === 'units' && (
+              <label className="field-block">
+                <span>Initial size (units)</span>
+                <input type="number" min="1" step="1" value={unitSize} onChange={(event) => setUnitSize(event.target.value)} />
+                <small>Default: 1,000 units.</small>
+              </label>
+            )}
+            {positionSizeMode === 'account_amount' && (
+              <label className="field-block">
+                <span>Initial notional ({quoteQuery.data?.accountCurrency ?? 'account currency'})</span>
+                <input type="number" min="0.01" step="any" value={accountAmount} onChange={(event) => setAccountAmount(event.target.value)} />
+                <small>Default: 1,000 {quoteQuery.data?.accountCurrency ?? 'account currency'}.</small>
+              </label>
+            )}
+            <label className="field-block">
               <span>Attempts</span>
               <input type="number" min="1" max="900" value={attempts} onChange={(event) => setAttempts(Number(event.target.value))} />
             </label>
@@ -448,55 +561,6 @@ export function HyperoptPage() {
                 {(lossFunctionsQuery.data?.options ?? [lossFunction]).map((item) => <option key={item}>{item}</option>)}
               </select>
             </label>
-            <label className="field-block">
-              <span>Spread (price units)</span>
-              <input
-                type="number"
-                min="0"
-                step="any"
-                value={spreadOverrideValue || quoteQuery.data?.spread || ''}
-                onChange={(event) => setSpreadOverride({ pair, value: event.target.value })}
-              />
-              <small>Default: current broker spread ({quoteQuery.data?.spread ?? 'loading'}). Applied as half-spread on entry and exit across the selected history.</small>
-            </label>
-            <label className="field-block">
-              <span>Slippage (price units)</span>
-              <input type="number" min="0" step="any" value={slippage} onChange={(event) => setSlippage(event.target.value)} />
-              <small>Default: 0. Applied at entry and exit.</small>
-            </label>
-            <label className="field-block">
-              <span>Financing rate per day (%)</span>
-              <input type="number" min="0" step="any" value={financingRatePerDay} onChange={(event) => setFinancingRatePerDay(event.target.value)} />
-              <small>Default: 0. Enter the daily rate as a percentage; debited from longs and credited to shorts.</small>
-            </label>
-            <label className="field-block">
-              <span>Commission per side (%)</span>
-              <input type="number" min="0" step="any" value={commissionRatePercent} onChange={(event) => setCommissionRatePercent(event.target.value)} />
-              <small>Default: 0. Applied to notional at both entry and exit.</small>
-            </label>
-            <label className="field-block">
-              <span>Initial position sizing</span>
-              <select value={positionSizeMode} onChange={(event) => setPositionSizeMode(event.target.value as typeof positionSizeMode)}>
-                <option value="risk">Risk-based (default)</option>
-                <option value="units">Fixed units</option>
-                <option value="account_amount">Fixed amount in account currency</option>
-              </select>
-              <small>Default: risk-based, using {Number(riskFraction) * 100}% of account balance and a 0.5 pip stop.</small>
-            </label>
-            {positionSizeMode === 'units' && (
-              <label className="field-block">
-                <span>Initial size (units)</span>
-                <input type="number" min="1" step="1" value={unitSize} onChange={(event) => setUnitSize(event.target.value)} />
-                <small>Default: 1,000 units. Rounded down to the instrument's supported precision.</small>
-              </label>
-            )}
-            {positionSizeMode === 'account_amount' && (
-              <label className="field-block">
-                <span>Initial notional ({quoteQuery.data?.accountCurrency ?? 'account currency'})</span>
-                <input type="number" min="0.01" step="any" value={accountAmount} onChange={(event) => setAccountAmount(event.target.value)} />
-                <small>Default: 1,000 {quoteQuery.data?.accountCurrency ?? 'account currency'}. Converted to units using the live quote and currency conversion rate.</small>
-              </label>
-            )}
           </div>
           {quoteQuery.error && <p role="alert">Could not load the default broker spread: {quoteQuery.error.message}</p>}
           {setupQuery.error && <p role="alert">Could not load the account risk default: {setupQuery.error.message}</p>}

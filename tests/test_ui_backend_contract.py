@@ -961,6 +961,8 @@ def test_app_starts_without_built_ui_assets(tmp_path, monkeypatch):
 
 def test_backtest_run_uses_requested_candles(monkeypatch, tmp_path):
     download_requests = []
+    backtester_options = []
+    account_currencies = iter(("USD", "USD", "GBP"))
     monkeypatch.setenv("OANDA_CANDLE_CACHE_PATH", str(tmp_path / "candles.json"))
 
     class FakeResult:
@@ -986,10 +988,20 @@ def test_backtest_run_uses_requested_candles(monkeypatch, tmp_path):
             return None
 
         async def get_instruments(self, instruments):
-            return [type("Instrument", (), {"name": "EUR_USD", "pair": "EUR/USD"})()]
+            return [
+                type(
+                    "Instrument",
+                    (),
+                    {"name": "EUR_USD", "pair": "EUR/USD", "quote_currency": "USD"},
+                )()
+            ]
 
         async def get_account_summary(self):
-            return type("Account", (), {"balance": "10000", "currency": "USD"})()
+            return type(
+                "Account",
+                (),
+                {"balance": "10000", "currency": next(account_currencies)},
+            )()
 
         async def get_candles(self, instrument, granularity, count=None, **kwargs):
             download_requests.append((instrument, granularity, count, kwargs))
@@ -1023,11 +1035,23 @@ def test_backtest_run_uses_requested_candles(monkeypatch, tmp_path):
             ]
 
         async def get_prices(self, instruments):
-            return [type("Price", (), {"instrument": "EUR_USD", "spread": 0.0003})()]
+            instrument = instruments[0]
+            return [
+                type(
+                    "Price",
+                    (),
+                    {
+                        "instrument": instrument,
+                        "spread": 0.0003,
+                        "bid": "0.8",
+                        "ask": "0.81",
+                    },
+                )()
+            ]
 
     class FakeBacktester:
         def __init__(self, *args, **kwargs):
-            pass
+            backtester_options.append(kwargs)
 
         def run(self, frame, **kwargs):
             return FakeResult()
@@ -1057,7 +1081,18 @@ def test_backtest_run_uses_requested_candles(monkeypatch, tmp_path):
 
     response = client.post(
         "/api/v1/backtests/run",
-        json={"pair": "EUR/USD", "timeframe": "M5", "historyMode": "candles", "historyValue": 1234},
+        json={
+            "pair": "EUR/USD",
+            "timeframe": "M5",
+            "historyMode": "candles",
+            "historyValue": 1234,
+            "spread": "0.0005",
+            "slippage": "0.0001",
+            "financingRatePerDayPercent": "0.02",
+            "commissionRatePercent": "0.25",
+            "positionSizeMode": "units",
+            "positionSize": "2500",
+        },
         headers={"X-Session-Token": token, "X-User-Role": "operator", "X-CSRF-Token": csrf_token},
     )
     date_range_response = client.post(
@@ -1071,14 +1106,60 @@ def test_backtest_run_uses_requested_candles(monkeypatch, tmp_path):
         },
         headers={"X-Session-Token": token, "X-User-Role": "operator", "X-CSRF-Token": csrf_token},
     )
+    account_amount_response = client.post(
+        "/api/v1/backtests/run",
+        json={
+            "pair": "EUR/USD",
+            "timeframe": "M5",
+            "historyMode": "candles",
+            "historyValue": 100,
+            "positionSizeMode": "account_amount",
+            "positionSize": "1000",
+        },
+        headers={"X-Session-Token": token, "X-User-Role": "operator", "X-CSRF-Token": csrf_token},
+    )
+    invalid_size_response = client.post(
+        "/api/v1/backtests/run",
+        json={
+            "pair": "EUR/USD",
+            "timeframe": "M5",
+            "positionSizeMode": "units",
+            "positionSize": "0",
+        },
+        headers={"X-Session-Token": token, "X-User-Role": "operator", "X-CSRF-Token": csrf_token},
+    )
 
     assert response.status_code == 200, response.text
     payload = response.json()
     assert download_requests[0][:3] == ("EUR_USD", "M5", 1234)
     assert payload["steps"] == 2
     assert "OANDA returned 2" in payload["message"]
+    assert backtester_options[0]["spread"] == Decimal("0.0005")
+    assert backtester_options[0]["slippage"] == Decimal("0.0001")
+    assert backtester_options[0]["financing_rate_per_day"] == Decimal("0.0002")
+    assert backtester_options[0]["commission_rate"] == Decimal("0.0025")
+    assert backtester_options[0]["position_size_mode"] == "units"
+    assert backtester_options[0]["position_size"] == Decimal("2500")
+    assert backtester_options[0]["quote_to_account_rate"] == Decimal("1")
+    assert payload["execution"]["spread"] == "0.0005"
+    assert payload["execution"]["positionSizeMode"] == "units"
+    assert payload["execution"]["positionSize"] == "2500"
     assert date_range_response.status_code == 200, date_range_response.text
     assert date_range_response.json()["steps"] == 2
+    assert backtester_options[1]["spread"] == Decimal("0.0003")
+    assert backtester_options[1]["slippage"] == Decimal("0")
+    assert backtester_options[1]["financing_rate_per_day"] == Decimal("0")
+    assert backtester_options[1]["commission_rate"] == Decimal("0")
+    assert backtester_options[1]["position_size_mode"] == "risk"
+    assert backtester_options[1]["position_size"] == Decimal("1000")
+    assert date_range_response.json()["execution"]["positionSizeMode"] == "risk"
+    assert account_amount_response.status_code == 200, account_amount_response.text
+    assert backtester_options[2]["position_size_mode"] == "account_amount"
+    assert backtester_options[2]["position_size"] == Decimal("1000")
+    assert backtester_options[2]["quote_to_account_rate"] == Decimal("0.8")
+    assert account_amount_response.json()["execution"]["accountCurrency"] == "GBP"
+    assert account_amount_response.json()["execution"]["quoteToAccountRate"] == "0.8"
+    assert invalid_size_response.status_code == 400
     assert download_requests[1][2] is None
     assert download_requests[1][3]["from_time"] == "2024-01-01T00:00:00Z"
     assert download_requests[1][3]["to_time"] == "2024-01-02T00:00:00Z"
