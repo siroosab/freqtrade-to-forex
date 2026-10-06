@@ -675,7 +675,7 @@ export function HyperoptPage() {
               <div className="strategy-table-wrap">
                 <table className="positions-table">
                   <thead><tr><th>Rank</th><th>Objective</th><th>Validation P/L</th><th>Drawdown</th><th>Trades</th><th>Parameters</th></tr></thead>
-                  <tbody>{report.candidates.slice(-3).map((candidate) => (
+                  <tbody>{report.candidates.slice(0, 3).map((candidate) => (
                     <tr
                       key={candidate.rank}
                       className={Number(candidate.validationNetPl) > 0 ? 'row-profit' : Number(candidate.validationNetPl) < 0 ? 'row-loss' : undefined}
