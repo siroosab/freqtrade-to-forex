@@ -1,5 +1,6 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { logoutUser } from '../api/mockApi'
+import { ServerStatusPanel } from './ServerStatusPanel'
 import { useUiStore } from '../store/useUiStore'
 
 type NavItem = {
@@ -67,6 +68,8 @@ export function Layout() {
             )
           })}
         </nav>
+
+        <ServerStatusPanel />
 
         <div className="mini-panel">
           <p className="eyebrow">Execution Mode</p>

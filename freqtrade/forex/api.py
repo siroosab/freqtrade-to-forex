@@ -20,6 +20,7 @@ from functools import partial
 from pathlib import Path
 
 import pandas as pd
+import psutil
 from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, Response
@@ -1391,6 +1392,17 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
     @app.get("/api/v1/health")
     async def health() -> dict:
         return await resolve_health_payload()
+
+    @app.get("/api/v1/system/metrics")
+    def system_metrics() -> dict:
+        memory = psutil.virtual_memory()
+        return {
+            "cpuPercent": psutil.cpu_percent(interval=None),
+            "memoryPercent": memory.percent,
+            "memoryUsed": memory.used,
+            "memoryTotal": memory.total,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
 
     @app.get("/api/v1/account/summary")
     async def account_summary() -> dict:

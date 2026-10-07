@@ -16,6 +16,13 @@ export type LiveQuote = { pair: string; bid: string; ask: string; spread: string
 export type BrokerTrade = { id: string; symbol: string; side: 'BUY' | 'SELL'; units: string; entryPrice: string; currentPrice: string | null; exitPrice: string | null; stopLoss: string | null; takeProfit: string | null; pnl: string; openedAt: string | null; closedAt: string | null; status: 'open' | 'closed'; manual: boolean; source: string; clientOrderId: string | null }
 export type BrokerPositions = { open: BrokerTrade[]; closed: BrokerTrade[]; accountCurrency?: string }
 export type BrokerPendingOrder = { id: string; symbol: string; side: 'BUY' | 'SELL'; volume: string; price: string; status: string; createdAt: string | null; risk: string; manual: boolean }
+export type ServerMetrics = {
+  cpuPercent: number
+  memoryPercent: number
+  memoryUsed: number
+  memoryTotal: number
+  timestamp: string
+}
 
 const browserOrigin = typeof window !== 'undefined' ? window.location.origin : 'http://127.0.0.1:8090'
 const browserWebSocketOrigin = typeof window !== 'undefined'
@@ -592,6 +599,12 @@ async function safeFetchWithFallback<T>(path: string, fallbackKey: keyof typeof 
 
 export async function getAccountSummary(): Promise<AccountSummary> {
   return safeFetchWithFallback<AccountSummary>('/api/v1/account/summary', 'account')
+}
+
+export async function getServerMetrics(): Promise<ServerMetrics> {
+  const response = await fetch(buildApiUrl('/api/v1/system/metrics'))
+  if (!response.ok) throw new Error('Server metrics unavailable')
+  return response.json() as Promise<ServerMetrics>
 }
 
 export async function getMarketSummary(): Promise<MarketSummary> {
