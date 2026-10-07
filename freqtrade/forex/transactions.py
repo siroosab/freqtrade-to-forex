@@ -5,6 +5,18 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import Any
 
+ORDER_REJECTION_TRANSACTION_TYPES = (
+    "MARKET_ORDER_REJECT",
+    "LIMIT_ORDER_REJECT",
+    "STOP_ORDER_REJECT",
+    "MARKET_IF_TOUCHED_ORDER_REJECT",
+    "TAKE_PROFIT_ORDER_REJECT",
+    "STOP_LOSS_ORDER_REJECT",
+    "TRAILING_STOP_LOSS_ORDER_REJECT",
+    "ONE_CANCELS_ALL_ORDER_REJECT",
+    "ORDER_CANCEL_REJECT",
+)
+
 
 class BrokerOrderStatus(StrEnum):
     OPEN = "open"
@@ -55,10 +67,16 @@ class OrderStateMachine:
     """Apply OANDA events once and retain the latest state per order."""
 
     _STATUS_BY_TRANSACTION = {
-        "ORDER_CREATE": BrokerOrderStatus.OPEN,
+        "MARKET_ORDER": BrokerOrderStatus.OPEN,
+        "LIMIT_ORDER": BrokerOrderStatus.OPEN,
+        "STOP_ORDER": BrokerOrderStatus.OPEN,
+        "MARKET_IF_TOUCHED_ORDER": BrokerOrderStatus.OPEN,
+        "TAKE_PROFIT_ORDER": BrokerOrderStatus.OPEN,
+        "STOP_LOSS_ORDER": BrokerOrderStatus.OPEN,
+        "TRAILING_STOP_LOSS_ORDER": BrokerOrderStatus.OPEN,
+        "ONE_CANCELS_ALL_ORDER": BrokerOrderStatus.OPEN,
         "ORDER_FILL": BrokerOrderStatus.FILLED,
         "ORDER_CANCEL": BrokerOrderStatus.CANCELED,
-        "ORDER_REJECT": BrokerOrderStatus.REJECTED,
         "ORDER_CANCEL_REJECT": BrokerOrderStatus.OPEN,
     }
 
@@ -73,6 +91,8 @@ class OrderStateMachine:
         if transaction.order_id is None:
             return None
         status = self._STATUS_BY_TRANSACTION.get(transaction.transaction_type)
+        if status is None and transaction.transaction_type in ORDER_REJECTION_TRANSACTION_TYPES:
+            status = BrokerOrderStatus.REJECTED
         if status is None:
             return self._orders.get(transaction.order_id)
         current = self._orders.get(transaction.order_id)

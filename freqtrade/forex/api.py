@@ -37,7 +37,13 @@ from freqtrade.forex.health import OandaHealthCheck
 from freqtrade.forex.historical import HistoricalCandleStore
 from freqtrade.forex.ledger import PaperLedger
 from freqtrade.forex.models import OandaEnvironment, OandaInstrument
-from freqtrade.forex.oanda import OandaAPIError, OandaClient, discover_oanda_accounts
+from freqtrade.forex.oanda import (
+    ORDER_REJECTION_TRANSACTION_TYPES,
+    ORDER_TRANSACTION_FILTERS,
+    OandaAPIError,
+    OandaClient,
+    discover_oanda_accounts,
+)
 from freqtrade.forex.provider import OandaMarketDataProvider
 from freqtrade.forex.strategy_catalog import discover_strategy_files, validate_strategy_upload
 from freqtrade.forex.strategy_execution import (
@@ -1749,10 +1755,10 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     transaction_types = {
                         "filled": ("ORDER_FILL",),
                         "cancelled": ("ORDER_CANCEL",),
-                        "rejected": ("ORDER_REJECT",),
+                        "rejected": ORDER_REJECTION_TRANSACTION_TYPES,
                     }.get(
                         normalized_status,
-                        ("ORDER_FILL", "ORDER_CANCEL", "ORDER_REJECT"),
+                        ORDER_TRANSACTION_FILTERS,
                     )
                     tasks.append(
                         (
@@ -1832,8 +1838,12 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 transaction_status = {
                     "ORDER_FILL": "Filled",
                     "ORDER_CANCEL": "Cancelled",
-                    "ORDER_REJECT": "Rejected",
                 }.get(transaction_type)
+                if (
+                    transaction_status is None
+                    and transaction_type in ORDER_REJECTION_TRANSACTION_TYPES
+                ):
+                    transaction_status = "Rejected"
                 if transaction_status is None:
                     continue
 

@@ -20,7 +20,10 @@ from freqtrade.forex.models import (
 )
 from freqtrade.forex.order_validation import BrokerOrderValidator
 from freqtrade.forex.state import OandaAccountState, OandaPosition
-from freqtrade.forex.transactions import OandaTransaction
+from freqtrade.forex.transactions import (
+    ORDER_REJECTION_TRANSACTION_TYPES,
+    OandaTransaction,
+)
 
 
 class OandaAPIError(RuntimeError):
@@ -35,6 +38,12 @@ _SUPPORTED_ACCOUNT_TAGS = {
     "CFD": ("003", "CFD"),
     "SPREAD_BETTING": ("002", "Spread Betting"),
 }
+ORDER_TRANSACTION_FILTERS = (
+    "ORDER_FILL",
+    "ORDER_CANCEL",
+    *ORDER_REJECTION_TRANSACTION_TYPES,
+)
+ORDER_STREAM_FILTER = "ORDER"
 
 
 def classify_oanda_account(tags: Any) -> dict[str, str] | None:
@@ -324,11 +333,10 @@ class OandaClient:
         self,
         *,
         count: int = 100,
-        transaction_types: Sequence[str] = ("ORDER_FILL", "ORDER_CANCEL", "ORDER_REJECT"),
+        transaction_types: Sequence[str] = ORDER_TRANSACTION_FILTERS,
     ) -> list[dict[str, Any]]:
         bounded_count = max(1, min(count, 1000))
-        allowed_types = {"ORDER_FILL", "ORDER_CANCEL", "ORDER_REJECT"}
-        if not transaction_types or not set(transaction_types).issubset(allowed_types):
+        if not transaction_types or not set(transaction_types).issubset(ORDER_TRANSACTION_FILTERS):
             raise ValueError("Unsupported OANDA order transaction type")
         transaction_type_filter = ",".join(transaction_types)
         now = datetime.now(UTC)
@@ -410,9 +418,7 @@ class OandaClient:
     async def iter_transactions(
         self, *, since_transaction_id: str | None = None
     ) -> AsyncIterator[OandaTransaction]:
-        params: dict[str, str] = {
-            "type": "ORDER_CREATE,ORDER_FILL,ORDER_CANCEL,ORDER_REJECT,ORDER_CANCEL_REJECT"
-        }
+        params: dict[str, str] = {"type": ORDER_STREAM_FILTER}
         if since_transaction_id is not None:
             params["sinceTransactionID"] = since_transaction_id
         path = f"/v3/accounts/{self.account_id}/transactions/stream"

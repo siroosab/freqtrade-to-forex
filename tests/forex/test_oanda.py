@@ -2117,7 +2117,7 @@ def test_order_state_machine_is_idempotent() -> None:
     created = OandaTransaction.from_payload(
         {
             "id": "10",
-            "type": "ORDER_CREATE",
+            "type": "MARKET_ORDER",
             "orderID": "9",
             "instrument": "EUR_USD",
             "units": "1000",
@@ -2149,7 +2149,7 @@ def test_order_state_machine_records_partial_fill_then_completion_and_cancel() -
         OandaTransaction.from_payload(
             {
                 "id": "30",
-                "type": "ORDER_CREATE",
+                "type": "MARKET_ORDER",
                 "orderID": "29",
                 "instrument": "EUR_USD",
                 "units": "1000",
@@ -2196,6 +2196,7 @@ async def test_transaction_stream_skips_heartbeats() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path.endswith("/transactions/stream")
         assert request.url.params["sinceTransactionID"] == "10"
+        assert request.url.params["type"] == "ORDER"
         return httpx.Response(200, content=body)
 
     async with httpx.AsyncClient(
@@ -2219,7 +2220,7 @@ def test_gateway_applies_transaction_to_order_state() -> None:
         OandaTransaction.from_payload(
             {
                 "id": "21",
-                "type": "ORDER_REJECT",
+                "type": "MARKET_ORDER_REJECT",
                 "orderID": "20",
                 "instrument": "GBP_USD",
                 "reason": "INSUFFICIENT_MARGIN",
@@ -2235,7 +2236,7 @@ def test_gateway_applies_transaction_to_order_state() -> None:
 @pytest.mark.asyncio
 async def test_transaction_stream_reconnects_from_persisted_cursor(tmp_path) -> None:
     first = OandaTransaction.from_payload(
-        {"id": "11", "type": "ORDER_CREATE", "orderID": "10", "units": "1000"}
+        {"id": "11", "type": "MARKET_ORDER", "orderID": "10", "units": "1000"}
     )
     second = OandaTransaction.from_payload(
         {"id": "12", "type": "ORDER_FILL", "orderID": "10", "units": "1000", "price": "1.1"}
