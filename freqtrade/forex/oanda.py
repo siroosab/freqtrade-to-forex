@@ -3,6 +3,7 @@
 import asyncio
 from collections.abc import Sequence
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 import json
 from typing import Any
@@ -318,6 +319,45 @@ class OandaClient:
             "GET", f"/v3/accounts/{self.account_id}/pendingOrders"
         )
         return payload.get("orders", [])
+
+    async def get_order_transactions(
+        self,
+        *,
+        count: int = 100,
+        transaction_types: Sequence[str] = ("ORDER_FILL", "ORDER_CANCEL", "ORDER_REJECT"),
+    ) -> list[dict[str, Any]]:
+        bounded_count = max(1, min(count, 1000))
+        allowed_types = {"ORDER_FILL", "ORDER_CANCEL", "ORDER_REJECT"}
+        if not transaction_types or not set(transaction_types).issubset(allowed_types):
+            raise ValueError("Unsupported OANDA order transaction type")
+        transaction_type_filter = ",".join(transaction_types)
+        now = datetime.now(UTC)
+        end_time = now.isoformat().replace("+00:00", "Z")
+        params = {
+            "from": (now - timedelta(days=365)).isoformat().replace("+00:00", "Z"),
+            "to": end_time,
+            "pageSize": str(bounded_count),
+            "type": transaction_type_filter,
+        }
+        account_path = f"/v3/accounts/{self.account_id}/transactions"
+        payload = await self._request("GET", account_path, params=params)
+        pages = payload.get("pages", [])
+        if not pages:
+            return []
+
+        page_url = httpx.URL(pages[-1])
+        if page_url.host != self._client.base_url.host:
+            raise OandaAPIError("OANDA returned an unexpected transaction page URL")
+        page_path = f"{account_path}/idrange"
+        page_payload = await self._request(
+            "GET",
+            page_path,
+            params={
+                **dict(page_url.params),
+                "type": transaction_type_filter,
+            },
+        )
+        return page_payload.get("transactions", [])[-bounded_count:]
 
     async def close_trade(self, trade_id: str) -> dict[str, Any]:
         return await self._request(

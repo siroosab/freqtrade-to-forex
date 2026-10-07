@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pandas as pd
 import psutil
-from fastapi import FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, Response
 
@@ -1708,21 +1708,198 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         ]
 
     @app.get("/api/v1/orders")
-    async def orders() -> list[dict]:
-        if ORDER_HISTORY:
-            return [
-                {
-                    "id": str(item.get("orderId") or item.get("id") or "ORD-UNKNOWN"),
-                    "symbol": item.get("symbol", "EUR/USD"),
-                    "side": item.get("side", "BUY"),
-                    "volume": str(item.get("volume") or "0"),
-                    "status": str(item.get("status") or "Pending"),
-                    "createdAt": item.get("createdAt") or datetime.now(timezone.utc).isoformat(),
-                    "risk": item.get("risk", "0.75%"),
+    async def orders(
+        status: str = "all",
+        limit: int = Query(default=50, ge=1, le=500),
+    ) -> dict:
+        normalized_status = status.strip().lower()
+        allowed_statuses = {
+            "all",
+            "open",
+            "closed",
+            "filled",
+            "pending",
+            "cancelled",
+            "rejected",
+        }
+        if normalized_status not in allowed_statuses:
+            raise HTTPException(
+                status_code=400,
+                detail=f"status must be one of: {', '.join(sorted(allowed_statuses))}",
+            )
+
+        try:
+            settings = OandaSettings.from_environment()
+            async with OandaClient(
+                settings.token, settings.account_id, environment=settings.environment
+            ) as client:
+                tasks: list[tuple[str, object]] = []
+                if normalized_status in {"all", "pending"}:
+                    tasks.append(("pending", client.get_pending_orders()))
+                if normalized_status in {"all", "open"}:
+                    tasks.append(("open", client.get_open_trades()))
+                if normalized_status in {"all", "closed"}:
+                    tasks.append(("closed", client.get_closed_trades(count=limit)))
+                if normalized_status in {
+                    "all",
+                    "filled",
+                    "cancelled",
+                    "rejected",
+                }:
+                    transaction_types = {
+                        "filled": ("ORDER_FILL",),
+                        "cancelled": ("ORDER_CANCEL",),
+                        "rejected": ("ORDER_REJECT",),
+                    }.get(
+                        normalized_status,
+                        ("ORDER_FILL", "ORDER_CANCEL", "ORDER_REJECT"),
+                    )
+                    tasks.append(
+                        (
+                            "transactions",
+                            client.get_order_transactions(
+                                count=limit,
+                                transaction_types=transaction_types,
+                            ),
+                        )
+                    )
+                tasks.append(("account", client.get_account_summary()))
+                results = await asyncio.gather(*(task for _, task in tasks))
+            fetched = dict(zip((name for name, _ in tasks), results, strict=True))
+            account_currency = str(fetched["account"].currency)
+
+            rows: list[dict] = []
+            open_trade_pnl: dict[str, str] = {}
+            open_trades = fetched.get("open", [])
+            closed_trades = fetched.get("closed", [])
+            for trade in open_trades:
+                trade_id = str(trade.get("id", ""))
+                if trade_id:
+                    open_trade_pnl[trade_id] = str(trade.get("unrealizedPL", "0"))
+                units = Decimal(str(trade.get("currentUnits", "0")))
+                rows.append(
+                    {
+                        "id": trade_id,
+                        "symbol": normalize_pair(str(trade.get("instrument", ""))),
+                        "side": "BUY" if units >= 0 else "SELL",
+                        "volume": str(abs(units)),
+                        "status": "Open",
+                        "createdAt": trade.get("openTime"),
+                        "risk": "—",
+                        "pnl": str(trade.get("unrealizedPL", "0")),
+                        "pnlCurrency": account_currency,
+                        "source": "trade",
+                        "reason": None,
+                    }
+                )
+            for trade in closed_trades:
+                trade_id = str(trade.get("id", ""))
+                units = Decimal(str(trade.get("initialUnits", "0")))
+                rows.append(
+                    {
+                        "id": trade_id,
+                        "symbol": normalize_pair(str(trade.get("instrument", ""))),
+                        "side": "BUY" if units >= 0 else "SELL",
+                        "volume": str(abs(units)),
+                        "status": "Closed",
+                        "createdAt": trade.get("closeTime") or trade.get("openTime"),
+                        "risk": "—",
+                        "pnl": str(trade.get("realizedPL", "0")),
+                        "pnlCurrency": account_currency,
+                        "source": "trade",
+                        "reason": None,
+                    }
+                )
+            for order in fetched.get("pending", []):
+                units = Decimal(str(order.get("units", "0")))
+                rows.append(
+                    {
+                        "id": str(order.get("id", "")),
+                        "symbol": normalize_pair(str(order.get("instrument", ""))),
+                        "side": "BUY" if units >= 0 else "SELL",
+                        "volume": str(abs(units)),
+                        "status": "Pending",
+                        "createdAt": order.get("createTime"),
+                        "risk": "—",
+                        "pnl": None,
+                        "pnlCurrency": account_currency,
+                        "source": "order",
+                        "reason": None,
+                    }
+                )
+            for transaction in fetched.get("transactions", []):
+                transaction_type = transaction.get("type")
+                transaction_status = {
+                    "ORDER_FILL": "Filled",
+                    "ORDER_CANCEL": "Cancelled",
+                    "ORDER_REJECT": "Rejected",
+                }.get(transaction_type)
+                if transaction_status is None:
+                    continue
+
+                related_trade_ids = {
+                    str(trade.get("tradeID"))
+                    for trade in transaction.get("tradesClosed", [])
+                    if isinstance(trade, dict) and trade.get("tradeID")
                 }
-                for item in reversed(ORDER_HISTORY)
-            ]
-        return fallback_orders()
+                related_trade_ids.update(
+                    str(trade.get("tradeID"))
+                    for trade in (
+                        transaction.get("tradeOpened"),
+                        transaction.get("tradeReduced"),
+                    )
+                    if isinstance(trade, dict) and trade.get("tradeID")
+                )
+                units = Decimal(str(transaction.get("units", "0")))
+                transaction_pnl = transaction.get("pl")
+                for trade_id in related_trade_ids:
+                    if trade_id in open_trade_pnl:
+                        transaction_pnl = open_trade_pnl[trade_id]
+                        break
+                rows.append(
+                    {
+                        "id": str(transaction.get("orderID") or transaction.get("id", "")),
+                        "symbol": normalize_pair(str(transaction.get("instrument", ""))),
+                        "side": "BUY" if units >= 0 else "SELL",
+                        "volume": str(abs(units)),
+                        "status": transaction_status,
+                        "createdAt": transaction.get("time"),
+                        "risk": "—",
+                        "pnl": transaction_pnl,
+                        "pnlCurrency": account_currency,
+                        "source": "transaction",
+                        "transactionId": str(transaction.get("id", "")),
+                        "reason": transaction.get("reason"),
+                    }
+                )
+
+            rows.sort(key=lambda item: str(item.get("createdAt") or ""), reverse=True)
+            if normalized_status != "all":
+                status_label = {
+                    "open": "Open",
+                    "closed": "Closed",
+                    "filled": "Filled",
+                    "pending": "Pending",
+                    "cancelled": "Cancelled",
+                    "rejected": "Rejected",
+                }[normalized_status]
+                rows = [row for row in rows if row["status"] == status_label]
+
+            total = len(rows)
+            return {
+                "orders": rows[:limit],
+                "total": total,
+                "limit": limit,
+                "status": normalized_status,
+                "asOf": datetime.now(timezone.utc).isoformat(),
+                "historyDays": 365,
+            }
+        except HTTPException:
+            raise
+        except (OandaAPIError, ValueError) as exc:
+            raise HTTPException(
+                status_code=503, detail=f"Live OANDA order history unavailable: {exc}"
+            ) from exc
 
     @app.get("/api/v1/orders/pending")
     async def pending_orders() -> list[dict]:

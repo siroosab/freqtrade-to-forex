@@ -666,6 +666,152 @@
   color: #94a3b8 !important;
 }
 
+.orders-source-note {
+  margin: 6px 0 0;
+  color: #94a3b8;
+  font-size: 0.76rem;
+}
+
+.orders-panel-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 12px;
+}
+
+.orders-panel-header h3 {
+  margin: 4px 0 0;
+  color: #e2e8f0;
+  font-size: 1.05rem;
+}
+
+.orders-filters {
+  display: flex;
+  gap: 10px;
+}
+
+.orders-filters label {
+  display: grid;
+  gap: 4px;
+  color: #94a3b8;
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.orders-filters select {
+  min-width: 138px;
+  padding: 8px 10px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 9px;
+  background: rgba(2, 6, 23, 0.62);
+  color: #e2e8f0;
+  font-size: 0.78rem;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.orders-result-count {
+  margin: 0 0 8px;
+  color: #94a3b8;
+  font-size: 0.72rem;
+}
+
+.orders-message {
+  margin: 18px 0 6px;
+  padding: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.42);
+  color: #cbd5e1;
+  font-size: 0.84rem;
+}
+
+.orders-error {
+  border-color: rgba(248, 113, 113, 0.26);
+  background: rgba(127, 29, 29, 0.14);
+  color: #fca5a5;
+}
+
+.orders-history-table {
+  min-width: 860px;
+  font-variant-numeric: tabular-nums;
+}
+
+.orders-id-cell {
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.order-side-buy {
+  color: #6ee7b7 !important;
+  font-weight: 700;
+}
+
+.order-side-sell {
+  color: #fda4af !important;
+  font-weight: 700;
+}
+
+.order-status-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 9px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.order-status-badge.status-open {
+  border-color: rgba(56, 189, 248, 0.28);
+  background: rgba(14, 165, 233, 0.13);
+  color: #7dd3fc;
+}
+
+.order-status-badge.status-closed,
+.order-status-badge.status-filled {
+  border-color: rgba(52, 211, 153, 0.27);
+  background: rgba(16, 185, 129, 0.12);
+  color: #6ee7b7;
+}
+
+.order-status-badge.status-pending {
+  border-color: rgba(251, 191, 36, 0.28);
+  background: rgba(245, 158, 11, 0.12);
+  color: #fcd34d;
+}
+
+.order-status-badge.status-cancelled {
+  border-color: rgba(148, 163, 184, 0.22);
+  background: rgba(100, 116, 139, 0.14);
+  color: #cbd5e1;
+}
+
+.order-status-badge.status-rejected {
+  border-color: rgba(248, 113, 113, 0.3);
+  background: rgba(239, 68, 68, 0.13);
+  color: #fca5a5;
+}
+
+.order-pnl.positive {
+  color: #6ee7b7;
+  font-weight: 700;
+}
+
+.order-pnl.negative {
+  color: #fda4af;
+  font-weight: 700;
+}
+
+.order-pnl.neutral {
+  color: #94a3b8;
+}
+
 .close-position-button {
   border: 1px solid rgba(251, 113, 133, 0.35);
   border-radius: 4px;
@@ -1924,6 +2070,25 @@
 }
 
 @media (max-width: 760px) {
+  .orders-panel-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .orders-filters {
+    width: 100%;
+  }
+
+  .orders-filters label {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .orders-filters select {
+    min-width: 0;
+    width: 100%;
+  }
+
   .metrics-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }

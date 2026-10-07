@@ -467,11 +467,6 @@ const fallbackData = {
       { title: 'Order validation', detail: 'Client order ID confirmed and idempotency check passed.' },
     ] satisfies AlertItem[],
   } satisfies MarketSummary,
-  orders: [
-    { id: 'ORD-1042', symbol: 'EUR/USD', side: 'BUY', volume: '1200', status: 'Filled', createdAt: '2026-09-18T09:14:22Z', risk: '0.75%' },
-    { id: 'ORD-1043', symbol: 'GBP/USD', side: 'SELL', volume: '900', status: 'Pending', createdAt: '2026-09-18T09:17:10Z', risk: '0.62%' },
-    { id: 'ORD-1044', symbol: 'USD/JPY', side: 'BUY', volume: '800', status: 'Cancelled', createdAt: '2026-09-18T09:20:07Z', risk: '0.48%' },
-  ] satisfies Order[],
   risk: {
     dailyLoss: '$1,420.20',
     maxExposure: '$45,000.00',
@@ -725,8 +720,25 @@ export async function modifyPendingOrder(
   return response.json() as Promise<{ status: string; orderId: string; transactionId?: string }>
 }
 
-export async function getOrders(): Promise<Order[]> {
-  return safeFetchWithFallback<Order[]>('/api/v1/orders', 'orders')
+export type OrderHistoryStatus = 'all' | 'open' | 'closed' | 'filled' | 'pending' | 'cancelled' | 'rejected'
+export type OrderHistory = {
+  orders: Order[]
+  total: number
+  limit: number
+  status: OrderHistoryStatus
+  asOf: string
+  historyDays: number
+}
+
+export async function getOrders(status: OrderHistoryStatus, limit: number): Promise<OrderHistory> {
+  const params = new URLSearchParams({ status, limit: String(limit) })
+  const response = await fetch(buildApiUrl(`/api/v1/orders?${params.toString()}`))
+  if (!response.ok) {
+    let detail = `HTTP ${response.status}`
+    try { detail = ((await response.json()) as { detail?: string }).detail ?? detail } catch { /* status is enough */ }
+    throw new Error(`Live order history unavailable: ${detail}`)
+  }
+  return response.json() as Promise<OrderHistory>
 }
 
 export async function getOrdersChart(pair = 'EUR/USD', timeframe = 'M15', count = 500): Promise<ForexChartData> {

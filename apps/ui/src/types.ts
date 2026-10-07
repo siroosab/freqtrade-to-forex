@@ -58,9 +58,14 @@ export type Order = {
   symbol: string
   side: 'BUY' | 'SELL'
   volume: string
-  status: 'Pending' | 'Filled' | 'Cancelled' | 'Rejected'
-  createdAt: string
+  status: 'Open' | 'Closed' | 'Filled' | 'Pending' | 'Cancelled' | 'Rejected'
+  createdAt: string | null
   risk: string
+  pnl: string | null
+  pnlCurrency: string
+  source: 'trade' | 'order' | 'transaction'
+  transactionId?: string
+  reason?: string | null
 }
 
 export type RiskSummary = {
