@@ -56,6 +56,10 @@ export function HyperoptPage() {
   const [stopLossMode, setStopLossMode] = useState<'pips' | 'percent' | 'money'>('pips')
   const [stopDistanceMode, setStopDistanceMode] = useState<'static' | 'automatic'>('static')
   const [stopLossPips, setStopLossPips] = useState('0.5')
+  const [backtestStopLossPipsOverride, setBacktestStopLossPipsOverride] = useState<{
+    scope: string
+    value: string
+  } | null>(null)
   const [stopLossPercent, setStopLossPercent] = useState('0.5')
   const [stopLossMoney, setStopLossMoney] = useState('50')
   const [positionSizeMode, setPositionSizeMode] = useState<'risk' | 'units' | 'account_amount'>('risk')
@@ -172,6 +176,16 @@ export function HyperoptPage() {
   })
 
   const report = statusQuery.data?.report ?? reportQuery.data?.report
+  const reportStopLossPips = report?.status === 'completed'
+    && report.stopLoss?.mode === 'pips'
+    && Number.isFinite(Number(report.stopLoss.value))
+    && Number(report.stopLoss.value) > 0
+    ? report.stopLoss.value
+    : null
+  const backtestStopLossScope = `${pair}|${timeframe}|${strategyClass}|${report?.dataRevision ?? 'no-report'}`
+  const backtestStopLossPips = backtestStopLossPipsOverride?.scope === backtestStopLossScope
+    ? backtestStopLossPipsOverride.value
+    : reportStopLossPips ?? stopLossPips
   const backtest = backtestQuery.data?.result ?? backtestQuery.data
   const running = statusQuery.data?.status === 'running'
   const backtestRunning = Boolean(
@@ -212,6 +226,11 @@ export function HyperoptPage() {
       ? stopLossPercent
       : stopLossMoney
   const stopLossValid = Number.isFinite(Number(stopLossValue)) && Number(stopLossValue) > 0
+  const backtestStopLossValue = stopLossMode === 'pips'
+    ? backtestStopLossPips
+    : stopLossValue
+  const backtestStopLossValid = Number.isFinite(Number(backtestStopLossValue))
+    && Number(backtestStopLossValue) > 0
   const hyperoptStopLossValid = stopDistanceMode === 'automatic' || stopLossValid
 
   useEffect(() => {
@@ -239,7 +258,7 @@ export function HyperoptPage() {
       positionSizeMode,
       positionSize: positionSizeMode === 'risk' ? null : selectedPositionSize,
       stopLossMode,
-      stopLossValue,
+      stopLossValue: backtestStopLossValue,
     })
   }
 
@@ -432,7 +451,7 @@ export function HyperoptPage() {
         <div className="panel research-panel">
           <div className="panel-header compact">
             <div><p className="eyebrow">Research · 01</p><h3>Backtest</h3></div>
-            <button className="primary-action" type="button" onClick={runResearch} disabled={!scopeEnabled || !historyValueValid || !costSettingsValid || !positionSizeValid || !stopLossValid || quoteQuery.isPending || quoteQuery.isError || setupQuery.isPending || setupQuery.isError || researchBusy}>
+            <button className="primary-action" type="button" onClick={runResearch} disabled={!scopeEnabled || !historyValueValid || !costSettingsValid || !positionSizeValid || !backtestStopLossValid || quoteQuery.isPending || quoteQuery.isError || setupQuery.isPending || setupQuery.isError || researchBusy}>
               {backtestMutation.isPending || backtestRunning ? 'Backtest running…' : 'Run backtest'}
             </button>
           </div>
@@ -504,15 +523,22 @@ export function HyperoptPage() {
                 type="number"
                 min="0.000001"
                 step="any"
-                value={stopLossValue}
+                value={stopLossMode === 'pips' ? backtestStopLossPips : stopLossValue}
                 onChange={(event) => {
-                  if (stopLossMode === 'pips') setStopLossPips(event.target.value)
+                  if (stopLossMode === 'pips') {
+                    setBacktestStopLossPipsOverride({
+                      scope: backtestStopLossScope,
+                      value: event.target.value,
+                    })
+                  }
                   else if (stopLossMode === 'percent') setStopLossPercent(event.target.value)
                   else setStopLossMoney(event.target.value)
                 }}
               />
               <small>
-                {stopLossMode === 'money'
+                {stopLossMode === 'pips' && reportStopLossPips
+                  ? `Default from Hyperopt result: ${reportStopLossPips} pips.`
+                  : stopLossMode === 'money'
                   ? 'Default: 50. Converted to a price distance after position size and currency conversion; commissions and financing are additional costs.'
                   : `Default: ${stopLossMode === 'pips' ? '0.5 pips' : '0.5% of entry price'}.`}
                 {stopLossMode === 'money' && positionSizeMode === 'risk' ? ' Risk-based volume still uses the default 0.5-pip sizing distance.' : ''}
