@@ -139,6 +139,12 @@ export type HyperoptCandidateRow = {
   rank: number
   parameters: Record<string, string | number | boolean>
   minimal_roi?: Record<string, number>
+  stopLoss?: {
+    mode: 'pips'
+    value: string
+    unit?: string
+    optimized: true
+  }
   objective: string
   trainNetPl: string
   validationNetPl: string
@@ -168,7 +174,7 @@ export type HyperoptReport = {
     mode: 'pips' | 'percent' | 'money'
     value: string
     unit: string
-    optimized: false
+    optimized: boolean
   }
   positionSizing?: {
     mode: 'risk' | 'units' | 'account_amount'
@@ -325,7 +331,7 @@ async function throwApiError(response: Response, message: string): Promise<never
   throw new Error(`${message}: ${detail}`)
 }
 
-export async function startHyperopt(payload: { pair: string; timeframe: string; strategyClass: string; steps: number; attempts: number; historyMode?: 'candles' | 'days' | 'date_range'; historyValue?: number; startDate?: string; endDate?: string; hyperoptLoss?: string; spread?: string; slippage?: string; financingRatePerDayPercent?: string; commissionRatePercent?: string; positionSizeMode?: 'risk' | 'units' | 'account_amount'; positionSize?: string; stopLossMode?: 'pips' | 'percent' | 'money'; stopLossValue?: string }): Promise<{ pair: string; status: string; attemptsTotal: number }> {
+export async function startHyperopt(payload: { pair: string; timeframe: string; strategyClass: string; steps: number; attempts: number; historyMode?: 'candles' | 'days' | 'date_range'; historyValue?: number; startDate?: string; endDate?: string; hyperoptLoss?: string; spread?: string; slippage?: string; financingRatePerDayPercent?: string; commissionRatePercent?: string; positionSizeMode?: 'risk' | 'units' | 'account_amount'; positionSize?: string; stopDistanceMode?: 'static' | 'automatic'; stopLossMode?: 'pips' | 'percent' | 'money'; stopLossValue?: string }): Promise<{ pair: string; status: string; attemptsTotal: number }> {
   const response = await fetch(buildApiUrl('/api/v1/hyperopt/start'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

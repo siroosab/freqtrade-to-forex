@@ -913,6 +913,7 @@ async def test_dry_run_uses_pair_strategy_and_timeframe_over_global_args(
 ) -> None:
     loaded_strategies = []
     workers = []
+    loop_options = []
 
     class FakeClient:
         def __init__(self, *args, **kwargs):
@@ -963,7 +964,10 @@ async def test_dry_run_uses_pair_strategy_and_timeframe_over_global_args(
     monkeypatch.setattr(
         "freqtrade.forex.cli.FreqtradeStrategyAdapter", lambda *args, **kwargs: object()
     )
-    monkeypatch.setattr("freqtrade.forex.cli.DryRunStrategyLoop", lambda *args, **kwargs: object())
+    monkeypatch.setattr(
+        "freqtrade.forex.cli.DryRunStrategyLoop",
+        lambda *args, **kwargs: (loop_options.append(kwargs) or object()),
+    )
     monkeypatch.setattr("freqtrade.forex.cli.DryRunWorker", FakeWorker)
     monkeypatch.setattr("freqtrade.forex.cli.DryRunPortfolioWorker", FakePortfolioWorker)
     settings = OandaSettings(
@@ -977,7 +981,10 @@ async def test_dry_run_uses_pair_strategy_and_timeframe_over_global_args(
                 "pair": "EUR/USD",
                 "strategyClass": "ApprovedForexStrategy",
                 "timeframe": "H1",
-                "hyperopt": {"parameters": {"fast": 7}},
+                "hyperopt": {
+                    "parameters": {"fast": 7},
+                    "stopLoss": {"mode": "pips", "value": "5.0", "optimized": True},
+                },
             }
         },
     )
@@ -994,6 +1001,7 @@ async def test_dry_run_uses_pair_strategy_and_timeframe_over_global_args(
 
     assert loaded_strategies == [("ApprovedForexStrategy", "1h", "EUR/USD", {"fast": 7})]
     assert workers[0].config.timeframe == "1h"
+    assert loop_options[0]["stop_pips"] == Decimal("5.0")
 
 
 async def test_dry_run_blocks_pairs_without_approved_revision(monkeypatch) -> None:

@@ -154,9 +154,9 @@ def format_hyperopt_report(report: dict) -> str:
             else "  Cost settings: not recorded"
         ),
         (
-            "  Static stop loss: "
+            f"  {'Optimized' if report['stopLoss'].get('optimized') else 'Static'} stop loss: "
             f"{report['stopLoss']['value']} {report['stopLoss']['unit']} "
-            "(not optimized)"
+            + ("(optimized)" if report["stopLoss"].get("optimized") else "(not optimized)")
             if report.get("stopLoss")
             else "  Static stop loss: not recorded"
         ),
@@ -3375,6 +3375,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         commission_rate: Decimal,
         stop_loss_mode: str,
         stop_loss_value: Decimal,
+        optimize_stop_distance: bool,
         position_size_mode: str,
         position_size: Decimal,
         account_currency: str,
@@ -3406,6 +3407,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 spread=spread,
                 stop_loss_mode=stop_loss_mode,
                 stop_loss_value=stop_loss_value,
+                optimize_stop_distance=optimize_stop_distance,
                 max_attempts=attempts,
                 hyperopt_loss=hyperopt_loss,
                 slippage=slippage,
@@ -3420,6 +3422,21 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             best = candidates[0]
             completed_at = datetime.now(timezone.utc).isoformat()
             scope_key = hyperopt_scope(pair, strategy_class, timeframe)
+            best_stop_loss = dict(
+                best.get("stopLoss")
+                or {
+                    "mode": stop_loss_mode,
+                    "value": str(stop_loss_value),
+                    "optimized": False,
+                }
+            )
+            best_stop_loss["unit"] = (
+                "pips"
+                if best_stop_loss["mode"] == "pips"
+                else "% of entry price"
+                if best_stop_loss["mode"] == "percent"
+                else account_currency
+            )
             pending = {
                 "pair": pair,
                 "timeframe": timeframe.upper(),
@@ -3430,6 +3447,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "attempts": attempts,
                 "parameters": best.get("parameters", {}),
                 "minimal_roi": best.get("minimal_roi"),
+                "stopLoss": best_stop_loss,
                 "objective": str(best["objective"]),
                 "updatedAt": completed_at,
                 "dataRevision": completed_at,
@@ -3454,18 +3472,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "coverage": 2,
                 "attemptsRequested": attempts,
                 "hyperoptLoss": hyperopt_loss,
-                "stopLoss": {
-                    "mode": stop_loss_mode,
-                    "value": str(stop_loss_value),
-                    "unit": (
-                        "pips"
-                        if stop_loss_mode == "pips"
-                        else "% of entry price"
-                        if stop_loss_mode == "percent"
-                        else account_currency
-                    ),
-                    "optimized": False,
-                },
+                "stopLoss": best_stop_loss,
                 "costSettings": {
                     "spread": str(spread),
                     "slippage": str(slippage),
@@ -3490,7 +3497,11 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     ),
                     "accountCurrency": account_currency,
                     "riskFraction": str(risk_fraction),
-                    "stopPips": "0.5",
+                    "stopPips": (
+                        str(best_stop_loss["value"])
+                        if best_stop_loss["mode"] == "pips"
+                        else "0.5"
+                    ),
                     "quoteToAccountRate": str(quote_to_account_rate),
                 },
                 "historyMode": history_mode,
@@ -3706,6 +3717,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             )
         try:
             position_size = Decimal(str(payload.get("positionSize", "1000")))
+            stop_distance_mode = str(payload.get("stopDistanceMode", "static")).lower()
             stop_loss_mode = str(payload.get("stopLossMode", "pips"))
             stop_loss_value = Decimal(str(payload.get("stopLossValue", "0.5")))
             requested_spread = (
@@ -3726,6 +3738,8 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         cost_values = (slippage, financing_rate_per_day, commission_rate)
         if stop_loss_mode not in {"pips", "percent", "money"}:
             raise HTTPException(status_code=400, detail="Unsupported Hyperopt stop-loss mode")
+        if stop_distance_mode not in {"static", "automatic"}:
+            raise HTTPException(status_code=400, detail="Unsupported Hyperopt stop-distance mode")
         invalid_spread = requested_spread is not None and (
             not requested_spread.is_finite() or requested_spread < 0
         )
@@ -3759,7 +3773,11 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             for parameter in vars(strategy_type).values()
             if isinstance(parameter, BaseParameter) and parameter.optimize
         ]
-        if not parameters and not strategy.minimal_roi:
+        if (
+            not parameters
+            and not strategy.minimal_roi
+            and stop_distance_mode != "automatic"
+        ):
             raise HTTPException(
                 status_code=400,
                 detail=f"{strategy_class} has no optimizable parameters or minimal ROI",
@@ -3888,6 +3906,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 commission_rate=commission_rate,
                 stop_loss_mode=stop_loss_mode,
                 stop_loss_value=stop_loss_value,
+                optimize_stop_distance=stop_distance_mode == "automatic",
                 position_size_mode=position_size_mode,
                 position_size=position_size,
                 account_currency=account_currency,
@@ -4037,6 +4056,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "historyValue": int(report.get("historyValue", report.get("steps", 0))),
                 "parameters": dict(report.get("bestParameters") or {}),
                 "minimal_roi": dict(report.get("bestMinimalRoi") or {}),
+                "stopLoss": dict(report.get("stopLoss") or {}),
                 "objective": str(report.get("objective", "")),
                 "dataRevision": report.get("dataRevision"),
                 "dataHash": report.get("dataHash"),
@@ -4080,6 +4100,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "hyperopt": {
                     "parameters": dict(pending.get("parameters") or {}),
                     "minimal_roi": dict(pending.get("minimal_roi") or {}),
+                    "stopLoss": dict(pending.get("stopLoss") or {}),
                     "historyMode": pending.get("historyMode", "candles"),
                     "historyValue": pending.get("historyValue", pending.get("steps", 0)),
                     "steps": pending.get("steps", 0),

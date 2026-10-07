@@ -3,16 +3,16 @@ from decimal import Decimal
 import pandas as pd
 import pytest
 
-from freqtrade.forex.strategy_hyperopt import run_strategy_hyperopt
 from freqtrade.forex.models import OandaInstrument
 from freqtrade.forex.runner import DryRunPortfolioWorker, DryRunWorker, WorkerConfig
-from freqtrade.forex.strategy_loop import Signal, StrategyStepResult
+from freqtrade.forex.strategy_catalog import validate_strategy_upload
 from freqtrade.forex.strategy_execution import (
     FreqtradeStrategyAdapter,
     load_strategy,
     strategy_informative_timeframes,
 )
-from freqtrade.forex.strategy_catalog import validate_strategy_upload
+from freqtrade.forex.strategy_hyperopt import run_strategy_hyperopt
+from freqtrade.forex.strategy_loop import Signal, StrategyStepResult
 
 
 def test_strategy_upload_rejects_duplicate_classes_within_file() -> None:
@@ -236,12 +236,12 @@ def test_builtin_ema_strategy_exposes_optimizer_parameters() -> None:
             pip_location=-4,
             display_precision=5,
             trade_units_precision=0,
-            minimum_trade_size=Decimal("1"),
+            minimum_trade_size=Decimal(1),
         ),
         pair="EUR/USD",
         strategy_class="ForexEmaStrategy",
         timeframe="5m",
-        starting_balance=Decimal("10000"),
+        starting_balance=Decimal(10000),
         risk_fraction=Decimal("0.01"),
         spread=Decimal("0.0001"),
         max_attempts=2,
@@ -259,6 +259,76 @@ def test_builtin_ema_strategy_exposes_optimizer_parameters() -> None:
         }
         for candidate in candidates
     )
+
+
+def test_hyperopt_optimizes_stop_distance_from_training_candles(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    strategy_directory = tmp_path / "strategies"
+    strategy_directory.mkdir()
+    (strategy_directory / "StopDistanceStrategy.py").write_text(
+        """from freqtrade.strategy import IStrategy
+
+class StopDistanceStrategy(IStrategy):
+    timeframe = "5m"
+    startup_candle_count = 2
+    minimal_roi = {"0": 0.01}
+
+    def populate_indicators(self, dataframe, metadata):
+        return dataframe
+
+    def populate_entry_trend(self, dataframe, metadata):
+        dataframe["enter_long"] = False
+        dataframe["enter_short"] = False
+        return dataframe
+
+    def populate_exit_trend(self, dataframe, metadata):
+        dataframe["exit_long"] = False
+        dataframe["exit_short"] = False
+        return dataframe
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("FOREX_STRATEGIES_DIR", str(strategy_directory))
+    dates = pd.date_range("2026-01-01", periods=60, freq="5min", tz="UTC")
+    closes = [1.1 + ((index % 12) - 6) * 0.0002 for index in range(len(dates))]
+    candles = pd.DataFrame({
+        "date": dates,
+        "open": closes,
+        "high": [value + 0.001 for value in closes],
+        "low": [value - 0.001 for value in closes],
+        "close": closes,
+        "volume": [0.0] * len(dates),
+    })
+
+    candidates = run_strategy_hyperopt(
+        candles,
+        {},
+        OandaInstrument(
+            name="EUR_USD",
+            display_name="EUR/USD",
+            pip_location=-4,
+            display_precision=5,
+            trade_units_precision=0,
+            minimum_trade_size=Decimal(1),
+        ),
+        pair="EUR/USD",
+        strategy_class="StopDistanceStrategy",
+        timeframe="5m",
+        starting_balance=Decimal(10000),
+        risk_fraction=Decimal("0.01"),
+        spread=Decimal("0.0001"),
+        optimize_stop_distance=True,
+        max_attempts=2,
+        hyperopt_loss="ProfitDrawDownHyperOptLoss",
+    )
+
+    for candidate in candidates:
+        stop_loss = candidate["stopLoss"]
+        assert stop_loss["mode"] == "pips"
+        assert stop_loss["optimized"] is True
+        assert Decimal("10") <= Decimal(stop_loss["value"]) <= Decimal("60")
 
 
 def test_informative_strategy_loads_and_hyperopts_with_daily_candles(monkeypatch, tmp_path) -> None:

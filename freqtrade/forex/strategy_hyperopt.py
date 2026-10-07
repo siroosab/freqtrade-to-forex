@@ -139,6 +139,40 @@ def _sample_roi_parameters(
     return sampled
 
 
+def _sample_stop_distance_pips(
+    candles: pd.DataFrame,
+    instrument: OandaInstrument,
+    rng: random.Random,
+) -> Decimal:
+    required = {"high", "low", "close"}
+    if not required.issubset(candles.columns) or candles.empty:
+        raise ValueError("automatic stop distance requires high, low, and close candles")
+    high = pd.to_numeric(candles["high"], errors="coerce")
+    low = pd.to_numeric(candles["low"], errors="coerce")
+    close = pd.to_numeric(candles["close"], errors="coerce")
+    previous_close = close.shift(1)
+    true_range = pd.concat(
+        (
+            high - low,
+            (high - previous_close).abs(),
+            (low - previous_close).abs(),
+        ),
+        axis=1,
+    ).max(axis=1)
+    median_range = (
+        true_range.replace([float("inf"), float("-inf")], float("nan"))
+        .dropna()
+        .median()
+    )
+    if pd.isna(median_range) or median_range <= 0:
+        raise ValueError("automatic stop distance could not be derived from candle volatility")
+    median_pips = Decimal(str(median_range)) / instrument.pip_size
+    lower = max(Decimal("0.1"), median_pips * Decimal("0.5"))
+    upper = max(lower, median_pips * Decimal(3))
+    sampled = rng.uniform(float(lower), float(upper))
+    return Decimal(str(sampled)).quantize(Decimal("0.01"))
+
+
 def _generate_roi_table(parameters: dict[str, int | float]) -> dict[str, float]:
     roi_p1 = float(parameters["roi_p1"])
     roi_p2 = float(parameters["roi_p2"])
@@ -317,6 +351,7 @@ def run_strategy_hyperopt(
     stop_pips: Decimal = Decimal("0.5"),
     stop_loss_mode: str = "pips",
     stop_loss_value: Decimal = Decimal("0.5"),
+    optimize_stop_distance: bool = False,
     slippage: Decimal = Decimal(0),
     financing_rate_per_day: Decimal = Decimal(0),
     commission_rate: Decimal = Decimal(0),
@@ -362,6 +397,11 @@ def run_strategy_hyperopt(
     for attempt in range(1, total_attempts + 1):
         if should_stop is not None and should_stop():
             break
+        candidate_stop_pips = (
+            _sample_stop_distance_pips(train, instrument, rng)
+            if optimize_stop_distance
+            else stop_pips
+        )
         values = {
             name: _sample_parameter_value(parameter, rng) for name, parameter in parameters.items()
         }
@@ -378,9 +418,9 @@ def run_strategy_hyperopt(
             instrument=instrument,
             starting_balance=starting_balance,
             risk_fraction=risk_fraction,
-            stop_pips=stop_pips,
-            stop_loss_mode=stop_loss_mode,
-            stop_loss_value=stop_loss_value,
+            stop_pips=candidate_stop_pips,
+            stop_loss_mode="pips" if optimize_stop_distance else stop_loss_mode,
+            stop_loss_value=candidate_stop_pips if optimize_stop_distance else stop_loss_value,
             spread=spread,
             slippage=slippage,
             financing_rate_per_day=financing_rate_per_day,
@@ -411,6 +451,12 @@ def run_strategy_hyperopt(
             "coverage": 2,
             "trainTrades": len(train_result.trades),
         }
+        if optimize_stop_distance:
+            row["stopLoss"] = {
+                "mode": "pips",
+                "value": str(candidate_stop_pips),
+                "optimized": True,
+            }
         rows.append(row)
         if on_candidate is not None:
             on_candidate(attempt, total_attempts, row)

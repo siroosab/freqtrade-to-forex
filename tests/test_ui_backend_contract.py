@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from freqtrade.forex.api import (
@@ -466,7 +467,45 @@ def test_websocket_market_channel_connects():
         assert "instruments" in message["data"]
 
 
-def test_hyperopt_approval_flows_into_chart_strategy(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    (
+        "stop_distance_mode",
+        "candidate_stop_loss",
+        "expected_stop_loss",
+        "expected_stop_pips",
+        "expected_optimization",
+    ),
+    [
+        (
+            "static",
+            None,
+            {
+                "mode": "percent",
+                "value": "1.25",
+                "unit": "% of entry price",
+                "optimized": False,
+            },
+            "0.5",
+            False,
+        ),
+        (
+            "automatic",
+            {"mode": "pips", "value": "7.25", "optimized": True},
+            {"mode": "pips", "value": "7.25", "unit": "pips", "optimized": True},
+            "7.25",
+            True,
+        ),
+    ],
+)
+def test_hyperopt_approval_flows_into_chart_strategy(
+    tmp_path,
+    monkeypatch,
+    stop_distance_mode,
+    candidate_stop_loss,
+    expected_stop_loss,
+    expected_stop_pips,
+    expected_optimization,
+):
     from datetime import timezone
     from types import SimpleNamespace
 
@@ -554,6 +593,7 @@ def test_hyperopt_approval_flows_into_chart_strategy(tmp_path, monkeypatch):
                 "validationNetPl": "0.4",
                 "validationDrawdown": "0.1",
                 "validationTrades": 1,
+                "stopLoss": candidate_stop_loss,
             }
         ]
 
@@ -591,6 +631,7 @@ def test_hyperopt_approval_flows_into_chart_strategy(tmp_path, monkeypatch):
                 "commissionRatePercent": "0.1",
                 "positionSizeMode": "account_amount",
                 "positionSize": "780",
+                "stopDistanceMode": stop_distance_mode,
                 "stopLossMode": "percent",
                 "stopLossValue": "1.25",
             },
@@ -619,15 +660,10 @@ def test_hyperopt_approval_flows_into_chart_strategy(tmp_path, monkeypatch):
             "unit": "GBP",
             "accountCurrency": "GBP",
             "riskFraction": "0.01",
-            "stopPips": "0.5",
+            "stopPips": expected_stop_pips,
             "quoteToAccountRate": "0.78",
         }
-        assert status["report"]["stopLoss"] == {
-            "mode": "percent",
-            "value": "1.25",
-            "unit": "% of entry price",
-            "optimized": False,
-        }
+        assert status["report"]["stopLoss"] == expected_stop_loss
 
         approved = scoped_client.post(
             "/api/v1/strategy/review",
@@ -647,6 +683,7 @@ def test_hyperopt_approval_flows_into_chart_strategy(tmp_path, monkeypatch):
         "band_length": 20,
     }
     assert approved.json()["approvedRevision"]["hyperopt"]["minimal_roi"] == {"0": 0.01}
+    assert approved.json()["approvedRevision"]["hyperopt"]["stopLoss"] == expected_stop_loss
     assert hyperopt_options["spread"] == Decimal("0.0002")
     assert hyperopt_options["slippage"] == Decimal("0.00001")
     assert hyperopt_options["financing_rate_per_day"] == Decimal("0.0002")
@@ -654,6 +691,7 @@ def test_hyperopt_approval_flows_into_chart_strategy(tmp_path, monkeypatch):
     assert hyperopt_options["position_size_mode"] == "account_amount"
     assert hyperopt_options["position_size"] == Decimal("780")
     assert hyperopt_options["quote_to_account_rate"] == Decimal("0.78")
+    assert hyperopt_options["optimize_stop_distance"] is expected_optimization
     assert hyperopt_options["stop_loss_mode"] == "percent"
     assert hyperopt_options["stop_loss_value"] == Decimal("1.25")
     assert all(

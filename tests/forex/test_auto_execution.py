@@ -339,6 +339,24 @@ async def test_opposite_signal_does_not_reverse_when_close_is_not_filled(
 
 
 @pytest.mark.asyncio
+async def test_approved_optimized_stop_distance_overrides_risk_config(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _strategy_directory(tmp_path, monkeypatch)
+    client = FakeOandaClient(_candles("long"))
+    executor = _executor(client)
+    executor.setup["pair_approved_revisions"]["EUR_USD"]["hyperopt"] = {
+        "stopLoss": {"mode": "pips", "value": "5.0", "optimized": True},
+    }
+
+    results = await executor.run_cycle()
+
+    assert results[0]["status"] == "filled"
+    assert Decimal(client.orders[0][1]["stop_loss_price"]) == Decimal("1.0997")
+
+
+@pytest.mark.asyncio
 async def test_approved_minimal_roi_closes_profitable_automated_trade(
     tmp_path,
     monkeypatch,

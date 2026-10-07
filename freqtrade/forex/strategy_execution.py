@@ -8,6 +8,7 @@ import inspect
 import math
 import sys
 from copy import deepcopy
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -51,6 +52,20 @@ def oanda_granularity(timeframe: str) -> str:
     if not digits or unit not in _OANDA_UNITS:
         raise ValueError(f"Unsupported OANDA timeframe: {timeframe}")
     return f"{_OANDA_UNITS[unit]}{digits}"
+
+
+def approved_stop_distance_pips(stop_loss: object) -> Decimal | None:
+    if not isinstance(stop_loss, dict) or stop_loss.get("optimized") is not True:
+        return None
+    if stop_loss.get("mode") != "pips":
+        raise ValueError("Approved optimized stop distance must be expressed in pips")
+    try:
+        stop_pips = Decimal(str(stop_loss.get("value", "")))
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise ValueError("Approved optimized stop distance is invalid") from exc
+    if not stop_pips.is_finite() or stop_pips <= 0:
+        raise ValueError("Approved optimized stop distance must be positive")
+    return stop_pips
 
 
 def load_strategy(

@@ -15,6 +15,7 @@ from freqtrade.forex.oanda import OandaClient
 from freqtrade.forex.risk import units_for_fixed_risk
 from freqtrade.forex.strategy_execution import (
     FreqtradeStrategyAdapter,
+    approved_stop_distance_pips,
     freqtrade_timeframe,
     load_strategy,
     oanda_granularity,
@@ -29,6 +30,19 @@ _AUTO_TRADE_TAG = "auto"
 
 class AutoExecutionError(ValueError):
     """Raised when a signal cannot safely be converted into an OANDA order."""
+
+
+def _risk_with_approved_stop_loss(
+    risk: dict[str, object],
+    approved_stop_loss: object,
+) -> dict[str, object]:
+    try:
+        stop_pips = approved_stop_distance_pips(approved_stop_loss)
+    except ValueError as exc:
+        raise AutoExecutionError(str(exc)) from exc
+    if stop_pips is None:
+        return risk
+    return {**risk, "stopLoss": str(stop_pips), "stopLossMode": "pips"}
 
 
 class OandaAutoStrategyExecutor:
@@ -175,7 +189,10 @@ class OandaAutoStrategyExecutor:
         if self.checkpoint:
             self.checkpoint()
 
-        risk = self.risk_configs.get(pair, {})
+        risk = _risk_with_approved_stop_loss(
+            self.risk_configs.get(pair, {}),
+            parameters.get("stopLoss"),
+        )
         price_values = await self.client.get_prices((instrument,))
         if not price_values:
             raise AutoExecutionError(f"OANDA returned no current quote for {pair}")

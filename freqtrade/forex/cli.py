@@ -27,6 +27,7 @@ from freqtrade.forex.provider import OandaMarketDataProvider
 from freqtrade.forex.runner import DryRunPortfolioWorker, DryRunWorker, WorkerConfig
 from freqtrade.forex.strategy_execution import (
     FreqtradeStrategyAdapter,
+    approved_stop_distance_pips,
     freqtrade_timeframe,
     load_strategy,
     strategy_informative_candle_count,
@@ -250,7 +251,7 @@ async def run_dry_run(settings: OandaSettings, args: argparse.Namespace) -> int:
     )
     if not instrument_names:
         raise ValueError("setup must configure at least one instrument")
-    selected_scopes: dict[str, tuple[str, str, dict[str, object]]] = {}
+    selected_scopes: dict[str, tuple[str, str, dict[str, object], Decimal]] = {}
     for instrument_name in instrument_names:
         pair = instrument_name.replace("_", "/")
         approved = settings.pair_approved_revisions.get(instrument_name)
@@ -286,10 +287,12 @@ async def run_dry_run(settings: OandaSettings, args: argparse.Namespace) -> int:
         parameters = hyperopt.get(
             "parameters", hyperopt.get("bestParameters", {})
         )
+        stop_pips = approved_stop_distance_pips(hyperopt.get("stopLoss"))
         selected_scopes[instrument_name] = (
             strategy_class,
             timeframe,
             parameters if isinstance(parameters, dict) else {},
+            stop_pips if stop_pips is not None else args.stop_pips,
         )
     async with OandaClient(
         settings.token, settings.account_id, environment=settings.environment
@@ -315,7 +318,7 @@ async def run_dry_run(settings: OandaSettings, args: argparse.Namespace) -> int:
         workers: list[DryRunWorker] = []
         for instrument_name in instrument_names:
             pair = instrument_name.replace("_", "/")
-            strategy_class, timeframe, parameters = selected_scopes[instrument_name]
+            strategy_class, timeframe, parameters, stop_pips = selected_scopes[instrument_name]
             strategy = load_strategy(
                 strategy_class,
                 freqtrade_timeframe(timeframe),
@@ -330,7 +333,7 @@ async def run_dry_run(settings: OandaSettings, args: argparse.Namespace) -> int:
                 metadata_by_name[instrument_name],
                 account_equity=account.balance,
                 risk_fraction=Decimal(settings.risk_fraction),
-                stop_pips=args.stop_pips,
+                stop_pips=stop_pips,
                 quote_to_account_rate=conversion,
             )
             workers.append(DryRunWorker(
