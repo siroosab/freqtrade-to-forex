@@ -27,7 +27,12 @@ from fastapi.responses import FileResponse, HTMLResponse, Response
 
 from freqtrade.forex.auto_execution import OandaAutoStrategyExecutor
 from freqtrade.forex.backtest import ForexBacktester
-from freqtrade.forex.config import OandaSettings, load_forex_config, save_forex_config
+from freqtrade.forex.config import (
+    VALID_EXECUTION_MODES,
+    OandaSettings,
+    load_forex_config,
+    save_forex_config,
+)
 from freqtrade.forex.health import OandaHealthCheck
 from freqtrade.forex.historical import HistoricalCandleStore
 from freqtrade.forex.ledger import PaperLedger
@@ -1402,6 +1407,53 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             "memoryUsed": memory.used,
             "memoryTotal": memory.total,
             "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+    @app.get("/api/v1/system/execution-status")
+    def system_execution_status() -> dict:
+        exchange = load_forex_config().get("exchange", {})
+
+        environment_source = (
+            "environment"
+            if "OANDA_ENVIRONMENT" in os.environ
+            else "config"
+            if "oanda_environment" in exchange
+            else "default"
+        )
+        environment_value = os.environ.get(
+            "OANDA_ENVIRONMENT", exchange.get("oanda_environment", "practice")
+        )
+        if not isinstance(environment_value, str):
+            raise HTTPException(
+                status_code=500, detail="Invalid server OANDA environment configuration"
+            )
+        try:
+            environment = OandaEnvironment(environment_value).value
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=500, detail="Invalid server OANDA environment configuration"
+            ) from exc
+
+        execution_mode_source = (
+            "environment"
+            if "OANDA_EXECUTION_MODE" in os.environ
+            else "config"
+            if "oanda_execution_mode" in exchange
+            else "default"
+        )
+        execution_mode = os.environ.get(
+            "OANDA_EXECUTION_MODE", exchange.get("oanda_execution_mode", "dry_run")
+        )
+        if not isinstance(execution_mode, str) or execution_mode not in VALID_EXECUTION_MODES:
+            raise HTTPException(
+                status_code=500, detail="Invalid server OANDA execution mode configuration"
+            )
+
+        return {
+            "environment": environment,
+            "environmentSource": environment_source,
+            "executionMode": execution_mode,
+            "executionModeSource": execution_mode_source,
         }
 
     @app.get("/api/v1/account/summary")

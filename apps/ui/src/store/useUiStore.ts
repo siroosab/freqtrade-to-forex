@@ -3,7 +3,6 @@ import { persist, createJSONStorage } from 'zustand/middleware'
 
 type ExecutionMode = 'Dry-run' | 'Practice' | 'Live' | 'Backtest'
 type UserRole = 'viewer' | 'operator' | 'admin'
-type UiEnvironment = 'dev' | 'staging' | 'practice' | 'live'
 type AlertLevel = 'info' | 'warning' | 'critical'
 
 type UiAlert = {
@@ -57,8 +56,6 @@ const normalizeInstrumentList = (items: string[]) => {
 }
 
 type UiState = {
-  executionMode: ExecutionMode
-  environment: UiEnvironment
   connectionState: 'online' | 'reconnecting' | 'offline'
   userRole: UserRole
   alerts: UiAlert[]
@@ -66,8 +63,6 @@ type UiState = {
   accountFeed: AccountFeed | null
   ordersFeed: OrdersFeed | null
   selectedInstruments: string[]
-  setExecutionMode: (mode: ExecutionMode) => void
-  setEnvironment: (environment: UiEnvironment) => void
   setConnectionState: (state: UiState['connectionState']) => void
   setUserRole: (role: UserRole) => void
   addAlert: (alert: Omit<UiAlert, 'id' | 'time'>) => void
@@ -110,8 +105,6 @@ const safeStorage = {
 export const useUiStore = create<UiState>()(
   persist(
     (set) => ({
-      executionMode: 'Practice',
-      environment: 'practice',
       connectionState: 'online',
       userRole: 'viewer',
       alerts: [
@@ -127,22 +120,6 @@ export const useUiStore = create<UiState>()(
       accountFeed: null,
       ordersFeed: null,
       selectedInstruments: DEFAULT_INSTRUMENTS,
-      setExecutionMode: (mode) => set({ executionMode: mode }),
-      setEnvironment: (environment) =>
-        set((state) => {
-          const nextAlert: UiAlert = {
-            id: `${environment}-${Date.now()}`,
-            title: `Environment switched to ${environment}`,
-            detail: `The operational UI is now focused on the ${environment} environment.`,
-            level: environment === 'live' ? 'critical' : environment === 'practice' ? 'warning' : 'info',
-            time: new Date().toISOString(),
-          }
-
-          return {
-            environment,
-            alerts: [nextAlert, ...state.alerts].slice(0, 6),
-          }
-        }),
       setConnectionState: (state) => set({ connectionState: state }),
       setUserRole: (role) => set({ userRole: role }),
       addAlert: (alert) =>
@@ -170,8 +147,6 @@ export const useUiStore = create<UiState>()(
       name: 'fx-control-ui-preferences',
       storage: createJSONStorage(() => safeStorage),
       partialize: (state) => ({
-        executionMode: state.executionMode,
-        environment: state.environment,
         selectedInstruments: state.selectedInstruments,
       }),
       version: 1,

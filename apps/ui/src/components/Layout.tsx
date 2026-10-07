@@ -1,5 +1,6 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { logoutUser } from '../api/mockApi'
+import { ExecutionStatusPanel } from './ExecutionStatusPanel'
 import { ServerStatusPanel } from './ServerStatusPanel'
 import { useUiStore } from '../store/useUiStore'
 
@@ -21,13 +22,9 @@ const navItems: NavItem[] = [
 
 export function Layout() {
   const navigate = useNavigate()
-  const executionMode = useUiStore((state) => state.executionMode)
-  const environment = useUiStore((state) => state.environment)
   const connectionState = useUiStore((state) => state.connectionState)
   const userRole = useUiStore((state) => state.userRole)
   const setUserRole = useUiStore((state) => state.setUserRole)
-  const setExecutionMode = useUiStore((state) => state.setExecutionMode)
-  const setEnvironment = useUiStore((state) => state.setEnvironment)
   const signOut = async () => {
     let warning: string | undefined
     try {
@@ -73,28 +70,7 @@ export function Layout() {
 
         <div className="mini-panel">
           <p className="eyebrow">Execution Mode</p>
-          <select
-            className="inline-select"
-            value={executionMode}
-            onChange={(event) => setExecutionMode(event.target.value as typeof executionMode)}
-          >
-            <option value="Dry-run">Dry-run</option>
-            <option value="Practice">Practice</option>
-            <option value="Live">Live</option>
-            <option value="Backtest">Backtest</option>
-          </select>
-
-          <p className="eyebrow environment-label">Environment</p>
-          <select
-            className="inline-select"
-            value={environment}
-            onChange={(event) => setEnvironment(event.target.value as typeof environment)}
-          >
-            <option value="dev">Dev</option>
-            <option value="staging">Staging</option>
-            <option value="practice">Practice</option>
-            <option value="live">Live</option>
-          </select>
+          <ExecutionStatusPanel />
 
           <div className="mini-meta">
             <span>Broker</span>

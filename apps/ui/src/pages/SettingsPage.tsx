@@ -1,25 +1,29 @@
 import { useQuery } from '@tanstack/react-query'
-import { useMemo } from 'react'
-import { getSettings } from '../api/mockApi'
+import { getServerExecutionStatus, getSettings } from '../api/mockApi'
 import { useUiStore } from '../store/useUiStore'
 
 export function SettingsPage() {
   const { data } = useQuery({ queryKey: ['settings'], queryFn: getSettings })
-  const environment = useUiStore((state) => state.environment)
-  const setEnvironment = useUiStore((state) => state.setEnvironment)
+  const executionStatus = useQuery({
+    queryKey: ['server-execution-status'],
+    queryFn: getServerExecutionStatus,
+    refetchInterval: 15_000,
+    retry: false,
+  })
   const alerts = useUiStore((state) => state.alerts)
-  const executionMode = useUiStore((state) => state.executionMode)
   const connectionState = useUiStore((state) => state.connectionState)
 
-  const monitorCards = useMemo(
-    () => [
-      { label: 'Environment', value: environment.toUpperCase() },
-      { label: 'Execution mode', value: executionMode },
-      { label: 'Broker', value: data?.broker ?? 'OANDA' },
-      { label: 'Socket', value: connectionState },
-    ],
-    [connectionState, data?.broker, environment, executionMode],
-  )
+  const executionMode = executionStatus.data?.executionMode
+    .replace('_', '-')
+    .replace(/\b\w/g, (letter) => letter.toUpperCase())
+  const isLiveConfiguration = executionStatus.data?.environment === 'live'
+    || executionStatus.data?.executionMode === 'live'
+  const monitorCards = [
+    { label: 'Environment', value: executionStatus.data?.environment.toUpperCase() ?? 'Unavailable' },
+    { label: 'Execution mode', value: executionMode ?? 'Unavailable' },
+    { label: 'Broker', value: data?.broker ?? 'OANDA' },
+    { label: 'Socket', value: connectionState },
+  ]
 
   return (
     <>
@@ -36,24 +40,41 @@ export function SettingsPage() {
         <div className="settings-section-heading">
           <div>
             <p className="eyebrow">Connection profile</p>
-            <h3>Where the bot is operating</h3>
+            <h3>Server execution configuration</h3>
           </div>
-          <span className="pill positive">Practice protected</span>
+          <span className={`pill ${isLiveConfiguration ? 'negative' : 'positive'}`}>
+            {executionStatus.isError
+              ? 'Server status unavailable'
+              : isLiveConfiguration
+                ? 'Live configuration'
+                : executionStatus.data
+                  ? 'Practice configuration'
+                  : 'Loading configuration'}
+          </span>
         </div>
         <div className="settings-grid">
-          <label className="field-block">
-            <span>Operational environment</span>
-            <select value={environment} onChange={(event) => setEnvironment(event.target.value as typeof environment)}>
-              <option value="dev">Dev</option>
-              <option value="staging">Staging</option>
-              <option value="practice">Practice</option>
-              <option value="live">Live</option>
-            </select>
-          </label>
+          <div className="field-block muted-block">
+            <span>Server environment (read-only)</span>
+            <strong>{executionStatus.data?.environment.toUpperCase() ?? 'Unavailable'}</strong>
+            <small>
+              {executionStatus.data
+                ? `Source: ${executionStatus.data.environmentSource}`
+                : executionStatus.isLoading
+                  ? 'Loading server configuration...'
+                  : 'Unable to read server configuration'}
+            </small>
+          </div>
 
           <div className="field-block muted-block">
-            <span>Current profile</span>
-            <strong>{data?.environment ?? 'Practice'}</strong>
+            <span>Server execution mode (read-only)</span>
+            <strong>{executionMode ?? 'Unavailable'}</strong>
+            <small>
+              {executionStatus.data
+                ? `Source: ${executionStatus.data.executionModeSource}`
+                : executionStatus.isLoading
+                  ? 'Loading server configuration...'
+                  : 'Unable to read server configuration'}
+            </small>
           </div>
         </div>
 
@@ -68,8 +89,8 @@ export function SettingsPage() {
         <div className="settings-safety-note">
           <span className="setup-note-mark">!</span>
           <div>
-            <strong>Live execution remains locked</strong>
-            <p>Practice is the only broker execution path exposed during initial setup. A separate release approval is required before Live.</p>
+            <strong>Read-only server configuration</strong>
+            <p>These values are resolved from the backend environment and configuration file. This screen does not change the bot's execution mode.</p>
           </div>
         </div>
       </section>

@@ -160,6 +160,35 @@
   color: #fca5a5;
 }
 
+.execution-status {
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.execution-status-value {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: #cbd5e1;
+  font-size: 0.78rem;
+}
+
+.execution-status-value strong {
+  color: #f8fafc;
+  text-align: right;
+}
+
+.execution-status-value strong.live {
+  color: #fca5a5;
+}
+
+.execution-status > small {
+  color: #94a3b8;
+  font-size: 0.64rem;
+}
+
 .mini-panel {
   margin-top: 30px;
   padding: 18px 16px;

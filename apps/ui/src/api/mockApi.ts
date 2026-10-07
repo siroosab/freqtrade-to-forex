@@ -23,6 +23,12 @@ export type ServerMetrics = {
   memoryTotal: number
   timestamp: string
 }
+export type ServerExecutionStatus = {
+  environment: 'practice' | 'live'
+  environmentSource: 'environment' | 'config' | 'default'
+  executionMode: 'backtest' | 'hyperopt' | 'dry_run' | 'practice' | 'live'
+  executionModeSource: 'environment' | 'config' | 'default'
+}
 
 const browserOrigin = typeof window !== 'undefined' ? window.location.origin : 'http://127.0.0.1:8090'
 const browserWebSocketOrigin = typeof window !== 'undefined'
@@ -605,6 +611,12 @@ export async function getServerMetrics(): Promise<ServerMetrics> {
   const response = await fetch(buildApiUrl('/api/v1/system/metrics'))
   if (!response.ok) throw new Error('Server metrics unavailable')
   return response.json() as Promise<ServerMetrics>
+}
+
+export async function getServerExecutionStatus(): Promise<ServerExecutionStatus> {
+  const response = await fetch(buildApiUrl('/api/v1/system/execution-status'))
+  if (!response.ok) throw new Error('Server execution status unavailable')
+  return response.json() as Promise<ServerExecutionStatus>
 }
 
 export async function getMarketSummary(): Promise<MarketSummary> {
