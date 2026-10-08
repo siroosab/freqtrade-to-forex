@@ -1,7 +1,9 @@
+import { useState } from 'react'
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { logoutUser } from '../api/mockApi'
 import { ExecutionStatusPanel } from './ExecutionStatusPanel'
 import { ServerStatusPanel } from './ServerStatusPanel'
+import { ServerTime } from './ServerTime'
 import { useUiStore } from '../store/useUiStore'
 
 type NavItem = {
@@ -23,6 +25,7 @@ const navItems: NavItem[] = [
 
 export function Layout() {
   const navigate = useNavigate()
+  const [serverTimestamp, setServerTimestamp] = useState<string | null>(null)
   const connectionState = useUiStore((state) => state.connectionState)
   const userRole = useUiStore((state) => state.userRole)
   const setUserRole = useUiStore((state) => state.setUserRole)
@@ -49,6 +52,7 @@ export function Layout() {
           <div>
             <p className="eyebrow">FOREX OPERATIONS</p>
             <h1>FX Control</h1>
+            <ServerTime key={serverTimestamp ?? 'waiting'} timestamp={serverTimestamp} variant="brand" />
           </div>
         </div>
 
@@ -67,7 +71,7 @@ export function Layout() {
           })}
         </nav>
 
-        <ServerStatusPanel />
+        <ServerStatusPanel onTimestampChange={setServerTimestamp} />
 
         <div className="mini-panel">
           <p className="eyebrow">Execution Mode</p>

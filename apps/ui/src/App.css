@@ -97,6 +97,39 @@
   margin-bottom: 14px;
 }
 
+.server-time {
+  display: grid;
+  gap: 4px;
+  margin-top: 12px;
+}
+
+.server-time-brand {
+  margin-top: 8px;
+}
+
+.server-time-label {
+  color: #7dd3fc;
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.server-time-value {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  color: #cbd5e1;
+  font-size: 0.66rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.server-time-value strong {
+  color: #f8fafc;
+  font-weight: 600;
+}
+
 .server-status-indicator {
   width: 8px;
   height: 8px;

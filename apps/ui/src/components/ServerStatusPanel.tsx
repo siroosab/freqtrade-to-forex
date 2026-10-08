@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { getServerMetrics, type ServerMetrics } from '../api/mockApi'
+import { ServerTime } from './ServerTime'
 
 function formatMemory(bytes: number): string {
   return `${(bytes / 1024 ** 3).toFixed(1)} GB`
@@ -37,7 +38,11 @@ function UsageMetric({
   )
 }
 
-export function ServerStatusPanel() {
+export function ServerStatusPanel({
+  onTimestampChange,
+}: {
+  onTimestampChange: (timestamp: string) => void
+}) {
   const [metrics, setMetrics] = useState<ServerMetrics | null>(null)
   const [unavailable, setUnavailable] = useState(false)
 
@@ -50,6 +55,7 @@ export function ServerStatusPanel() {
         const latest = await getServerMetrics()
         if (active) {
           setMetrics(latest)
+          onTimestampChange(latest.timestamp)
           setUnavailable(false)
         }
       } catch {
@@ -64,7 +70,7 @@ export function ServerStatusPanel() {
       active = false
       if (timer !== undefined) window.clearTimeout(timer)
     }
-  }, [])
+  }, [onTimestampChange])
 
   return (
     <section className={`server-panel${unavailable ? ' unavailable' : ''}`} aria-label="Server status">
@@ -80,6 +86,7 @@ export function ServerStatusPanel() {
             value={metrics.memoryPercent}
             detail={`${formatMemory(metrics.memoryUsed)} / ${formatMemory(metrics.memoryTotal)}`}
           />
+          <ServerTime key={metrics.timestamp} timestamp={metrics.timestamp} />
           <p className="server-panel-footnote">
             {unavailable ? 'Connection lost · showing last update' : 'Live · updates every 3s'}
           </p>
