@@ -294,7 +294,9 @@ export type BacktestRunResult = {
     stopLossMode: 'pips' | 'percent' | 'money'
     stopLossValue: string
     stopLossUnit: string
-    stopLossOptimized: false
+    stopLossOptimized: boolean
+    trailingStopLoss: boolean
+    configSource: 'approved-hyperopt' | 'default'
   }
   tradeDetails?: Array<Record<string, string | number | null | boolean>>
   summary?: Record<string, string | number | null>

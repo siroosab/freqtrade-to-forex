@@ -189,6 +189,15 @@ export function HyperoptPage() {
   })
 
   const report = statusQuery.data?.report ?? reportQuery.data?.report
+  const approvedRevision = reviewQuery.data?.approvedRevision
+  const approvedHyperopt = approvedRevision?.hyperopt
+  const approvedTrailingStopLossMatches = Boolean(
+    approvedRevision
+    && approvedRevision.pair === pair
+    && approvedRevision.timeframe.toUpperCase() === timeframe.toUpperCase()
+    && approvedRevision.strategyClass === strategyClass
+    && approvedHyperopt?.trailingStopLoss === true,
+  )
   const reportStopLossPips = report?.status === 'completed'
     && report.stopLoss?.mode === 'pips'
     && Number.isFinite(Number(report.stopLoss.value))
@@ -521,7 +530,11 @@ export function HyperoptPage() {
               </label>
             )}
             <label className="field-block">
-              <span>Static stop loss</span>
+              <span>
+                {approvedTrailingStopLossMatches
+                  ? 'Stop distance (approved trailing stop overrides this value)'
+                  : 'Static stop loss'}
+              </span>
               <select value={stopLossMode} onChange={(event) => setStopLossMode(event.target.value as typeof stopLossMode)}>
                 <option value="pips">Pips</option>
                 <option value="percent">Percent of entry price</option>
@@ -550,7 +563,9 @@ export function HyperoptPage() {
                 }}
               />
               <small>
-                {stopLossMode === 'pips' && reportStopLossPips
+                {approvedTrailingStopLossMatches && approvedHyperopt?.stopLoss
+                  ? `This Backtest uses the approved Hyperopt trailing stop: ${formatTrailingStopLoss(approvedHyperopt.stopLoss)}.`
+                  : stopLossMode === 'pips' && reportStopLossPips
                   ? `Default from Hyperopt result: ${reportStopLossPips} pips.`
                   : stopLossMode === 'money'
                   ? 'Default: 50. Converted to a price distance after position size and currency conversion; commissions and financing are additional costs.'
@@ -572,7 +587,20 @@ export function HyperoptPage() {
                   Spread {backtest.execution.spread} · Slippage {backtest.execution.slippage} · Financing {backtest.execution.financingRatePerDayPercent}%/day · Commission {backtest.execution.commissionRatePercent}%/side · Size {backtest.execution.positionSizeMode === 'risk' ? `risk-based (${Number(backtest.execution.riskFraction) * 100}%)` : `${backtest.execution.positionSize} ${backtest.execution.positionSizeUnit}`}
                 </strong></div>
               )}
-              {backtest.execution && <div><span>Static stop loss</span><strong>{backtest.execution.stopLossValue} {backtest.execution.stopLossUnit} · not optimized</strong></div>}
+              {backtest.execution && (
+                <div>
+                  <span>{backtest.execution.trailingStopLoss ? 'Trailing stop loss' : 'Static stop loss'}</span>
+                  <strong>
+                    {backtest.execution.trailingStopLoss
+                      ? `Enabled · ${backtest.execution.stopLossValue} ${backtest.execution.stopLossUnit}`
+                      : 'Disabled'}
+                    {backtest.execution.configSource === 'approved-hyperopt'
+                      ? ' · approved Hyperopt'
+                      : ' · Backtest settings'}
+                    {backtest.execution.stopLossOptimized ? ' · optimized' : ''}
+                  </strong>
+                </div>
+              )}
               {backtest.warning && <div><span>Data note</span><strong>{backtest.warning}</strong></div>}
             </div>
           )}

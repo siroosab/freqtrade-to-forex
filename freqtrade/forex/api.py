@@ -4622,6 +4622,8 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         if not isinstance(approved_hyperopt, dict):
             approved_hyperopt = None
         backtest_warning: str | None = None
+        trailing_stop_loss = False
+        stop_loss_optimized = False
         if isinstance(approved_hyperopt, dict):
             pair_matches = (
                 str(approved_run.get("pair", normalized_pair)).upper() == normalized_pair.upper()
@@ -4642,6 +4644,35 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                         f"{approved_hyperopt.get('historyValue', approved_hyperopt.get('steps'))}); "
                         "approved Hyperopt parameters are still being used."
                     )
+                trailing_stop_loss = approved_hyperopt.get("trailingStopLoss") is True
+                if trailing_stop_loss:
+                    approved_stop_loss = approved_hyperopt.get("stopLoss")
+                    if not isinstance(approved_stop_loss, dict):
+                        raise HTTPException(
+                            status_code=409,
+                            detail="Approved trailing-stop configuration has no valid stop-loss distance",
+                        )
+                    approved_stop_loss_mode = approved_stop_loss.get("mode")
+                    if approved_stop_loss_mode not in {"pips", "percent", "money"}:
+                        raise HTTPException(
+                            status_code=409,
+                            detail="Approved trailing-stop distance mode is invalid",
+                        )
+                    try:
+                        approved_stop_loss_value = Decimal(str(approved_stop_loss.get("value", "")))
+                    except (ArithmeticError, TypeError, ValueError) as exc:
+                        raise HTTPException(
+                            status_code=409,
+                            detail="Approved trailing-stop distance is invalid",
+                        ) from exc
+                    if not approved_stop_loss_value.is_finite() or approved_stop_loss_value <= 0:
+                        raise HTTPException(
+                            status_code=409,
+                            detail="Approved trailing-stop distance must be finite and positive",
+                        )
+                    stop_loss_mode = str(approved_stop_loss_mode)
+                    stop_loss_value = approved_stop_loss_value
+                    stop_loss_optimized = approved_stop_loss.get("optimized") is True
             else:
                 backtest_warning = (
                     f"Approved Hyperopt revision exists for {approved_run.get('pair', normalized_pair)} "
@@ -4790,7 +4821,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     metadata[0],
                     starting_balance=Decimal(str(account.balance)),
                     risk_fraction=Decimal(str(settings.risk_fraction)),
-                    stop_pips=Decimal("0.5"),
+                    stop_pips=(stop_loss_value if stop_loss_mode == "pips" else Decimal("0.5")),
                     spread=spread,
                     slippage=slippage,
                     financing_rate_per_day=financing_rate_per_day,
@@ -4800,10 +4831,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     quote_to_account_rate=Decimal(quote_to_account_rate),
                     stop_loss_mode=stop_loss_mode,
                     stop_loss_value=stop_loss_value,
-                    trailing_stop_loss=(
-                        isinstance(approved_hyperopt, dict)
-                        and approved_hyperopt.get("trailingStopLoss") is True
-                    ),
+                    trailing_stop_loss=trailing_stop_loss,
                 ).run(frame, detail_candles=frame)
                 strategy_parameters = dict(
                     approved_hyperopt.get("parameters", {})
@@ -4925,11 +4953,8 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                             if stop_loss_mode == "percent"
                             else account_currency
                         ),
-                        "stopLossOptimized": False,
-                        "trailingStopLoss": (
-                            isinstance(approved_hyperopt, dict)
-                            and approved_hyperopt.get("trailingStopLoss") is True
-                        ),
+                        "stopLossOptimized": stop_loss_optimized,
+                        "trailingStopLoss": trailing_stop_loss,
                         "spread": str(spread),
                         "slippage": str(slippage),
                         "financingRatePerDayPercent": str(financing_rate_per_day * Decimal("100")),

@@ -1052,8 +1052,10 @@ def test_app_starts_without_built_ui_assets(tmp_path, monkeypatch):
 def test_backtest_run_uses_requested_candles(monkeypatch, tmp_path):
     download_requests = []
     backtester_options = []
-    account_currencies = iter(("USD", "USD", "GBP"))
+    account_currencies = iter(("USD", "USD", "GBP", "USD", "USD"))
     monkeypatch.setenv("OANDA_CANDLE_CACHE_PATH", str(tmp_path / "candles.json"))
+    approved_config_path = tmp_path / "approved-backtest-config.json"
+    monkeypatch.setenv("OANDA_CONFIG_PATH", str(approved_config_path))
 
     class FakeResult:
         net_pl = Decimal("123.45")
@@ -1274,6 +1276,73 @@ def test_backtest_run_uses_requested_candles(monkeypatch, tmp_path):
     assert download_requests[1][2] is None
     assert download_requests[1][3]["from_time"] == "2024-01-01T00:00:00Z"
     assert download_requests[1][3]["to_time"] == "2024-01-02T00:00:00Z"
+
+    approved_config_path.write_text(
+        json.dumps(
+            {
+                "pair_strategies": {"EUR_USD": "ForexMasterStrategy"},
+                "pair_timeframes": {"EUR_USD": "5m"},
+                "pair_approved_revisions": {
+                    "EUR_USD": {
+                        "pair": "EUR/USD",
+                        "timeframe": "M5",
+                        "strategyClass": "ForexMasterStrategy",
+                        "hyperopt": {
+                            "trailingStopLoss": True,
+                            "stopLoss": {
+                                "mode": "pips",
+                                "value": "7.25",
+                                "optimized": True,
+                            },
+                        },
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    approved_trailing_response = client.post(
+        "/api/v1/backtests/run",
+        json={
+            "pair": "EUR/USD",
+            "timeframe": "M5",
+            "historyValue": 100,
+            "stopLossMode": "money",
+            "stopLossValue": "25",
+        },
+        headers={"X-Session-Token": token, "X-User-Role": "operator", "X-CSRF-Token": csrf_token},
+    )
+    assert approved_trailing_response.status_code == 200, approved_trailing_response.text
+    approved_trailing_payload = approved_trailing_response.json()
+    assert backtester_options[3]["stop_loss_mode"] == "pips"
+    assert backtester_options[3]["stop_loss_value"] == Decimal("7.25")
+    assert backtester_options[3]["trailing_stop_loss"] is True
+    assert approved_trailing_payload["execution"]["stopLossMode"] == "pips"
+    assert approved_trailing_payload["execution"]["stopLossValue"] == "7.25"
+    assert approved_trailing_payload["execution"]["stopLossOptimized"] is True
+    assert approved_trailing_payload["execution"]["trailingStopLoss"] is True
+    assert approved_trailing_payload["execution"]["configSource"] == "approved-hyperopt"
+
+    disabled_config = json.loads(approved_config_path.read_text(encoding="utf-8"))
+    disabled_config["pair_approved_revisions"]["EUR_USD"]["hyperopt"]["trailingStopLoss"] = False
+    approved_config_path.write_text(json.dumps(disabled_config), encoding="utf-8")
+    approved_fixed_response = client.post(
+        "/api/v1/backtests/run",
+        json={
+            "pair": "EUR/USD",
+            "timeframe": "M5",
+            "historyValue": 100,
+            "stopLossMode": "money",
+            "stopLossValue": "25",
+        },
+        headers={"X-Session-Token": token, "X-User-Role": "operator", "X-CSRF-Token": csrf_token},
+    )
+    assert approved_fixed_response.status_code == 200, approved_fixed_response.text
+    approved_fixed_payload = approved_fixed_response.json()
+    assert backtester_options[4]["stop_loss_mode"] == "money"
+    assert backtester_options[4]["stop_loss_value"] == Decimal("25")
+    assert backtester_options[4]["trailing_stop_loss"] is False
+    assert approved_fixed_payload["execution"]["trailingStopLoss"] is False
 
 
 def test_order_submit_requires_operator_role_and_csrf_token(monkeypatch):
