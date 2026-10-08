@@ -261,9 +261,19 @@ def test_builtin_ema_strategy_exposes_optimizer_parameters() -> None:
     )
 
 
-def test_hyperopt_optimizes_stop_distance_from_training_candles(
+@pytest.mark.parametrize(
+    ("optimize_stop_distance", "stop_loss_mode", "stop_loss_value"),
+    [
+        (True, "pips", Decimal("0.5")),
+        (False, "percent", Decimal("1.25")),
+    ],
+)
+def test_hyperopt_reports_the_trailing_stop_distance(
     tmp_path,
     monkeypatch,
+    optimize_stop_distance,
+    stop_loss_mode,
+    stop_loss_value,
 ) -> None:
     strategy_directory = tmp_path / "strategies"
     strategy_directory.mkdir()
@@ -319,7 +329,9 @@ class StopDistanceStrategy(IStrategy):
         starting_balance=Decimal(10000),
         risk_fraction=Decimal("0.01"),
         spread=Decimal("0.0001"),
-        optimize_stop_distance=True,
+        optimize_stop_distance=optimize_stop_distance,
+        stop_loss_mode=stop_loss_mode,
+        stop_loss_value=stop_loss_value,
         trailing_stop_loss=True,
         max_attempts=2,
         hyperopt_loss="ProfitDrawDownHyperOptLoss",
@@ -327,10 +339,13 @@ class StopDistanceStrategy(IStrategy):
 
     for candidate in candidates:
         stop_loss = candidate["stopLoss"]
-        assert stop_loss["mode"] == "pips"
-        assert stop_loss["optimized"] is True
         assert candidate["trailingStopLoss"] is True
-        assert Decimal("10") <= Decimal(stop_loss["value"]) <= Decimal("60")
+        assert stop_loss["mode"] == ("pips" if optimize_stop_distance else "percent")
+        assert stop_loss["optimized"] is optimize_stop_distance
+        if optimize_stop_distance:
+            assert Decimal("10") <= Decimal(stop_loss["value"]) <= Decimal("60")
+        else:
+            assert stop_loss["value"] == "1.25"
 
 
 def test_informative_strategy_loads_and_hyperopts_with_daily_candles(monkeypatch, tmp_path) -> None:

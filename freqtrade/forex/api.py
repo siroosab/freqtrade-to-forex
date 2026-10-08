@@ -172,7 +172,14 @@ def format_hyperopt_report(report: dict) -> str:
             if report.get("stopLoss")
             else "  Static stop loss: not recorded"
         ),
-        f"  Trailing stop loss: {'enabled' if report.get('trailingStopLoss') is True else 'disabled'}",
+        (
+            "  Trailing stop loss: enabled "
+            f"({report['stopLoss']['value']} {report['stopLoss']['unit']})"
+            if report.get("trailingStopLoss") is True and report.get("stopLoss")
+            else "  Trailing stop loss: enabled (value unavailable)"
+            if report.get("trailingStopLoss") is True
+            else "  Trailing stop loss: disabled"
+        ),
         (
             "  Position sizing: "
             + (
@@ -3691,6 +3698,16 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 if best_stop_loss["mode"] == "percent"
                 else account_currency
             )
+            for candidate in candidates:
+                candidate_stop_loss = dict(candidate.get("stopLoss") or best_stop_loss)
+                candidate_stop_loss["unit"] = (
+                    "pips"
+                    if candidate_stop_loss["mode"] == "pips"
+                    else "% of entry price"
+                    if candidate_stop_loss["mode"] == "percent"
+                    else account_currency
+                )
+                candidate["stopLoss"] = candidate_stop_loss
             pending = {
                 "pair": pair,
                 "timeframe": timeframe.upper(),

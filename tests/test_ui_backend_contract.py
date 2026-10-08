@@ -669,6 +669,20 @@ def test_hyperopt_approval_flows_into_chart_strategy(
         }
         assert status["report"]["stopLoss"] == expected_stop_loss
         assert status["report"]["trailingStopLoss"] is trailing_stop_loss_enabled
+        assert all(
+            candidate["stopLoss"] == expected_stop_loss
+            for candidate in status["report"]["candidates"]
+        )
+        expected_trailing_value = (
+            f"({expected_stop_loss['value']} {expected_stop_loss['unit']})"
+            if trailing_stop_loss_enabled
+            else "disabled"
+        )
+        trailing_label = (
+            f"Trailing stop loss: {'enabled ' if trailing_stop_loss_enabled else ''}"
+            f"{expected_trailing_value}"
+        )
+        assert trailing_label in status["report"]["reportText"]
 
         approved = scoped_client.post(
             "/api/v1/strategy/review",

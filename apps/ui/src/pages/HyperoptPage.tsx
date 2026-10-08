@@ -38,6 +38,18 @@ function formatUtcDateTime(value: string): string {
   return `${new Date(value).toLocaleString(undefined, { timeZone: 'UTC' })} UTC`
 }
 
+function formatTrailingStopLoss(stopLoss: {
+  mode: 'pips' | 'percent' | 'money'
+  value: string
+  unit?: string
+} | undefined): string {
+  if (!stopLoss) return 'value unavailable'
+  const unit = stopLoss.unit
+    ?? (stopLoss.mode === 'pips' ? 'pips' : stopLoss.mode === 'percent' ? '% of entry price' : '')
+  const valueLabel = stopLoss.mode === 'money' ? 'max loss' : 'distance'
+  return `${valueLabel}: ${stopLoss.value} ${unit}`.trim()
+}
+
 export function HyperoptPage() {
   const queryClient = useQueryClient()
   const pairs = useUiStore((state) => state.selectedInstruments)
@@ -722,7 +734,11 @@ export function HyperoptPage() {
                 {report.stopLoss && (
                   <div><span>{report.stopLoss.optimized ? 'Optimized stop distance' : 'Static stop loss'}</span><strong>{report.stopLoss.value} {report.stopLoss.unit} · {report.stopLoss.optimized ? 'selected by Hyperopt' : 'not optimized'}</strong></div>
                 )}
-                <div><span>Trailing stop loss</span><strong>{report.trailingStopLoss ? 'Enabled' : 'Disabled'}</strong></div>
+                <div><span>Trailing stop loss</span><strong>
+                  {report.trailingStopLoss
+                    ? `Enabled · ${formatTrailingStopLoss(report.stopLoss)}`
+                    : 'Disabled'}
+                </strong></div>
                 {report.positionSizing && (
                   <div><span>Initial position sizing</span><strong>
                     {report.positionSizing.mode === 'risk'
@@ -749,7 +765,9 @@ export function HyperoptPage() {
                       <td>
                         {Object.entries(candidate.parameters).map(([key, value]) => `${key}: ${value}`).join(' · ')}
                         {candidate.stopLoss ? ` · stop: ${candidate.stopLoss.value} ${candidate.stopLoss.unit ?? 'pips'}` : ''}
-                        {` · trailing stop: ${candidate.trailingStopLoss ? 'on' : 'off'}`}
+                        {candidate.trailingStopLoss
+                          ? ` · trailing stop: on (${formatTrailingStopLoss(candidate.stopLoss)})`
+                          : ' · trailing stop: off'}
                       </td>
                     </tr>
                   ))}</tbody>
@@ -772,7 +790,9 @@ export function HyperoptPage() {
           {reviewQuery.data?.approvedRevision && (
             <p>
               Active revision: {reviewQuery.data.approvedRevision.pair} · {reviewQuery.data.approvedRevision.timeframe} · {reviewQuery.data.approvedRevision.strategyClass}
-              {' '}· trailing stop: {reviewQuery.data.approvedRevision.hyperopt?.trailingStopLoss === true ? 'enabled' : 'disabled'}
+              {' '}· trailing stop: {reviewQuery.data.approvedRevision.hyperopt?.trailingStopLoss === true
+                ? `enabled (${formatTrailingStopLoss(reviewQuery.data.approvedRevision.hyperopt.stopLoss)})`
+                : 'disabled'}
             </p>
           )}
           <div className="summary-grid">

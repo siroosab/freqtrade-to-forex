@@ -444,6 +444,11 @@ def run_strategy_hyperopt(
         row = {
             "parameters": values,
             "trailingStopLoss": trailing_stop_loss,
+            "stopLoss": {
+                "mode": "pips" if optimize_stop_distance else stop_loss_mode,
+                "value": str(candidate_stop_pips if optimize_stop_distance else stop_loss_value),
+                "optimized": optimize_stop_distance,
+            },
             "minimal_roi": minimal_roi,
             "roi_parameters": roi_parameters,
             "roi_volatility_per_5m": roi_volatility_per_5m,
@@ -456,12 +461,6 @@ def run_strategy_hyperopt(
             "coverage": 2,
             "trainTrades": len(train_result.trades),
         }
-        if optimize_stop_distance:
-            row["stopLoss"] = {
-                "mode": "pips",
-                "value": str(candidate_stop_pips),
-                "optimized": True,
-            }
         rows.append(row)
         if on_candidate is not None:
             on_candidate(attempt, total_attempts, row)

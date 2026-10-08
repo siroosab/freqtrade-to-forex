@@ -145,7 +145,21 @@ export type StrategyReview = {
   timeframe: string
   notes: string
   lastUpdated: string
-  approvedRevision?: { pair: string; timeframe: string; strategyClass: string; approvedAt: string; hyperopt?: Record<string, unknown> } | null
+  approvedRevision?: {
+    pair: string
+    timeframe: string
+    strategyClass: string
+    approvedAt: string
+    hyperopt?: Record<string, unknown> & {
+      trailingStopLoss?: boolean
+      stopLoss?: {
+        mode: 'pips' | 'percent' | 'money'
+        value: string
+        unit: string
+        optimized: boolean
+      }
+    }
+  } | null
 }
 
 export type HyperoptCandidateRow = {
@@ -154,10 +168,10 @@ export type HyperoptCandidateRow = {
   parameters: Record<string, string | number | boolean>
   minimal_roi?: Record<string, number>
   stopLoss?: {
-    mode: 'pips'
+    mode: 'pips' | 'percent' | 'money'
     value: string
     unit?: string
-    optimized: true
+    optimized: boolean
   }
   objective: string
   trainNetPl: string
