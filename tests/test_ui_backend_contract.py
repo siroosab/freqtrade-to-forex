@@ -695,6 +695,64 @@ def test_hyperopt_approval_flows_into_chart_strategy(
                 "requireOptimization": True,
             },
         )
+        schedule_response = scoped_client.post(
+            "/api/v1/auto-hyperopt",
+            headers=headers,
+            json={
+                "enabled": True,
+                "weekdays": [0, 3],
+                "time": "12:00",
+                "pairs": [
+                    {
+                        "pair": "EUR/USD",
+                        "timeframe": "M15",
+                        "strategyClass": "ForexMasterStrategy",
+                    }
+                ],
+            },
+        )
+        scoped_client.app.state.auto_hyperopt_state["queue"] = {"status": "running"}
+        blocked_hyperopt = scoped_client.post(
+            "/api/v1/hyperopt/start", headers=headers, json={}
+        )
+        blocked_backtest = scoped_client.post(
+            "/api/v1/backtests/run", headers=headers, json={}
+        )
+        scoped_client.app.state.auto_hyperopt_state["queue"] = {"status": "idle"}
+        if stop_distance_mode == "automatic" and trailing_stop_loss_enabled:
+            manual_options = dict(hyperopt_options)
+            local_weekday = datetime.now().astimezone().weekday()
+            trigger_schedule = scoped_client.post(
+                "/api/v1/auto-hyperopt",
+                headers=headers,
+                json={
+                    "enabled": True,
+                    "weekdays": [local_weekday],
+                    "time": "00:00",
+                    "pairs": [
+                        {
+                            "pair": "EUR/USD",
+                            "timeframe": "M15",
+                            "strategyClass": "ForexMasterStrategy",
+                        }
+                    ],
+                },
+            )
+            assert trigger_schedule.status_code == 200, trigger_schedule.text
+            scoped_client.app.state.auto_hyperopt_state["lastTriggeredDate"] = None
+            deadline = time.monotonic() + 15
+            while time.monotonic() < deadline:
+                queue_status = scoped_client.get("/api/v1/auto-hyperopt").json()["queue"]["status"]
+                if queue_status == "completed":
+                    break
+                time.sleep(0.05)
+            assert queue_status == "completed"
+            automatic_status = scoped_client.get(status_url).json()
+            assert automatic_status["report"]["attemptsRequested"] == 1
+            assert automatic_status["report"]["stopDistanceMode"] == "automatic"
+            assert automatic_status["report"]["costSettings"]["spread"] == "0.0001"
+            hyperopt_options.clear()
+            hyperopt_options.update(manual_options)
         chart = scoped_client.get("/api/v1/orders/chart?pair=EUR%2FUSD&timeframe=H4&count=120")
 
     assert approved.status_code == 200, approved.text
@@ -707,6 +765,62 @@ def test_hyperopt_approval_flows_into_chart_strategy(
         approved.json()["approvedRevision"]["hyperopt"]["trailingStopLoss"]
         is trailing_stop_loss_enabled
     )
+    approved_settings = approved.json()["approvedRevision"]["hyperopt"]["runSettings"]
+    assert approved_settings["attempts"] == 1
+    assert approved_settings["stopDistanceMode"] == stop_distance_mode
+    assert approved_settings["spread"] == "0.0002"
+    assert schedule_response.status_code == 200, schedule_response.text
+    saved_schedule = schedule_response.json()
+    assert saved_schedule["enabled"] is True
+    assert saved_schedule["weekdays"] == [0, 3]
+    assert saved_schedule["time"] == "12:00"
+    assert saved_schedule["pairs"] == [
+        {
+            "pair": "EUR/USD",
+            "timeframe": "M15",
+            "strategyClass": "ForexMasterStrategy",
+        }
+    ]
+    assert saved_schedule["availablePairs"][0]["settings"]["attempts"] == 1
+    assert saved_schedule["availablePairs"][0]["settings"]["stopDistanceMode"] == stop_distance_mode
+    assert blocked_hyperopt.status_code == 409
+    assert "Automatic Hyperopt is running" in blocked_hyperopt.json()["detail"]
+    assert blocked_backtest.status_code == 409
+    assert "Automatic Hyperopt is running" in blocked_backtest.json()["detail"]
+    if stop_distance_mode == "automatic" and trailing_stop_loss_enabled:
+        manual_options = dict(hyperopt_options)
+        local_weekday = datetime.now().astimezone().weekday()
+        trigger_schedule = scoped_client.post(
+            "/api/v1/auto-hyperopt",
+            headers=headers,
+            json={
+                "enabled": True,
+                "weekdays": [local_weekday],
+                "time": "00:00",
+                "pairs": [
+                    {
+                        "pair": "EUR/USD",
+                        "timeframe": "M15",
+                        "strategyClass": "ForexMasterStrategy",
+                    }
+                ],
+            },
+        )
+        assert trigger_schedule.status_code == 200, trigger_schedule.text
+        scoped_client.app.state.auto_hyperopt_state["lastTriggeredDate"] = None
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            queue_status = scoped_client.get("/api/v1/auto-hyperopt").json()["queue"]["status"]
+            if queue_status == "completed":
+                break
+            time.sleep(0.05)
+        assert queue_status == "completed"
+        automatic_status = scoped_client.get(status_url).json()
+        assert automatic_status["report"]["attemptsRequested"] == 1
+        assert automatic_status["report"]["stopDistanceMode"] == "automatic"
+        assert automatic_status["report"]["costSettings"]["spread"] == "0.0001"
+        hyperopt_options.clear()
+        hyperopt_options.update(manual_options)
     assert hyperopt_options["spread"] == Decimal("0.0002")
     assert hyperopt_options["slippage"] == Decimal("0.00001")
     assert hyperopt_options["financing_rate_per_day"] == Decimal("0.0002")

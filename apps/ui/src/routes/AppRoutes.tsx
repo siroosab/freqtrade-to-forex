@@ -4,6 +4,7 @@ import { Navigate, Outlet, Route, Routes, useLocation } from 'react-router-dom'
 import { Layout } from '../components/Layout'
 import { getAuthSession, getSetupStatus, getStoredAuthSession } from '../api/mockApi'
 import { HyperoptPage } from '../pages/HyperoptPage'
+import { AutoHyperoptPage } from '../pages/AutoHyperoptPage'
 import { DashboardPage } from '../pages/DashboardPage'
 import { MarketPage } from '../pages/MarketPage'
 import { OrdersPage } from '../pages/OrdersPage'
@@ -93,6 +94,14 @@ export function AppRoutes() {
           element={
             <ProtectedRoute allowedRoles={['operator', 'admin']}>
               <HyperoptPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/auto-hyperopt"
+          element={
+            <ProtectedRoute allowedRoles={['operator', 'admin']}>
+              <AutoHyperoptPage />
             </ProtectedRoute>
           }
         />

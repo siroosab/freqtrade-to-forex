@@ -242,6 +242,46 @@ export type HyperoptStatus = {
   hasLastReport?: boolean
 }
 
+export type AutoHyperoptPair = {
+  pair: string
+  timeframe: string
+  strategyClass: string
+}
+
+export type AutoHyperoptResult = {
+  status: 'running' | 'completed' | 'failed' | 'stopped' | 'interrupted'
+  completedAt?: string | null
+  error?: string | null
+  netPl?: string | null
+}
+
+export type AutoHyperoptSchedule = {
+  enabled: boolean
+  weekdays: number[]
+  time: string
+  timezone: 'server-local'
+  pairs: AutoHyperoptPair[]
+  availablePairs: Array<AutoHyperoptPair & {
+    approvedAt?: string | null
+    settings?: {
+      attempts?: number | null
+      stopDistanceMode?: string
+    }
+    selected: boolean
+    lastHyperopt?: AutoHyperoptResult | null
+  }>
+  queue: {
+    status: 'idle' | 'queued' | 'running' | 'completed' | 'failed' | 'interrupted'
+    startedAt?: string
+    completedAt?: string
+    scheduledAt?: string
+    activePair?: string | null
+    position?: number
+    total?: number
+    message?: string
+  }
+}
+
 export type CandleCacheInventory = {
   instrument: string
   timeframe: string
@@ -400,6 +440,27 @@ export async function getHyperoptLossFunctions(): Promise<{ default: string; opt
   const response = await fetch(buildApiUrl('/api/v1/hyperopt/loss-functions'))
   if (!response.ok) return throwApiError(response, 'Hyperopt loss functions unavailable')
   return response.json() as Promise<{ default: string; options: string[] }>
+}
+
+export async function getAutoHyperoptSchedule(): Promise<AutoHyperoptSchedule> {
+  const response = await fetch(buildApiUrl('/api/v1/auto-hyperopt'))
+  if (!response.ok) return throwApiError(response, 'Automatic Hyperopt schedule unavailable')
+  return response.json() as Promise<AutoHyperoptSchedule>
+}
+
+export async function saveAutoHyperoptSchedule(schedule: {
+  enabled: boolean
+  weekdays: number[]
+  time: string
+  pairs: AutoHyperoptPair[]
+}): Promise<AutoHyperoptSchedule> {
+  const response = await fetch(buildApiUrl('/api/v1/auto-hyperopt'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(schedule),
+  })
+  if (!response.ok) return throwApiError(response, 'Automatic Hyperopt schedule update rejected')
+  return response.json() as Promise<AutoHyperoptSchedule>
 }
 
 export async function getCandleCacheInventory(

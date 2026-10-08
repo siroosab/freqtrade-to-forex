@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import {
   clearCandleCache,
   downloadCandleDateRange,
+  getAutoHyperoptSchedule,
   getCandleCacheInventory,
   getAvailableStrategies,
   getBacktestJob,
@@ -95,6 +96,11 @@ export function HyperoptPage() {
   const setupQuery = useQuery({
     queryKey: ['setup-status'],
     queryFn: getSetupStatus,
+  })
+  const autoHyperoptQuery = useQuery({
+    queryKey: ['auto-hyperopt-schedule'],
+    queryFn: getAutoHyperoptSchedule,
+    refetchInterval: (query) => query.state.data?.queue.status === 'running' ? 1500 : 5000,
   })
   const cacheQuery = useQuery({
     queryKey: ['candle-cache', pair, timeframe],
@@ -210,6 +216,8 @@ export function HyperoptPage() {
     : reportStopLossPips ?? stopLossPips
   const backtest = backtestQuery.data?.result ?? backtestQuery.data
   const running = statusQuery.data?.status === 'running'
+  const autoHyperoptRunning = autoHyperoptQuery.data?.queue.status === 'running'
+    || autoHyperoptQuery.data?.queue.status === 'queued'
   const backtestRunning = Boolean(
     backtestJobId
     && backtestQuery.data?.status !== 'completed'
@@ -221,6 +229,7 @@ export function HyperoptPage() {
     || backtestMutation.isPending
     || downloadMutation.isPending
     || clearCacheMutation.isPending
+    || autoHyperoptRunning
   const strategies = strategiesQuery.data ?? []
   const dateRangeValid = Boolean(dateRange.startDate && dateRange.endDate)
     && dateRange.startDate <= dateRange.endDate
@@ -337,6 +346,26 @@ export function HyperoptPage() {
         </div>
         <span className="pill neutral">Approval required before execution</span>
       </header>
+
+      {autoHyperoptRunning && (
+        <section className="auto-hyperopt-running" role="status" aria-live="polite">
+          <span className="auto-hyperopt-pulse" />
+          <div>
+            <strong>
+              Scheduled Hyperopt is running
+              {autoHyperoptQuery.data?.queue.activePair
+                ? ` · ${autoHyperoptQuery.data.queue.activePair}`
+                : ''}
+            </strong>
+            <p>Manual Hyperopt and Backtests are disabled until the automatic queue finishes.</p>
+          </div>
+        </section>
+      )}
+      {autoHyperoptQuery.isError && (
+        <p className="auto-hyperopt-status-warning" role="status">
+          Automatic queue status could not be checked. Server-side safeguards remain active.
+        </p>
+      )}
 
       <section className="content-grid">
         <div className="panel">

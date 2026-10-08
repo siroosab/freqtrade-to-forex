@@ -14,6 +14,7 @@ import secrets
 import sqlite3
 import threading
 from contextlib import suppress
+from contextvars import ContextVar
 from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from functools import partial
@@ -691,6 +692,20 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
     RISK_CONFIG_BY_PAIR: dict[str, dict[str, object]] = {}
     HYPEROPT_JOBS: dict[str, dict[str, object]] = {}
     HYPEROPT_REPORTS: dict[str, dict[str, object]] = {}
+    AUTO_HYPEROPT_STATE: dict[str, object] = {
+        "enabled": False,
+        "weekdays": [],
+        "time": "12:00",
+        "pairs": [],
+        "queue": {"status": "idle"},
+        "lastTriggeredDate": None,
+        "lastResults": {},
+    }
+    AUTO_HYPEROPT_CONTEXT: ContextVar[bool] = ContextVar(
+        "auto_hyperopt_context", default=False
+    )
+    AUTO_HYPEROPT_DB_LOCK = threading.Lock()
+    app.state.auto_hyperopt_state = AUTO_HYPEROPT_STATE
 
     def strategy_config_for_pair(pair: str) -> dict[str, object]:
         normalized = pair.replace("_", "/").upper()
@@ -1018,6 +1033,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
     revision_db.execute(
         "CREATE TABLE IF NOT EXISTS strategy_hyperopt_reports (scope TEXT PRIMARY KEY, completed_at TEXT NOT NULL, report_json TEXT NOT NULL)"
     )
+    revision_db.execute(
+        "CREATE TABLE IF NOT EXISTS auto_hyperopt_state (id INTEGER PRIMARY KEY CHECK (id = 1), state_json TEXT NOT NULL)"
+    )
     revision_db.commit()
 
     legacy_scope_table = revision_db.execute(
@@ -1068,20 +1086,21 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             strategy_config_for_pair(normalized_pair).get("strategyClass", "ForexMasterStrategy")
         )
         scope = f"{normalized_pair}|{timeframe.upper()}|{selected_class}"
-        revision_db.execute(
-            "INSERT OR REPLACE INTO strategy_scope_revisions(scope, config_json, review_json) VALUES (?, ?, ?)",
-            (
-                scope,
-                json.dumps(strategy_config_for_pair(normalized_pair), default=str),
-                json.dumps(
-                    STRATEGY_REVIEW_BY_SCOPE.get(
-                        (normalized_pair, timeframe.upper(), selected_class), {}
+        with AUTO_HYPEROPT_DB_LOCK:
+            revision_db.execute(
+                "INSERT OR REPLACE INTO strategy_scope_revisions(scope, config_json, review_json) VALUES (?, ?, ?)",
+                (
+                    scope,
+                    json.dumps(strategy_config_for_pair(normalized_pair), default=str),
+                    json.dumps(
+                        STRATEGY_REVIEW_BY_SCOPE.get(
+                            (normalized_pair, timeframe.upper(), selected_class), {}
+                        ),
+                        default=str,
                     ),
-                    default=str,
                 ),
-            ),
-        )
-        revision_db.commit()
+            )
+            revision_db.commit()
 
     def restore_scope_revisions() -> None:
         for scope, config_json, review_json in revision_db.execute(
@@ -1116,12 +1135,39 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             "report": json.loads(report_json),
         }
 
+    saved_auto_hyperopt_state = revision_db.execute(
+        "SELECT state_json FROM auto_hyperopt_state WHERE id = 1"
+    ).fetchone()
+    if saved_auto_hyperopt_state:
+        try:
+            restored_auto_state = json.loads(saved_auto_hyperopt_state[0])
+        except json.JSONDecodeError:
+            logger.warning("Ignoring malformed persisted automatic Hyperopt schedule")
+        else:
+            if isinstance(restored_auto_state, dict):
+                AUTO_HYPEROPT_STATE.update(restored_auto_state)
+                restored_queue = AUTO_HYPEROPT_STATE.get("queue")
+                if isinstance(restored_queue, dict) and restored_queue.get("status") == "running":
+                    AUTO_HYPEROPT_STATE["queue"] = {
+                        "status": "interrupted",
+                        "message": "The server restarted while the automatic Hyperopt queue was running.",
+                    }
+
+    def persist_auto_hyperopt_state() -> None:
+        with AUTO_HYPEROPT_DB_LOCK:
+            revision_db.execute(
+                "INSERT OR REPLACE INTO auto_hyperopt_state(id, state_json) VALUES (1, ?)",
+                (json.dumps(AUTO_HYPEROPT_STATE, default=str),),
+            )
+            revision_db.commit()
+
     def persist_hyperopt_report(pair: str, completed_at: str, report: dict) -> None:
-        revision_db.execute(
-            "INSERT OR REPLACE INTO strategy_hyperopt_reports(scope, completed_at, report_json) VALUES (?, ?, ?)",
-            (pair, completed_at, json.dumps(report, default=str)),
-        )
-        revision_db.commit()
+        with AUTO_HYPEROPT_DB_LOCK:
+            revision_db.execute(
+                "INSERT OR REPLACE INTO strategy_hyperopt_reports(scope, completed_at, report_json) VALUES (?, ?, ?)",
+                (pair, completed_at, json.dumps(report, default=str)),
+            )
+            revision_db.commit()
 
     def update_backtest_job(job_id: str | None, **updates: object) -> None:
         if job_id and job_id in BACKTEST_JOBS:
@@ -3716,6 +3762,8 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "historyMode": history_mode,
                 "historyValue": history_value,
                 "attempts": attempts,
+                "stopDistanceMode": str(job.get("stopDistanceMode", "static")),
+                "runSettings": dict(job.get("runSettings") or {}),
                 "parameters": best.get("parameters", {}),
                 "minimal_roi": best.get("minimal_roi"),
                 "stopLoss": best_stop_loss,
@@ -3744,6 +3792,8 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "coverage": 2,
                 "attemptsRequested": attempts,
                 "hyperoptLoss": hyperopt_loss,
+                "stopDistanceMode": str(job.get("stopDistanceMode", "static")),
+                "runSettings": dict(job.get("runSettings") or {}),
                 "stopLoss": best_stop_loss,
                 "trailingStopLoss": trailing_stop_loss,
                 "costSettings": {
@@ -3813,6 +3863,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         except Exception as exc:  # pragma: no cover - background worker boundary
             job["status"] = "failed"
             job["error"] = str(exc)
+            job["completedAt"] = datetime.now(UTC).isoformat()
 
     def resolve_candle_scope(pair: str, timeframe: str) -> tuple[str, str]:
         normalized_pair = normalize_pair(pair)
@@ -3822,6 +3873,465 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return normalized_pair, normalized_timeframe
+
+    def auto_hyperopt_response() -> dict[str, object]:
+        setup = load_forex_config(
+            Path(os.environ.get("OANDA_CONFIG_PATH", "user_data/config.json"))
+        )
+        approved_revisions = dict(setup.get("pair_approved_revisions") or {})
+        selected_pairs = AUTO_HYPEROPT_STATE.get("pairs", [])
+        selected_scopes = {
+            hyperopt_scope(
+                str(item.get("pair", "")),
+                str(item.get("strategyClass", "")),
+                str(item.get("timeframe", "")),
+            )
+            for item in selected_pairs
+            if isinstance(item, dict)
+        }
+        last_results = AUTO_HYPEROPT_STATE.get("lastResults", {})
+        if not isinstance(last_results, dict):
+            last_results = {}
+        available_pairs: list[dict[str, object]] = []
+        for pair_key, revision in approved_revisions.items():
+            if not isinstance(revision, dict):
+                continue
+            pair = normalize_pair(str(revision.get("pair", pair_key.replace("_", "/"))))
+            current_revision = approved_runtime_revision(pair)
+            if current_revision is None:
+                continue
+            timeframe = str(current_revision.get("timeframe", "M15")).upper()
+            strategy_class = str(current_revision.get("strategyClass", ""))
+            scope = hyperopt_scope(pair, strategy_class, timeframe)
+            approved_hyperopt = current_revision.get("hyperopt")
+            approved_hyperopt = (
+                approved_hyperopt if isinstance(approved_hyperopt, dict) else {}
+            )
+            approved_settings = approved_hyperopt.get("runSettings")
+            approved_settings = (
+                approved_settings if isinstance(approved_settings, dict) else {}
+            )
+            result = last_results.get(scope)
+            results = [result] if isinstance(result, dict) else []
+            job = HYPEROPT_JOBS.get(scope)
+            report_entry = HYPEROPT_REPORTS.get(scope)
+            if job and job.get("status") in {"running", "completed", "stopped", "failed"}:
+                job_report = job.get("report")
+                job_validation = (
+                    job_report.get("validation") if isinstance(job_report, dict) else None
+                )
+                results.append(
+                    {
+                        "status": job.get("status"),
+                        "completedAt": job.get("completedAt") or job.get("startedAt"),
+                        "error": job.get("error"),
+                        "netPl": (
+                            job_validation.get("netPl")
+                            if isinstance(job_validation, dict)
+                            else None
+                        ),
+                    }
+                )
+            if report_entry and isinstance(report_entry.get("report"), dict):
+                report = report_entry["report"]
+                validation = report.get("validation")
+                results.append(
+                    {
+                        "status": report.get("status", "completed"),
+                        "completedAt": report_entry.get("completedAt"),
+                        "error": None,
+                        "netPl": (
+                            validation.get("netPl") if isinstance(validation, dict) else None
+                        ),
+                    }
+                )
+            result = max(
+                results,
+                key=lambda item: str(item.get("completedAt") or ""),
+                default=None,
+            )
+            if job and job.get("status") == "running":
+                result = {
+                    "status": "running",
+                    "completedAt": job.get("startedAt"),
+                    "error": None,
+                    "netPl": None,
+                }
+            available_pairs.append(
+                {
+                    "pair": pair,
+                    "timeframe": timeframe,
+                    "strategyClass": strategy_class,
+                    "approvedAt": current_revision.get("approvedAt"),
+                    "settings": {
+                        "attempts": approved_settings.get(
+                            "attempts", approved_hyperopt.get("attempts")
+                        ),
+                        "stopDistanceMode": approved_settings.get(
+                            "stopDistanceMode",
+                            approved_hyperopt.get(
+                                "stopDistanceMode",
+                                "automatic"
+                                if (
+                                    isinstance(approved_hyperopt.get("stopLoss"), dict)
+                                    and approved_hyperopt["stopLoss"].get("optimized") is True
+                                )
+                                else "static",
+                            ),
+                        ),
+                    },
+                    "selected": scope in selected_scopes,
+                    "lastHyperopt": result,
+                }
+            )
+        queue = AUTO_HYPEROPT_STATE.get("queue", {"status": "idle"})
+        return {
+            "enabled": AUTO_HYPEROPT_STATE.get("enabled") is True,
+            "weekdays": list(AUTO_HYPEROPT_STATE.get("weekdays", [])),
+            "time": str(AUTO_HYPEROPT_STATE.get("time", "12:00")),
+            "timezone": "server-local",
+            "pairs": [
+                dict(item) for item in selected_pairs if isinstance(item, dict)
+            ],
+            "availablePairs": available_pairs,
+            "queue": dict(queue) if isinstance(queue, dict) else {"status": "idle"},
+        }
+
+    def research_job_is_active() -> bool:
+        return any(job.get("status") == "running" for job in HYPEROPT_JOBS.values()) or any(
+            job.get("status") in {"queued", "running"} for job in BACKTEST_JOBS.values()
+        )
+
+    def automatic_hyperopt_is_running() -> bool:
+        queue = AUTO_HYPEROPT_STATE.get("queue")
+        return (
+            isinstance(queue, dict)
+            and queue.get("status") in {"queued", "running"}
+        ) or any(
+            job.get("automatic") is True and job.get("status") == "running"
+            for job in HYPEROPT_JOBS.values()
+        )
+
+    async def execute_auto_hyperopt_queue() -> None:
+        selected_pairs = [
+            dict(item)
+            for item in AUTO_HYPEROPT_STATE.get("pairs", [])
+            if isinstance(item, dict)
+        ]
+        AUTO_HYPEROPT_STATE["queue"] = {
+            "status": "running",
+            "startedAt": datetime.now(UTC).isoformat(),
+            "activePair": None,
+            "position": 0,
+            "total": len(selected_pairs),
+        }
+        persist_auto_hyperopt_state()
+        any_failed = False
+        for index, selected in enumerate(selected_pairs, start=1):
+            pair = normalize_pair(str(selected.get("pair", "")))
+            timeframe = str(selected.get("timeframe", "M15")).upper()
+            strategy_class = str(selected.get("strategyClass", ""))
+            scope = hyperopt_scope(pair, strategy_class, timeframe)
+            queue = dict(AUTO_HYPEROPT_STATE["queue"])
+            queue.update({"activePair": pair, "position": index})
+            AUTO_HYPEROPT_STATE["queue"] = queue
+            persist_auto_hyperopt_state()
+            revision = approved_runtime_revision(pair)
+            if (
+                revision is None
+                or revision.get("strategyClass") != strategy_class
+                or str(revision.get("timeframe", "")).upper() != timeframe
+            ):
+                result = {
+                    "status": "failed",
+                    "completedAt": datetime.now(UTC).isoformat(),
+                    "error": "The selected pair no longer has the matching approved strategy.",
+                    "netPl": None,
+                }
+                any_failed = True
+                _save_auto_hyperopt_result(scope, result)
+                continue
+            approved_hyperopt = revision.get("hyperopt")
+            if not isinstance(approved_hyperopt, dict):
+                result = {
+                    "status": "failed",
+                    "completedAt": datetime.now(UTC).isoformat(),
+                    "error": "The approved strategy has no Hyperopt settings.",
+                    "netPl": None,
+                }
+                any_failed = True
+                _save_auto_hyperopt_result(scope, result)
+                continue
+            run_settings = approved_hyperopt.get("runSettings")
+            run_settings = dict(run_settings) if isinstance(run_settings, dict) else {}
+            latest_report = HYPEROPT_REPORTS.get(scope, {}).get("report")
+            latest_report = latest_report if isinstance(latest_report, dict) else {}
+            cost_settings = latest_report.get("costSettings")
+            cost_settings = cost_settings if isinstance(cost_settings, dict) else {}
+            position_sizing = latest_report.get("positionSizing")
+            position_sizing = position_sizing if isinstance(position_sizing, dict) else {}
+            approved_stop_loss = approved_hyperopt.get("stopLoss")
+            approved_stop_loss = (
+                approved_stop_loss if isinstance(approved_stop_loss, dict) else {}
+            )
+            history_mode = str(
+                run_settings.get("historyMode", approved_hyperopt.get("historyMode", "candles"))
+            )
+            history_value = int(
+                run_settings.get(
+                    "historyValue",
+                    approved_hyperopt.get("historyValue", approved_hyperopt.get("steps", 500)),
+                )
+            )
+            if history_mode not in {"candles", "days", "date_range"}:
+                history_mode = "candles"
+            if history_mode == "date_range" and not (
+                run_settings.get("startDate") and run_settings.get("endDate")
+            ):
+                history_mode = "candles"
+                history_value = max(
+                    40, int(approved_hyperopt.get("steps", history_value or 500))
+                )
+            payload: dict[str, object] = {
+                "pair": pair,
+                "timeframe": timeframe,
+                "strategyClass": strategy_class,
+                "historyMode": history_mode,
+                "historyValue": history_value,
+                "steps": int(run_settings.get("steps", history_value)),
+                "attempts": int(
+                    run_settings.get(
+                        "attempts",
+                        approved_hyperopt.get(
+                            "attempts",
+                                latest_report.get("attemptsRequested", 24),
+                        ),
+                    )
+                ),
+                "hyperoptLoss": str(
+                    run_settings.get(
+                        "hyperoptLoss",
+                        latest_report.get("hyperoptLoss", DEFAULT_HYPEROPT_LOSS),
+                    )
+                ),
+                "stopDistanceMode": str(
+                    run_settings.get(
+                        "stopDistanceMode",
+                        approved_hyperopt.get(
+                            "stopDistanceMode",
+                            "automatic" if approved_stop_loss.get("optimized") else "static",
+                        ),
+                    )
+                ),
+                "stopLossMode": str(
+                    run_settings.get(
+                        "stopLossMode",
+                        approved_stop_loss.get("mode", "pips"),
+                    )
+                ),
+                "stopLossValue": str(
+                    run_settings.get(
+                        "stopLossValue",
+                        approved_stop_loss.get("value", "0.5"),
+                    )
+                ),
+                "trailingStopLoss": approved_hyperopt.get("trailingStopLoss") is True,
+                "spread": str(
+                    run_settings.get(
+                        "spread",
+                        cost_settings.get("spread", "0"),
+                    )
+                ),
+                "slippage": str(run_settings.get("slippage", cost_settings.get("slippage", "0"))),
+                "financingRatePerDayPercent": str(
+                    run_settings.get(
+                        "financingRatePerDayPercent",
+                        cost_settings.get("financingRatePerDayPercent", "0"),
+                    )
+                ),
+                "commissionRatePercent": str(
+                    run_settings.get(
+                        "commissionRatePercent", cost_settings.get("commissionRatePercent", "0")
+                    )
+                ),
+                "positionSizeMode": str(
+                    run_settings.get(
+                        "positionSizeMode", position_sizing.get("mode", "risk")
+                    )
+                ),
+                "positionSize": str(
+                    run_settings.get("positionSize", position_sizing.get("value") or "1000")
+                ),
+            }
+            if history_mode == "date_range":
+                payload["startDate"] = run_settings["startDate"]
+                payload["endDate"] = run_settings["endDate"]
+            service_token = create_session_token()
+            csrf_token = create_session_token()
+            ACTIVE_SESSIONS[service_token] = {
+                "username": "auto-hyperopt",
+                "role": "operator",
+                "csrfToken": csrf_token,
+                "expiresAt": str(datetime.now(UTC).timestamp() + 3600),
+            }
+            context_token = AUTO_HYPEROPT_CONTEXT.set(True)
+            try:
+                await start_hyperopt(
+                    payload,
+                    user_role="operator",
+                    csrf_token=csrf_token,
+                    session_token=service_token,
+                )
+            except Exception as exc:
+                result = {
+                    "status": "failed",
+                    "completedAt": datetime.now(UTC).isoformat(),
+                    "error": str(exc.detail) if isinstance(exc, HTTPException) else str(exc),
+                    "netPl": None,
+                }
+                any_failed = True
+                _save_auto_hyperopt_result(scope, result)
+                continue
+            finally:
+                AUTO_HYPEROPT_CONTEXT.reset(context_token)
+                ACTIVE_SESSIONS.pop(service_token, None)
+            while True:
+                job = HYPEROPT_JOBS.get(scope)
+                if not job or job.get("status") != "running":
+                    break
+                await asyncio.sleep(1)
+            job = HYPEROPT_JOBS.get(scope, {})
+            report = job.get("report")
+            if job.get("status") == "completed" and isinstance(report, dict):
+                validation = report.get("validation")
+                result = {
+                    "status": "completed",
+                    "completedAt": job.get("completedAt"),
+                    "error": None,
+                    "netPl": (
+                        validation.get("netPl") if isinstance(validation, dict) else None
+                    ),
+                }
+            else:
+                result = {
+                    "status": str(job.get("status", "failed")),
+                    "completedAt": job.get("completedAt") or datetime.now(UTC).isoformat(),
+                    "error": job.get("error") or "Hyperopt did not complete successfully.",
+                    "netPl": None,
+                }
+                any_failed = True
+            _save_auto_hyperopt_result(scope, result)
+        AUTO_HYPEROPT_STATE["queue"] = {
+            "status": "failed" if any_failed else "completed",
+            "completedAt": datetime.now(UTC).isoformat(),
+            "total": len(selected_pairs),
+            "message": (
+                "Queue finished; one or more pairs failed."
+                if any_failed
+                else "All selected pairs completed successfully."
+            ),
+        }
+        persist_auto_hyperopt_state()
+
+    def _save_auto_hyperopt_result(scope: str, result: dict[str, object]) -> None:
+        last_results = AUTO_HYPEROPT_STATE.get("lastResults")
+        if not isinstance(last_results, dict):
+            last_results = {}
+            AUTO_HYPEROPT_STATE["lastResults"] = last_results
+        last_results[scope] = result
+        persist_auto_hyperopt_state()
+
+    @app.get("/api/v1/auto-hyperopt")
+    async def get_auto_hyperopt_schedule() -> dict[str, object]:
+        return auto_hyperopt_response()
+
+    @app.post("/api/v1/auto-hyperopt")
+    async def save_auto_hyperopt_schedule(
+        payload: dict,
+        user_role: str | None = Header(default=None, alias="X-User-Role"),
+        csrf_token: str | None = Header(default=None, alias="X-CSRF-Token"),
+        session_token: str | None = Header(default=None, alias="X-Session-Token"),
+    ) -> dict[str, object]:
+        validate_write_access(user_role, csrf_token, session_token)
+        enabled = payload.get("enabled")
+        if not isinstance(enabled, bool):
+            raise HTTPException(status_code=400, detail="enabled must be a boolean")
+        weekdays = payload.get("weekdays")
+        if not isinstance(weekdays, list) or any(
+            not isinstance(day, int) or isinstance(day, bool) or day not in range(7)
+            for day in weekdays
+        ):
+            raise HTTPException(
+                status_code=400, detail="weekdays must contain day numbers from 0 to 6"
+            )
+        weekdays = sorted(set(weekdays))
+        schedule_time = str(payload.get("time", ""))
+        if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", schedule_time):
+            raise HTTPException(status_code=400, detail="time must use the HH:MM format")
+        requested_pairs = payload.get("pairs")
+        if not isinstance(requested_pairs, list):
+            raise HTTPException(status_code=400, detail="pairs must be a list")
+        selected_pairs: list[dict[str, str]] = []
+        seen_scopes: set[str] = set()
+        for item in requested_pairs:
+            if not isinstance(item, dict):
+                raise HTTPException(status_code=400, detail="Each selected pair must be an object")
+            pair = normalize_pair(str(item.get("pair", "")))
+            timeframe = str(item.get("timeframe", "")).upper()
+            strategy_class = str(item.get("strategyClass", ""))
+            revision = approved_runtime_revision(pair)
+            if (
+                revision is None
+                or str(revision.get("timeframe", "")).upper() != timeframe
+                or revision.get("strategyClass") != strategy_class
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"{pair} no longer has the selected approved strategy revision",
+                )
+            scope = hyperopt_scope(pair, strategy_class, timeframe)
+            if scope in seen_scopes:
+                raise HTTPException(status_code=400, detail="Selected pairs must be unique")
+            seen_scopes.add(scope)
+            selected_pairs.append(
+                {"pair": pair, "timeframe": timeframe, "strategyClass": strategy_class}
+            )
+        if enabled and (not weekdays or not selected_pairs):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Enable the schedule only after selecting at least one weekday "
+                    "and approved pair"
+                ),
+            )
+        AUTO_HYPEROPT_STATE.update(
+            {
+                "enabled": enabled,
+                "weekdays": weekdays,
+                "time": schedule_time,
+                "pairs": selected_pairs,
+            }
+        )
+        current_local_time = datetime.now().astimezone()
+        if (
+            current_local_time.strftime("%H:%M") >= schedule_time
+            and current_local_time.weekday() in weekdays
+        ):
+            AUTO_HYPEROPT_STATE["lastTriggeredDate"] = current_local_time.date().isoformat()
+        persist_auto_hyperopt_state()
+        record_audit_event(
+            "hyperopt.auto_schedule_updated",
+            details={
+                "enabled": enabled,
+                "weekdays": weekdays,
+                "time": schedule_time,
+                "pairs": selected_pairs,
+            },
+            username=user_role,
+            role=user_role,
+            allowed=True,
+        )
+        return auto_hyperopt_response()
 
     @app.get("/api/v1/hyperopt/data-cache")
     async def hyperopt_data_cache(pair: str, timeframe: str) -> dict:
@@ -3951,6 +4461,11 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         session_token: str | None = Header(default=None, alias="X-Session-Token"),
     ) -> dict:
         validate_write_access(user_role, csrf_token, session_token)
+        if automatic_hyperopt_is_running() and not AUTO_HYPEROPT_CONTEXT.get():
+            raise HTTPException(
+                status_code=409,
+                detail="Automatic Hyperopt is running; manual Hyperopt is temporarily disabled",
+            )
         pair = normalize_pair(str(payload.get("pair", "EUR/USD")))
         timeframe = str(payload.get("timeframe") or "M15").upper()
         strategy_class = str(
@@ -4112,8 +4627,28 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                         )
                     steps = len(candles)
                     history_value = steps
-                market_spread = (await client.get_prices((instrument_name,)))[0].spread
-                spread = requested_spread if requested_spread is not None else market_spread
+                market_spread: Decimal | None = None
+                try:
+                    market_prices = await client.get_prices((instrument_name,))
+                except OandaAPIError:
+                    if requested_spread is None:
+                        raise
+                    logger.warning(
+                        "Using the saved Hyperopt spread for %s because the broker quote is unavailable",
+                        pair,
+                    )
+                else:
+                    if market_prices:
+                        market_spread = market_prices[0].spread
+                if AUTO_HYPEROPT_CONTEXT.get():
+                    spread = market_spread if market_spread is not None else requested_spread
+                else:
+                    spread = requested_spread if requested_spread is not None else market_spread
+                if spread is None:
+                    raise HTTPException(
+                        status_code=502,
+                        detail=f"No broker spread is available for {pair} and no saved spread exists",
+                    )
                 account_currency = str(account.currency).upper()
                 quote_to_account_value, conversion_error = await currency_conversion_rate(
                     client, instrument.quote_currency, account_currency
@@ -4153,14 +4688,39 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
 
         data_hash = candle_frame_hash({instrument_name: candles})
         schema_hash = strategy_schema_hash(strategy_class, timeframe)
+        run_settings: dict[str, object] = {
+            "historyMode": history_mode,
+            "historyValue": history_value,
+            "steps": steps,
+            "attempts": attempts,
+            "stopDistanceMode": stop_distance_mode,
+            "stopLossMode": stop_loss_mode,
+            "stopLossValue": str(stop_loss_value),
+            "trailingStopLoss": trailing_stop_loss,
+            "hyperoptLoss": hyperopt_loss,
+            "spread": str(spread),
+            "slippage": str(slippage),
+            "financingRatePerDayPercent": str(
+                (financing_rate_per_day * Decimal("100")).normalize()
+            ),
+            "commissionRatePercent": str((commission_rate * Decimal("100")).normalize()),
+            "positionSizeMode": position_size_mode,
+            "positionSize": str(position_size),
+        }
+        if date_range_mode:
+            run_settings["startDate"] = str(payload.get("startDate", ""))
+            run_settings["endDate"] = str(payload.get("endDate", ""))
         job: dict[str, object] = {
             "pair": pair,
             "timeframe": timeframe,
             "strategyClass": strategy_class,
             "scopeKey": scope_key,
             "status": "running",
+            "automatic": AUTO_HYPEROPT_CONTEXT.get(),
             "attemptsCompleted": 0,
             "attemptsTotal": attempts,
+            "stopDistanceMode": stop_distance_mode,
+            "runSettings": run_settings,
             "startedAt": datetime.now(timezone.utc).isoformat(),
             "stopEvent": threading.Event(),
         }
@@ -4333,6 +4893,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "steps": int(report.get("steps", 0)),
                 "historyMode": report.get("historyMode", "candles"),
                 "historyValue": int(report.get("historyValue", report.get("steps", 0))),
+                "attempts": int(report.get("attemptsRequested", 24)),
+                "stopDistanceMode": report.get("stopDistanceMode", "static"),
+                "runSettings": dict(report.get("runSettings") or {}),
                 "parameters": dict(report.get("bestParameters") or {}),
                 "minimal_roi": dict(report.get("bestMinimalRoi") or {}),
                 "stopLoss": dict(report.get("stopLoss") or {}),
@@ -4385,6 +4948,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     "historyMode": pending.get("historyMode", "candles"),
                     "historyValue": pending.get("historyValue", pending.get("steps", 0)),
                     "steps": pending.get("steps", 0),
+                    "attempts": pending.get("attempts", 24),
+                    "stopDistanceMode": pending.get("stopDistanceMode", "static"),
+                    "runSettings": dict(pending.get("runSettings") or {}),
                     "dataHash": pending.get("dataHash"),
                     "dataRevision": pending.get("dataRevision"),
                     "strategySchemaHash": pending.get("strategySchemaHash"),
@@ -4475,6 +5041,11 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         session_token: str | None = Header(default=None, alias="X-Session-Token"),
     ) -> dict:
         validate_write_access(user_role, csrf_token, session_token)
+        if automatic_hyperopt_is_running():
+            raise HTTPException(
+                status_code=409,
+                detail="Automatic Hyperopt is running; backtests are temporarily disabled",
+            )
         position_size_mode = str(payload.get("positionSizeMode", "risk"))
         if position_size_mode not in {"risk", "units", "account_amount"}:
             raise HTTPException(status_code=400, detail="Unsupported position size mode")
@@ -5088,6 +5659,39 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
     @app.on_event("startup")
     async def start_background_tasks() -> None:
 
+        async def auto_hyperopt_scheduler_loop() -> None:
+            while True:
+                await asyncio.sleep(3)
+                if AUTO_HYPEROPT_STATE.get("enabled") is not True:
+                    continue
+                local_now = datetime.now().astimezone()
+                weekdays = AUTO_HYPEROPT_STATE.get("weekdays", [])
+                if not isinstance(weekdays, list) or local_now.weekday() not in weekdays:
+                    continue
+                if local_now.strftime("%H:%M") < str(AUTO_HYPEROPT_STATE.get("time", "12:00")):
+                    continue
+                if AUTO_HYPEROPT_STATE.get("lastTriggeredDate") == local_now.date().isoformat():
+                    continue
+                if research_job_is_active():
+                    continue
+                AUTO_HYPEROPT_STATE["lastTriggeredDate"] = local_now.date().isoformat()
+                AUTO_HYPEROPT_STATE["queue"] = {
+                    "status": "queued",
+                    "scheduledAt": local_now.isoformat(),
+                    "total": len(AUTO_HYPEROPT_STATE.get("pairs", [])),
+                }
+                persist_auto_hyperopt_state()
+                try:
+                    await execute_auto_hyperopt_queue()
+                except Exception:
+                    logger.exception("Automatic Hyperopt queue failed unexpectedly")
+                    AUTO_HYPEROPT_STATE["queue"] = {
+                        "status": "failed",
+                        "completedAt": datetime.now(UTC).isoformat(),
+                        "message": "The automatic Hyperopt queue encountered an unexpected error.",
+                    }
+                    persist_auto_hyperopt_state()
+
         async def average_order_cleanup_loop() -> None:
             while True:
                 await asyncio.sleep(5)
@@ -5142,6 +5746,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                         exc_info=True,
                     )
 
+        app.state.auto_hyperopt_scheduler_task = asyncio.create_task(
+            auto_hyperopt_scheduler_loop()
+        )
         app.state.average_order_cleanup_task = asyncio.create_task(average_order_cleanup_loop())
         try:
             strategy_execution_state = read_strategy_execution_state()
@@ -5156,6 +5763,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
     @app.on_event("shutdown")
     async def stop_background_tasks() -> None:
         for task_name in (
+            "auto_hyperopt_scheduler_task",
             "average_order_cleanup_task",
             "strategy_execution_task",
         ):
