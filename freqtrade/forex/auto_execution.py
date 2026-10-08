@@ -35,7 +35,19 @@ class AutoExecutionError(ValueError):
 def _risk_with_approved_stop_loss(
     risk: dict[str, object],
     approved_stop_loss: object,
+    *,
+    use_approved_setting: bool = False,
 ) -> dict[str, object]:
+    if use_approved_setting and isinstance(approved_stop_loss, dict):
+        mode = approved_stop_loss.get("mode")
+        if mode in {"pips", "percent"}:
+            try:
+                value = Decimal(str(approved_stop_loss.get("value", "")))
+            except (InvalidOperation, TypeError, ValueError) as exc:
+                raise AutoExecutionError("Approved trailing-stop distance is invalid") from exc
+            if not value.is_finite() or value <= 0:
+                raise AutoExecutionError("Approved trailing-stop distance must be positive")
+            return {**risk, "stopLoss": str(value), "stopLossMode": str(mode)}
     try:
         stop_pips = approved_stop_distance_pips(approved_stop_loss)
     except ValueError as exc:
@@ -192,7 +204,9 @@ class OandaAutoStrategyExecutor:
         risk = _risk_with_approved_stop_loss(
             self.risk_configs.get(pair, {}),
             parameters.get("stopLoss"),
+            use_approved_setting=parameters.get("trailingStopLoss") is True,
         )
+        trailing_stop_loss = parameters.get("trailingStopLoss") is True
         price_values = await self.client.get_prices((instrument,))
         if not price_values:
             raise AutoExecutionError(f"OANDA returned no current quote for {pair}")
@@ -240,19 +254,26 @@ class OandaAutoStrategyExecutor:
         if allowed_side not in {"BOTH", side.upper()}:
             raise AutoExecutionError(f"{pair} risk policy does not allow {side} entries")
 
-        stop_price, take_profit, units = await self._protected_order_size(
+        approved_stop_loss = parameters.get("stopLoss")
+        stop_price, take_profit, units, trailing_distance = await self._protected_order_size(
             pair,
             side,
             risk,
             account,
             price,
+            trailing_stop_loss=approved_stop_loss if trailing_stop_loss else None,
         )
         signed_units = units if side == "long" else -units
         client_order_id = _client_order_id(instrument, candle_time, side)
         result = await self.client.create_market_order(
             instrument,
             signed_units,
-            stop_loss_price=str(stop_price),
+            stop_loss_price=None if trailing_stop_loss else str(stop_price),
+            trailing_stop_loss_distance=(
+                str(trailing_distance)
+                if trailing_stop_loss and trailing_distance is not None
+                else None
+            ),
             take_profit_price=str(take_profit) if take_profit is not None else None,
             client_order_id=client_order_id,
             trade_client_extensions={
@@ -292,7 +313,9 @@ class OandaAutoStrategyExecutor:
         risk: dict[str, object],
         account: Any,
         price: OandaPrice,
-    ) -> tuple[Decimal, Decimal | None, int]:
+        *,
+        trailing_stop_loss: object | None = None,
+    ) -> tuple[Decimal, Decimal | None, int, Decimal | None]:
         instrument_metadata = await self.client.get_instruments((price.instrument,))
         if not instrument_metadata:
             raise AutoExecutionError(f"OANDA instrument metadata is unavailable for {pair}")
@@ -349,7 +372,30 @@ class OandaAutoStrategyExecutor:
             raise AutoExecutionError(
                 f"{pair} risk size or available market depth is below OANDA's minimum trade size"
             )
-        return stop_price, take_profit, units
+        trailing_distance: Decimal | None = None
+        if trailing_stop_loss is not None:
+            if not isinstance(trailing_stop_loss, dict):
+                raise AutoExecutionError("Approved trailing-stop settings are invalid")
+            mode = trailing_stop_loss.get("mode")
+            try:
+                value = Decimal(str(trailing_stop_loss.get("value", "")))
+            except (InvalidOperation, TypeError, ValueError) as exc:
+                raise AutoExecutionError("Approved trailing-stop distance is invalid") from exc
+            if not value.is_finite() or value <= 0:
+                raise AutoExecutionError("Approved trailing-stop distance must be positive")
+            if mode == "pips":
+                trailing_distance = value * metadata.pip_size
+            elif mode == "percent":
+                trailing_distance = entry_price * value / Decimal("100")
+            elif mode == "money":
+                trailing_distance = value / (conversion * Decimal(units))
+            else:
+                raise AutoExecutionError(
+                    "Approved trailing-stop mode must be pips, percent, or money"
+                )
+            if not trailing_distance.is_finite() or trailing_distance <= 0:
+                raise AutoExecutionError("Calculated trailing-stop distance must be positive")
+        return stop_price, take_profit, units, trailing_distance
 
     async def _close_on_strategy_exit(
         self,

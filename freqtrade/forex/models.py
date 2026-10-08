@@ -37,6 +37,8 @@ class OandaInstrument:
     base_currency: str | None = None
     quote_currency: str | None = None
     margin_rate: Decimal | None = None
+    minimum_trailing_stop_distance: Decimal | None = None
+    maximum_trailing_stop_distance: Decimal | None = None
 
     def __post_init__(self) -> None:
         if self.name:
@@ -73,6 +75,16 @@ class OandaInstrument:
             quote_currency=quote_currency,
             margin_rate=(
                 Decimal(payload["marginRate"]) if payload.get("marginRate") is not None else None
+            ),
+            minimum_trailing_stop_distance=(
+                Decimal(payload["minimumTrailingStopDistance"])
+                if payload.get("minimumTrailingStopDistance") is not None
+                else None
+            ),
+            maximum_trailing_stop_distance=(
+                Decimal(payload["maximumTrailingStopDistance"])
+                if payload.get("maximumTrailingStopDistance") is not None
+                else None
             ),
         )
 

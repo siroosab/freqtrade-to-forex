@@ -8,6 +8,7 @@ from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal
 
 import pandas as pd
 
+from freqtrade.forex.exit_rules import TrailingStop
 from freqtrade.forex.margin import MarginSnapshot, margin_snapshot
 from freqtrade.forex.models import ForexQuoteRate, OandaInstrument
 from freqtrade.forex.risk import quote_to_account_rate
@@ -193,6 +194,7 @@ def validate_backtest_split(
     slippage: Decimal = Decimal("0"),
     financing_rate_per_day: Decimal = Decimal("0"),
     quote_to_account_rate: Decimal = Decimal("1"),
+    trailing_stop_loss: bool = False,
     take_profit_pips: Decimal | None = None,
     max_open_positions: int | None = None,
     account_currency: str | None = None,
@@ -223,6 +225,7 @@ def validate_backtest_split(
         slippage=slippage,
         financing_rate_per_day=financing_rate_per_day,
         quote_to_account_rate=quote_to_account_rate,
+        trailing_stop_loss=trailing_stop_loss,
         take_profit_pips=take_profit_pips,
         max_open_positions=max_open_positions,
         account_currency=account_currency,
@@ -283,6 +286,7 @@ class ForexBacktester:
         quote_to_account_rate: Decimal = Decimal("1"),
         stop_loss_mode: str = "pips",
         stop_loss_value: Decimal | None = None,
+        trailing_stop_loss: bool = False,
         take_profit_pips: Decimal | None = None,
         max_open_positions: int | None = None,
         account_currency: str | None = None,
@@ -349,6 +353,7 @@ class ForexBacktester:
         self.quote_to_account_rate = quote_to_account_rate
         self.stop_loss_mode = stop_loss_mode
         self.stop_loss_value = stop_loss_value if stop_loss_value is not None else stop_pips
+        self.trailing_stop_loss = trailing_stop_loss
         self.take_profit_pips = take_profit_pips
         self.max_open_positions = max_open_positions
         self.account_currency = account_currency
@@ -860,6 +865,12 @@ class ForexBacktester:
         stop = self._protection_price(
             entry, direction, instrument, stop_distance_pips, stop=True
         )
+        trailing_stop = stop
+        trailing_rule = (
+            TrailingStop(stop_distance_pips * instrument.pip_size)
+            if self.trailing_stop_loss
+            else None
+        )
         target = None
         if self.take_profit_pips is not None:
             target = self._protection_price(
@@ -884,15 +895,28 @@ class ForexBacktester:
             high = Decimal(str(detail.high))
             low = Decimal(str(detail.low))
             if direction is Signal.LONG:
-                if low <= stop:
-                    return detail.date, stop
+                if low <= trailing_stop:
+                    return detail.date, trailing_stop
                 if target is not None and high >= target:
                     return detail.date, target
             else:
-                if high >= stop:
-                    return detail.date, stop
+                if high >= trailing_stop:
+                    return detail.date, trailing_stop
                 if target is not None and low <= target:
                     return detail.date, target
+            if trailing_rule is not None:
+                side = "long" if direction is Signal.LONG else "short"
+                favorable_price = high if direction is Signal.LONG else low
+                candidate_stop = trailing_rule.stop_price(
+                    side=side,
+                    current_price=favorable_price,
+                    previous_stop=trailing_stop,
+                )
+                trailing_stop = self._round_price(
+                    candidate_stop,
+                    instrument,
+                    rounding=ROUND_FLOOR if direction is Signal.LONG else ROUND_CEILING,
+                )
             if minimal_roi:
                 roi_trigger = self._roi_trigger(
                     position,

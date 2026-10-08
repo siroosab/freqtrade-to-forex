@@ -55,6 +55,7 @@ export function HyperoptPage() {
   const [commissionRatePercent, setCommissionRatePercent] = useState('0')
   const [stopLossMode, setStopLossMode] = useState<'pips' | 'percent' | 'money'>('pips')
   const [stopDistanceMode, setStopDistanceMode] = useState<'static' | 'automatic'>('static')
+  const [trailingStopLoss, setTrailingStopLoss] = useState(false)
   const [stopLossPips, setStopLossPips] = useState('0.5')
   const [backtestStopLossPipsOverride, setBacktestStopLossPipsOverride] = useState<{
     scope: string
@@ -280,6 +281,7 @@ export function HyperoptPage() {
       positionSizeMode,
       positionSize: selectedPositionSize,
       stopDistanceMode,
+      trailingStopLoss,
       stopLossMode: stopDistanceMode === 'automatic' ? 'pips' : stopLossMode,
       stopLossValue: stopDistanceMode === 'automatic' ? stopLossPips : stopLossValue,
     })
@@ -634,6 +636,18 @@ export function HyperoptPage() {
               </select>
               <small>Automatic mode searches from 0.5× to 3× the training candles' median true range (minimum 0.1 pip) and saves the best result with the approved strategy.</small>
             </label>
+            <label className="field-block">
+              <span>Trailing stop loss</span>
+              <input
+                className="trailing-stop-checkbox"
+                type="checkbox"
+                checked={trailingStopLoss}
+                onChange={(event) => setTrailingStopLoss(event.target.checked)}
+              />
+              <small>
+                When enabled, Hyperopt evaluates a trailing stop using the selected stop distance. Approved trades use OANDA's native trailing-stop order; when disabled, the fixed stop loss remains in effect.
+              </small>
+            </label>
             {stopDistanceMode === 'static' ? (
               <>
                 <label className="field-block">
@@ -708,6 +722,7 @@ export function HyperoptPage() {
                 {report.stopLoss && (
                   <div><span>{report.stopLoss.optimized ? 'Optimized stop distance' : 'Static stop loss'}</span><strong>{report.stopLoss.value} {report.stopLoss.unit} · {report.stopLoss.optimized ? 'selected by Hyperopt' : 'not optimized'}</strong></div>
                 )}
+                <div><span>Trailing stop loss</span><strong>{report.trailingStopLoss ? 'Enabled' : 'Disabled'}</strong></div>
                 {report.positionSizing && (
                   <div><span>Initial position sizing</span><strong>
                     {report.positionSizing.mode === 'risk'
@@ -734,6 +749,7 @@ export function HyperoptPage() {
                       <td>
                         {Object.entries(candidate.parameters).map(([key, value]) => `${key}: ${value}`).join(' · ')}
                         {candidate.stopLoss ? ` · stop: ${candidate.stopLoss.value} ${candidate.stopLoss.unit ?? 'pips'}` : ''}
+                        {` · trailing stop: ${candidate.trailingStopLoss ? 'on' : 'off'}`}
                       </td>
                     </tr>
                   ))}</tbody>
@@ -754,7 +770,10 @@ export function HyperoptPage() {
           </div>
           <p>Approval binds the optimized parameters to this exact pair, timeframe, and strategy. Only an approved revision is used by automatic signal generation and order execution.</p>
           {reviewQuery.data?.approvedRevision && (
-            <p>Active revision: {reviewQuery.data.approvedRevision.pair} · {reviewQuery.data.approvedRevision.timeframe} · {reviewQuery.data.approvedRevision.strategyClass}</p>
+            <p>
+              Active revision: {reviewQuery.data.approvedRevision.pair} · {reviewQuery.data.approvedRevision.timeframe} · {reviewQuery.data.approvedRevision.strategyClass}
+              {' '}· trailing stop: {reviewQuery.data.approvedRevision.hyperopt?.trailingStopLoss === true ? 'enabled' : 'disabled'}
+            </p>
           )}
           <div className="summary-grid">
             <button className="primary-action" type="button" onClick={() => saveReview('approved')} disabled={!report || report.status === 'failed' || reviewMutation.isPending || running}>

@@ -320,6 +320,7 @@ class StopDistanceStrategy(IStrategy):
         risk_fraction=Decimal("0.01"),
         spread=Decimal("0.0001"),
         optimize_stop_distance=True,
+        trailing_stop_loss=True,
         max_attempts=2,
         hyperopt_loss="ProfitDrawDownHyperOptLoss",
     )
@@ -328,6 +329,7 @@ class StopDistanceStrategy(IStrategy):
         stop_loss = candidate["stopLoss"]
         assert stop_loss["mode"] == "pips"
         assert stop_loss["optimized"] is True
+        assert candidate["trailingStopLoss"] is True
         assert Decimal("10") <= Decimal(stop_loss["value"]) <= Decimal("60")
 
 

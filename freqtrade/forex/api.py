@@ -172,6 +172,7 @@ def format_hyperopt_report(report: dict) -> str:
             if report.get("stopLoss")
             else "  Static stop loss: not recorded"
         ),
+        f"  Trailing stop loss: {'enabled' if report.get('trailingStopLoss') is True else 'disabled'}",
         (
             "  Position sizing: "
             + (
@@ -3627,6 +3628,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         stop_loss_mode: str,
         stop_loss_value: Decimal,
         optimize_stop_distance: bool,
+        trailing_stop_loss: bool,
         position_size_mode: str,
         position_size: Decimal,
         account_currency: str,
@@ -3659,6 +3661,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 stop_loss_mode=stop_loss_mode,
                 stop_loss_value=stop_loss_value,
                 optimize_stop_distance=optimize_stop_distance,
+                trailing_stop_loss=trailing_stop_loss,
                 max_attempts=attempts,
                 hyperopt_loss=hyperopt_loss,
                 slippage=slippage,
@@ -3699,6 +3702,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "parameters": best.get("parameters", {}),
                 "minimal_roi": best.get("minimal_roi"),
                 "stopLoss": best_stop_loss,
+                "trailingStopLoss": trailing_stop_loss,
                 "objective": str(best["objective"]),
                 "updatedAt": completed_at,
                 "dataRevision": completed_at,
@@ -3724,6 +3728,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "attemptsRequested": attempts,
                 "hyperoptLoss": hyperopt_loss,
                 "stopLoss": best_stop_loss,
+                "trailingStopLoss": trailing_stop_loss,
                 "costSettings": {
                     "spread": str(spread),
                     "slippage": str(slippage),
@@ -3966,6 +3971,11 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             raise HTTPException(
                 status_code=400, detail="Unsupported position size mode"
             )
+        trailing_stop_loss = payload.get("trailingStopLoss", False)
+        if not isinstance(trailing_stop_loss, bool):
+            raise HTTPException(
+                status_code=400, detail="trailingStopLoss must be a boolean"
+            )
         try:
             position_size = Decimal(str(payload.get("positionSize", "1000")))
             stop_distance_mode = str(payload.get("stopDistanceMode", "static")).lower()
@@ -4158,6 +4168,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 stop_loss_mode=stop_loss_mode,
                 stop_loss_value=stop_loss_value,
                 optimize_stop_distance=stop_distance_mode == "automatic",
+                trailing_stop_loss=trailing_stop_loss,
                 position_size_mode=position_size_mode,
                 position_size=position_size,
                 account_currency=account_currency,
@@ -4308,6 +4319,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "parameters": dict(report.get("bestParameters") or {}),
                 "minimal_roi": dict(report.get("bestMinimalRoi") or {}),
                 "stopLoss": dict(report.get("stopLoss") or {}),
+                "trailingStopLoss": report.get("trailingStopLoss") is True,
                 "objective": str(report.get("objective", "")),
                 "dataRevision": report.get("dataRevision"),
                 "dataHash": report.get("dataHash"),
@@ -4352,6 +4364,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     "parameters": dict(pending.get("parameters") or {}),
                     "minimal_roi": dict(pending.get("minimal_roi") or {}),
                     "stopLoss": dict(pending.get("stopLoss") or {}),
+                    "trailingStopLoss": pending.get("trailingStopLoss") is True,
                     "historyMode": pending.get("historyMode", "candles"),
                     "historyValue": pending.get("historyValue", pending.get("steps", 0)),
                     "steps": pending.get("steps", 0),
@@ -4770,6 +4783,10 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     quote_to_account_rate=Decimal(quote_to_account_rate),
                     stop_loss_mode=stop_loss_mode,
                     stop_loss_value=stop_loss_value,
+                    trailing_stop_loss=(
+                        isinstance(approved_hyperopt, dict)
+                        and approved_hyperopt.get("trailingStopLoss") is True
+                    ),
                 ).run(frame, detail_candles=frame)
                 strategy_parameters = dict(
                     approved_hyperopt.get("parameters", {})
@@ -4892,6 +4909,10 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                             else account_currency
                         ),
                         "stopLossOptimized": False,
+                        "trailingStopLoss": (
+                            isinstance(approved_hyperopt, dict)
+                            and approved_hyperopt.get("trailingStopLoss") is True
+                        ),
                         "spread": str(spread),
                         "slippage": str(slippage),
                         "financingRatePerDayPercent": str(financing_rate_per_day * Decimal("100")),

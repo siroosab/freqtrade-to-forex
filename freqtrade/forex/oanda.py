@@ -46,6 +46,31 @@ ORDER_TRANSACTION_FILTERS = (
 ORDER_STREAM_FILTER = "ORDER"
 
 
+def _validated_trailing_stop_distance(
+    stop_loss_price: str | None,
+    distance: str | None,
+    instrument: OandaInstrument,
+) -> Decimal | None:
+    if stop_loss_price is not None and distance is not None:
+        raise ValueError("A fixed stop loss and a trailing stop loss cannot be set simultaneously")
+    if distance is None:
+        return None
+    trailing_distance = Decimal(distance)
+    if not trailing_distance.is_finite() or trailing_distance <= 0:
+        raise ValueError("trailing_stop_loss_distance must be a positive number")
+    if (
+        instrument.minimum_trailing_stop_distance is not None
+        and trailing_distance < instrument.minimum_trailing_stop_distance
+    ):
+        raise ValueError("trailing stop distance is below OANDA's instrument minimum")
+    if (
+        instrument.maximum_trailing_stop_distance is not None
+        and trailing_distance > instrument.maximum_trailing_stop_distance
+    ):
+        raise ValueError("trailing stop distance exceeds OANDA's instrument maximum")
+    return trailing_distance
+
+
 def classify_oanda_account(tags: Any) -> dict[str, str] | None:
     """Return the supported bot account class for OANDA's account tags."""
     if isinstance(tags, str):
@@ -439,6 +464,7 @@ class OandaClient:
         units: int,
         *,
         stop_loss_price: str | None = None,
+        trailing_stop_loss_distance: str | None = None,
         take_profit_price: str | None = None,
         client_order_id: str | None = None,
         trade_client_extensions: dict[str, str] | None = None,
@@ -458,6 +484,11 @@ class OandaClient:
         order_side = "long" if units > 0 else "short"
         entry_price = quote.price_for_side(order_side)
         try:
+            trailing_distance = _validated_trailing_stop_distance(
+                stop_loss_price,
+                trailing_stop_loss_distance,
+                broker_instrument,
+            )
             if stop_loss_price is not None:
                 validator.validate_stop(
                     side=order_side,
@@ -481,6 +512,11 @@ class OandaClient:
         }
         if stop_loss_price is not None:
             order["stopLossOnFill"] = {"timeInForce": "GTC", "price": stop_loss_price}
+        if trailing_stop_loss_distance is not None:
+            order["trailingStopLossOnFill"] = {
+                "timeInForce": "GTC",
+                "distance": str(trailing_distance),
+            }
         if take_profit_price is not None:
             order["takeProfitOnFill"] = {"timeInForce": "GTC", "price": take_profit_price}
         if client_order_id is not None:

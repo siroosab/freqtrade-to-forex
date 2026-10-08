@@ -497,6 +497,7 @@ def test_websocket_market_channel_connects():
         ),
     ],
 )
+@pytest.mark.parametrize("trailing_stop_loss_enabled", [True, False])
 def test_hyperopt_approval_flows_into_chart_strategy(
     tmp_path,
     monkeypatch,
@@ -505,6 +506,7 @@ def test_hyperopt_approval_flows_into_chart_strategy(
     expected_stop_loss,
     expected_stop_pips,
     expected_optimization,
+    trailing_stop_loss_enabled,
 ):
     from datetime import timezone
     from types import SimpleNamespace
@@ -594,6 +596,7 @@ def test_hyperopt_approval_flows_into_chart_strategy(
                 "validationDrawdown": "0.1",
                 "validationTrades": 1,
                 "stopLoss": candidate_stop_loss,
+                "trailingStopLoss": kwargs.get("trailing_stop_loss", False),
             }
         ]
 
@@ -634,6 +637,7 @@ def test_hyperopt_approval_flows_into_chart_strategy(
                 "stopDistanceMode": stop_distance_mode,
                 "stopLossMode": "percent",
                 "stopLossValue": "1.25",
+                "trailingStopLoss": trailing_stop_loss_enabled,
             },
         )
         assert started.status_code == 200, started.text
@@ -664,6 +668,7 @@ def test_hyperopt_approval_flows_into_chart_strategy(
             "quoteToAccountRate": "0.78",
         }
         assert status["report"]["stopLoss"] == expected_stop_loss
+        assert status["report"]["trailingStopLoss"] is trailing_stop_loss_enabled
 
         approved = scoped_client.post(
             "/api/v1/strategy/review",
@@ -684,6 +689,10 @@ def test_hyperopt_approval_flows_into_chart_strategy(
     }
     assert approved.json()["approvedRevision"]["hyperopt"]["minimal_roi"] == {"0": 0.01}
     assert approved.json()["approvedRevision"]["hyperopt"]["stopLoss"] == expected_stop_loss
+    assert (
+        approved.json()["approvedRevision"]["hyperopt"]["trailingStopLoss"]
+        is trailing_stop_loss_enabled
+    )
     assert hyperopt_options["spread"] == Decimal("0.0002")
     assert hyperopt_options["slippage"] == Decimal("0.00001")
     assert hyperopt_options["financing_rate_per_day"] == Decimal("0.0002")
@@ -694,6 +703,7 @@ def test_hyperopt_approval_flows_into_chart_strategy(
     assert hyperopt_options["optimize_stop_distance"] is expected_optimization
     assert hyperopt_options["stop_loss_mode"] == "percent"
     assert hyperopt_options["stop_loss_value"] == Decimal("1.25")
+    assert hyperopt_options["trailing_stop_loss"] is trailing_stop_loss_enabled
     assert all(
         "stopLoss" not in candidate["parameters"]
         for candidate in status["report"]["candidates"]
@@ -727,6 +737,11 @@ def test_hyperopt_rejects_invalid_cost_settings(tmp_path):
             headers=headers,
             json={"stopLossMode": "money", "stopLossValue": "0"},
         )
+        invalid_trailing_stop = scoped_client.post(
+            "/api/v1/hyperopt/start",
+            headers=headers,
+            json={"trailingStopLoss": "true"},
+        )
 
     assert response.status_code == 400
     assert "finite and non-negative" in response.json()["detail"]
@@ -734,6 +749,8 @@ def test_hyperopt_rejects_invalid_cost_settings(tmp_path):
     assert "position size must be finite and positive" in invalid_size.json()["detail"]
     assert invalid_stop_loss.status_code == 400
     assert "stop loss must be finite and positive" in invalid_stop_loss.json()["detail"]
+    assert invalid_trailing_stop.status_code == 400
+    assert "trailingStopLoss must be a boolean" in invalid_trailing_stop.json()["detail"]
 
 
 def test_hyperopt_date_download_reports_and_clears_cache(tmp_path, monkeypatch):

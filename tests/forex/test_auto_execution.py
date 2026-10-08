@@ -357,6 +357,32 @@ async def test_approved_optimized_stop_distance_overrides_risk_config(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("trailing_enabled", [True, False])
+async def test_approved_trailing_stop_flag_controls_oanda_order_protection(
+    tmp_path,
+    monkeypatch,
+    trailing_enabled,
+) -> None:
+    _strategy_directory(tmp_path, monkeypatch)
+    client = FakeOandaClient(_candles("long"))
+    executor = _executor(client)
+    executor.setup["pair_approved_revisions"]["EUR_USD"]["hyperopt"] = {
+        "stopLoss": {"mode": "pips", "value": "5.0", "optimized": True},
+        "trailingStopLoss": trailing_enabled,
+    }
+
+    results = await executor.run_cycle()
+
+    assert results[0]["status"] == "filled"
+    if trailing_enabled:
+        assert client.orders[0][1]["stop_loss_price"] is None
+        assert client.orders[0][1]["trailing_stop_loss_distance"] == "0.00050"
+    else:
+        assert Decimal(client.orders[0][1]["stop_loss_price"]) == Decimal("1.0997")
+        assert client.orders[0][1]["trailing_stop_loss_distance"] is None
+
+
+@pytest.mark.asyncio
 async def test_approved_minimal_roi_closes_profitable_automated_trade(
     tmp_path,
     monkeypatch,

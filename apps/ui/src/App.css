@@ -2015,6 +2015,13 @@
   letter-spacing: 0.06em;
 }
 
+.trailing-stop-checkbox {
+  align-self: flex-start;
+  width: 16px;
+  height: 16px;
+  accent-color: #22c55e;
+}
+
 .muted-block {
   justify-content: center;
   padding: 14px 16px;
