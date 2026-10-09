@@ -70,6 +70,23 @@ function schedulerWindowLabel(schedule: AutoHyperoptSchedule): string {
   return schedule.scheduler.scheduleDue ? 'Start time reached' : 'Waiting for selected day/time'
 }
 
+function queueLaunchLabel(
+  launchStatus: AutoHyperoptSchedule['queue']['launchStatus'],
+): string {
+  switch (launchStatus) {
+    case 'preparing':
+      return 'Preparing Hyperopt inputs'
+    case 'submitting':
+      return 'Sending Hyperopt start request'
+    case 'started':
+      return 'Hyperopt started'
+    case 'failed':
+      return 'Hyperopt start failed'
+    default:
+      return 'Waiting for the first Hyperopt start request'
+  }
+}
+
 function resultLabel(result: AutoHyperoptResult | null | undefined): string {
   if (!result) return 'No Hyperopt history'
   if (result.status === 'running') return 'Hyperopt in progress'
@@ -84,7 +101,9 @@ export function AutoHyperoptPage() {
   const scheduleQuery = useQuery({
     queryKey: ['auto-hyperopt-schedule'],
     queryFn: getAutoHyperoptSchedule,
-    refetchInterval: (query) => query.state.data?.queue.status === 'running' ? 1500 : 5000,
+    refetchInterval: (query) => ['queued', 'running'].includes(query.state.data?.queue.status ?? '')
+      ? 1500
+      : 5000,
   })
   const [draft, setDraft] = useState<ScheduleDraft | null>(null)
   const activeQueue = scheduleQuery.data?.queue.status === 'running'
@@ -189,12 +208,23 @@ export function AutoHyperoptPage() {
               <span className="auto-hyperopt-pulse" />
               <div>
                 <strong>
-                  Automatic Hyperopt is running
+                  {queue?.launchStatus === 'started'
+                    ? 'Hyperopt is running'
+                    : queue?.launchStatus === 'failed'
+                      ? 'Hyperopt could not start'
+                    : queue?.status === 'queued'
+                      ? 'Automatic Hyperopt queue was triggered'
+                      : 'Automatic Hyperopt is preparing'}
                   {queue?.activePair ? ` · ${queue.activePair}` : ''}
                 </strong>
                 <p>
-                  Pair {queue?.position ?? 0} of {queue?.total ?? 0} · the next pair starts only after this Hyperopt finishes.
-                  Manual Hyperopt and Backtests are locked while the queue is active.
+                  {queueLaunchLabel(queue?.launchStatus)} · pair {queue?.position ?? 0} of {queue?.total ?? 0}.
+                  {queue?.hyperoptStartedAt
+                    ? ` Started at ${formatServerDateTime(queue.hyperoptStartedAt)}.`
+                    : queue?.launchRequestedAt
+                      ? ` Start request sent at ${formatServerDateTime(queue.launchRequestedAt)}.`
+                      : ''}
+                  {' '}The next pair starts only after this Hyperopt finishes. Manual Hyperopt and Backtests are locked while the queue is active.
                 </p>
               </div>
             </section>
@@ -241,6 +271,22 @@ export function AutoHyperoptPage() {
             <div>
               <span>Last scheduler check</span>
               <strong>{formatServerDateTime(schedule.scheduler.lastCheckedAt)}</strong>
+            </div>
+            <div>
+              <span>Last Hyperopt start</span>
+              <strong>
+                {queue?.hyperoptStartedAt
+                  ? `${queue.activePair ?? 'Pair'} · ${formatServerDateTime(queue.hyperoptStartedAt)}`
+                  : 'No start recorded'}
+              </strong>
+            </div>
+            <div>
+              <span>Start command status</span>
+              <strong>
+                {queue?.launchStatus === 'failed'
+                  ? `Failed · ${queue.launchError ?? 'see API log'}`
+                  : queueLaunchLabel(queue?.launchStatus)}
+              </strong>
             </div>
             <p className="auto-hyperopt-diagnostic-reason">
               {schedule.scheduler.lastDecision ?? 'Waiting for the scheduler status.'}
@@ -305,7 +351,10 @@ export function AutoHyperoptPage() {
                   }))}
                   disabled={activeQueue}
                 />
-                <small>For example, Monday and Thursday at 12:00.</small>
+                <small>
+                  Server time now: {formatServerDateTime(schedule.scheduler.serverNow)}.
+                  {' '}For example, Monday and Thursday at 12:00.
+                </small>
               </label>
             </div>
             <p className="auto-hyperopt-note">

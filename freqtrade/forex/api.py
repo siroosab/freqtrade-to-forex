@@ -1157,7 +1157,19 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                         "status": "interrupted",
                         "message": "The server restarted while the automatic Hyperopt queue was running.",
                     }
-                    for key in ("scheduledAt", "startedAt", "completedAt"):
+                    for key in (
+                        "scheduledAt",
+                        "startedAt",
+                        "completedAt",
+                        "activePair",
+                        "position",
+                        "total",
+                        "launchStatus",
+                        "launchRequestedAt",
+                        "hyperoptStartedAt",
+                        "launchFailedAt",
+                        "launchError",
+                    ):
                         if key in restored_queue:
                             interrupted_queue[key] = restored_queue[key]
                     AUTO_HYPEROPT_STATE["queue"] = interrupted_queue
@@ -4111,7 +4123,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         ]
         AUTO_HYPEROPT_STATE["queue"] = {
             "status": "running",
-            "startedAt": datetime.now(UTC).isoformat(),
+            "startedAt": datetime.now().astimezone().isoformat(),
             "activePair": None,
             "position": 0,
             "total": len(selected_pairs),
@@ -4124,7 +4136,12 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             strategy_class = str(selected.get("strategyClass", ""))
             scope = hyperopt_scope(pair, strategy_class, timeframe)
             queue = dict(AUTO_HYPEROPT_STATE["queue"])
-            queue.update({"activePair": pair, "position": index})
+            queue.update({
+                "activePair": pair,
+                "position": index,
+                "launchStatus": "preparing",
+                "launchError": None,
+            })
             AUTO_HYPEROPT_STATE["queue"] = queue
             persist_auto_hyperopt_state()
             revision = approved_runtime_revision(pair)
@@ -4133,10 +4150,24 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 or revision.get("strategyClass") != strategy_class
                 or str(revision.get("timeframe", "")).upper() != timeframe
             ):
+                launch_error = (
+                    "The selected pair no longer has the matching approved strategy."
+                )
+                queue = dict(AUTO_HYPEROPT_STATE["queue"])
+                queue.update({
+                    "launchStatus": "failed",
+                    "launchFailedAt": datetime.now().astimezone().isoformat(),
+                    "launchError": launch_error,
+                })
+                AUTO_HYPEROPT_STATE["queue"] = queue
+                AUTO_HYPEROPT_SCHEDULER["lastDecision"] = (
+                    f"Hyperopt preparation failed for {pair}: {launch_error}"
+                )
+                persist_auto_hyperopt_state()
                 result = {
                     "status": "failed",
                     "completedAt": datetime.now(UTC).isoformat(),
-                    "error": "The selected pair no longer has the matching approved strategy.",
+                    "error": launch_error,
                     "netPl": None,
                 }
                 any_failed = True
@@ -4144,10 +4175,22 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 continue
             approved_hyperopt = revision.get("hyperopt")
             if not isinstance(approved_hyperopt, dict):
+                launch_error = "The approved strategy has no Hyperopt settings."
+                queue = dict(AUTO_HYPEROPT_STATE["queue"])
+                queue.update({
+                    "launchStatus": "failed",
+                    "launchFailedAt": datetime.now().astimezone().isoformat(),
+                    "launchError": launch_error,
+                })
+                AUTO_HYPEROPT_STATE["queue"] = queue
+                AUTO_HYPEROPT_SCHEDULER["lastDecision"] = (
+                    f"Hyperopt preparation failed for {pair}: {launch_error}"
+                )
+                persist_auto_hyperopt_state()
                 result = {
                     "status": "failed",
                     "completedAt": datetime.now(UTC).isoformat(),
-                    "error": "The approved strategy has no Hyperopt settings.",
+                    "error": launch_error,
                     "netPl": None,
                 }
                 any_failed = True
@@ -4267,17 +4310,56 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             }
             context_token = AUTO_HYPEROPT_CONTEXT.set(True)
             try:
-                await start_hyperopt(
+                queue = dict(AUTO_HYPEROPT_STATE["queue"])
+                queue.update({
+                    "launchStatus": "submitting",
+                    "launchRequestedAt": datetime.now().astimezone().isoformat(),
+                })
+                AUTO_HYPEROPT_STATE["queue"] = queue
+                persist_auto_hyperopt_state()
+                AUTO_HYPEROPT_SCHEDULER["lastDecision"] = (
+                    f"Submitting Hyperopt start request for {pair}."
+                )
+                start_response = await start_hyperopt(
                     payload,
                     user_role="operator",
                     csrf_token=csrf_token,
                     session_token=service_token,
                 )
+                job = HYPEROPT_JOBS.get(scope)
+                if start_response.get("status") != "running" or not job:
+                    raise RuntimeError(
+                        f"Hyperopt start request for {pair} returned without a running job."
+                    )
+                queue = dict(AUTO_HYPEROPT_STATE["queue"])
+                queue.update({
+                    "launchStatus": "started",
+                    "hyperoptStartedAt": job.get("startedAt"),
+                    "launchError": None,
+                })
+                AUTO_HYPEROPT_STATE["queue"] = queue
+                AUTO_HYPEROPT_SCHEDULER["lastDecision"] = (
+                    f"Hyperopt started for {pair} at {job.get('startedAt')}."
+                )
+                persist_auto_hyperopt_state()
             except Exception as exc:
+                queue = dict(AUTO_HYPEROPT_STATE["queue"])
+                queue.update({
+                    "launchStatus": "failed",
+                    "launchError": (
+                        str(exc.detail) if isinstance(exc, HTTPException) else str(exc)
+                    ),
+                    "launchFailedAt": datetime.now().astimezone().isoformat(),
+                })
+                AUTO_HYPEROPT_STATE["queue"] = queue
+                AUTO_HYPEROPT_SCHEDULER["lastDecision"] = (
+                    f"Hyperopt start failed for {pair}: {queue['launchError']}"
+                )
+                persist_auto_hyperopt_state()
                 result = {
                     "status": "failed",
                     "completedAt": datetime.now(UTC).isoformat(),
-                    "error": str(exc.detail) if isinstance(exc, HTTPException) else str(exc),
+                    "error": str(queue["launchError"]),
                     "netPl": None,
                 }
                 any_failed = True
@@ -4312,7 +4394,8 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 }
                 any_failed = True
             _save_auto_hyperopt_result(scope, result)
-        AUTO_HYPEROPT_STATE["queue"] = {
+        completed_queue = dict(AUTO_HYPEROPT_STATE["queue"])
+        completed_queue.update({
             "status": "failed" if any_failed else "completed",
             "completedAt": datetime.now(UTC).isoformat(),
             "total": len(selected_pairs),
@@ -4321,7 +4404,8 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 if any_failed
                 else "All selected pairs completed successfully."
             ),
-        }
+        })
+        AUTO_HYPEROPT_STATE["queue"] = completed_queue
         persist_auto_hyperopt_state()
 
     def _save_auto_hyperopt_result(scope: str, result: dict[str, object]) -> None:
@@ -5822,19 +5906,25 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 persist_auto_hyperopt_state()
                 try:
                     await execute_auto_hyperopt_queue()
-                except Exception:
+                except Exception as exc:
                     logger.exception("Automatic Hyperopt queue failed unexpectedly")
+                    launch_error = f"Unexpected queue error: {exc}"
+                    queue = dict(AUTO_HYPEROPT_STATE.get("queue", {}))
+                    queue.update({
+                        "launchStatus": "failed",
+                        "launchFailedAt": datetime.now().astimezone().isoformat(),
+                        "launchError": launch_error,
+                    })
+                    AUTO_HYPEROPT_STATE["queue"] = queue
                     AUTO_HYPEROPT_SCHEDULER["lastDecision"] = (
-                        "Queue failed; see the API log for the exception."
+                        f"Queue failed unexpectedly: {exc}"
                     )
-                    AUTO_HYPEROPT_STATE["queue"] = {
+                    queue.update({
                         "status": "failed",
                         "completedAt": datetime.now(UTC).isoformat(),
-                        "message": (
-                            "The automatic Hyperopt queue encountered an unexpected error. "
-                            "See the API log for details."
-                        ),
-                    }
+                        "message": launch_error,
+                    })
+                    AUTO_HYPEROPT_STATE["queue"] = queue
                     persist_auto_hyperopt_state()
 
         async def average_order_cleanup_loop() -> None:

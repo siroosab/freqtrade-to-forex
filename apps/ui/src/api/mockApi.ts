@@ -278,6 +278,11 @@ export type AutoHyperoptSchedule = {
     activePair?: string | null
     position?: number
     total?: number
+    launchStatus?: 'preparing' | 'submitting' | 'started' | 'failed'
+    launchRequestedAt?: string
+    hyperoptStartedAt?: string
+    launchFailedAt?: string
+    launchError?: string | null
     message?: string
   }
   scheduler: {

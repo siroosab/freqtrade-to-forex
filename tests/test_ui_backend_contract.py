@@ -807,6 +807,12 @@ def test_hyperopt_approval_flows_into_chart_strategy(
                     break
                 time.sleep(0.05)
             assert queue_status == "completed"
+            completed_queue = scoped_client.get("/api/v1/auto-hyperopt").json()["queue"]
+            assert completed_queue["launchStatus"] == "started"
+            assert completed_queue["activePair"] == "EUR/USD"
+            assert completed_queue["startedAt"]
+            assert completed_queue["launchRequestedAt"]
+            assert completed_queue["hyperoptStartedAt"]
             automatic_status = scoped_client.get(status_url).json()
             assert automatic_status["report"]["attemptsRequested"] == 1
             assert automatic_status["report"]["stopDistanceMode"] == "automatic"
@@ -846,6 +852,9 @@ def test_hyperopt_approval_flows_into_chart_strategy(
     assert saved_schedule["scheduler"]["serverNow"]
     assert saved_schedule["scheduler"]["serverTimezone"]
     assert saved_schedule["scheduler"]["nextRunAt"]
+    assert datetime.fromisoformat(
+        saved_schedule["scheduler"]["serverNow"]
+    ).utcoffset() is not None
     assert blocked_hyperopt.status_code == 409
     assert "Automatic Hyperopt is running" in blocked_hyperopt.json()["detail"]
     assert blocked_backtest.status_code == 409
