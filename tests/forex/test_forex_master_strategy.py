@@ -1,6 +1,45 @@
-import pandas as pd
+from decimal import Decimal
+import math
 
+import pandas as pd
+import pytest
+
+from freqtrade.forex.models import OandaInstrument
 from freqtrade.forex.strategy_execution import load_strategy
+from freqtrade.forex.strategy_hyperopt import hyperopt_worker_limit, run_strategy_hyperopt
+
+
+@pytest.mark.skipif(hyperopt_worker_limit() < 2, reason="requires two available CPUs")
+def test_strategy_hyperopt_evaluates_candidates_in_process_workers() -> None:
+    closes = [1.1 + math.sin(index / 3) * 0.002 for index in range(100)]
+    candles = pd.DataFrame(
+        {
+            "date": pd.date_range("2026-01-01", periods=len(closes), freq="15min", tz="UTC"),
+            "open": closes,
+            "high": [close + 0.001 for close in closes],
+            "low": [close - 0.001 for close in closes],
+            "close": closes,
+            "volume": [0.0] * len(closes),
+        }
+    )
+
+    candidates = run_strategy_hyperopt(
+        candles,
+        {},
+        OandaInstrument("EUR_USD", "EUR/USD", -4, 5, 0, Decimal(1)),
+        pair="EUR/USD",
+        strategy_class="ForexMasterStrategy",
+        timeframe="15m",
+        starting_balance=Decimal(10000),
+        risk_fraction=Decimal("0.01"),
+        spread=Decimal("0.0001"),
+        max_attempts=2,
+        hyperopt_loss="ProfitDrawDownHyperOptLoss",
+        workers=2,
+    )
+
+    assert len(candidates) == 2
+    assert all(candidate["coverage"] == 2 for candidate in candidates)
 
 
 def test_forex_master_matches_pine_crossover_signals() -> None:

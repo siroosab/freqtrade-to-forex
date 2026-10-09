@@ -61,6 +61,7 @@ export function HyperoptPage() {
   const [historyMode, setHistoryMode] = useState<'candles' | 'days' | 'date_range'>('candles')
   const [dateRange, setDateRange] = useState(initialDateRange)
   const [attempts, setAttempts] = useState(30)
+  const [workers, setWorkers] = useState<number | null>(null)
   const [lossFunction, setLossFunction] = useState('ProfitDrawDownHyperOptLoss')
   const [spreadOverride, setSpreadOverride] = useState<{ pair: string; value: string } | null>(null)
   const [slippage, setSlippage] = useState('0')
@@ -195,6 +196,10 @@ export function HyperoptPage() {
   })
 
   const report = statusQuery.data?.report ?? reportQuery.data?.report
+  const availableWorkers = statusQuery.data?.availableWorkers
+    ?? autoHyperoptQuery.data?.availableWorkers
+    ?? 1
+  const selectedWorkers = Math.min(workers ?? availableWorkers, availableWorkers)
   const approvedRevision = reviewQuery.data?.approvedRevision
   const approvedHyperopt = approvedRevision?.hyperopt
   const approvedTrailingStopLossMatches = Boolean(
@@ -303,6 +308,7 @@ export function HyperoptPage() {
       historyValue,
       ...(historyMode === 'date_range' ? dateRange : {}),
       attempts,
+      workers: selectedWorkers,
       hyperoptLoss: lossFunction,
       spread: effectiveSpread,
       slippage,
@@ -760,6 +766,17 @@ export function HyperoptPage() {
             <label className="field-block">
               <span>Attempts</span>
               <input type="number" min="1" max="900" value={attempts} onChange={(event) => setAttempts(Number(event.target.value))} />
+            </label>
+            <label className="field-block">
+              <span>CPU worker processes</span>
+              <select value={selectedWorkers} onChange={(event) => setWorkers(Number(event.target.value))}>
+                {Array.from({ length: availableWorkers }, (_, index) => index + 1).map((count) => (
+                  <option key={count} value={count}>{count}</option>
+                ))}
+              </select>
+              <small>
+                Available on the server: {availableWorkers}. Each worker evaluates candidates in a separate process; using all workers can leave less CPU for live trading.
+              </small>
             </label>
             <label className="field-block">
               <span>Objective</span>

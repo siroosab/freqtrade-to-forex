@@ -684,6 +684,7 @@ def test_hyperopt_approval_flows_into_chart_strategy(
                 "historyMode": "days",
                 "historyValue": 2,
                 "attempts": 1,
+                "workers": 1,
                 "spread": "0.0002",
                 "slippage": "0.00001",
                 "financingRatePerDayPercent": "0.02",
@@ -758,6 +759,7 @@ def test_hyperopt_approval_flows_into_chart_strategy(
                 "enabled": True,
                 "weekdays": [0, 3],
                 "time": "12:00",
+                "workers": 1,
                 "pairs": [
                     {
                         "pair": "EUR/USD",
@@ -840,6 +842,8 @@ def test_hyperopt_approval_flows_into_chart_strategy(
     assert saved_schedule["enabled"] is True
     assert saved_schedule["weekdays"] == [0, 3]
     assert saved_schedule["time"] == "12:00"
+    assert saved_schedule["workers"] == 1
+    assert saved_schedule["availableWorkers"] >= 1
     assert saved_schedule["pairs"] == [
         {
             "pair": "EUR/USD",
@@ -870,6 +874,7 @@ def test_hyperopt_approval_flows_into_chart_strategy(
     assert hyperopt_options["stop_loss_mode"] == "percent"
     assert hyperopt_options["stop_loss_value"] == Decimal("1.25")
     assert hyperopt_options["trailing_stop_loss"] is trailing_stop_loss_enabled
+    assert hyperopt_options["workers"] == 1
     assert all(
         "stopLoss" not in candidate["parameters"]
         for candidate in status["report"]["candidates"]
@@ -908,6 +913,11 @@ def test_hyperopt_rejects_invalid_cost_settings(tmp_path):
             headers=headers,
             json={"trailingStopLoss": "true"},
         )
+        invalid_workers = scoped_client.post(
+            "/api/v1/hyperopt/start",
+            headers=headers,
+            json={"workers": 0},
+        )
 
     assert response.status_code == 400
     assert "finite and non-negative" in response.json()["detail"]
@@ -917,6 +927,8 @@ def test_hyperopt_rejects_invalid_cost_settings(tmp_path):
     assert "stop loss must be finite and positive" in invalid_stop_loss.json()["detail"]
     assert invalid_trailing_stop.status_code == 400
     assert "trailingStopLoss must be a boolean" in invalid_trailing_stop.json()["detail"]
+    assert invalid_workers.status_code == 400
+    assert "workers must be an integer" in invalid_workers.json()["detail"]
 
 
 def test_hyperopt_date_download_reports_and_clears_cache(tmp_path, monkeypatch):

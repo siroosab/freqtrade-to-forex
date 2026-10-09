@@ -236,6 +236,8 @@ export type HyperoptStatus = {
   status: 'idle' | 'running' | 'completed' | 'stopped' | 'failed'
   attemptsCompleted: number
   attemptsTotal: number
+  workers?: number
+  availableWorkers: number
   startedAt?: string
   error?: string | null
   report?: HyperoptReport | null
@@ -259,6 +261,8 @@ export type AutoHyperoptSchedule = {
   enabled: boolean
   weekdays: number[]
   time: string
+  workers: number
+  availableWorkers: number
   timezone: 'server-local'
   pairs: AutoHyperoptPair[]
   availablePairs: Array<AutoHyperoptPair & {
@@ -417,14 +421,14 @@ async function throwApiError(response: Response, message: string): Promise<never
   throw new Error(`${message}: ${detail}`)
 }
 
-export async function startHyperopt(payload: { pair: string; timeframe: string; strategyClass: string; steps: number; attempts: number; historyMode?: 'candles' | 'days' | 'date_range'; historyValue?: number; startDate?: string; endDate?: string; hyperoptLoss?: string; spread?: string; slippage?: string; financingRatePerDayPercent?: string; commissionRatePercent?: string; positionSizeMode?: 'risk' | 'units' | 'account_amount'; positionSize?: string; stopDistanceMode?: 'static' | 'automatic'; stopLossMode?: 'pips' | 'percent' | 'money'; stopLossValue?: string; trailingStopLoss?: boolean }): Promise<{ pair: string; status: string; attemptsTotal: number }> {
+export async function startHyperopt(payload: { pair: string; timeframe: string; strategyClass: string; steps: number; attempts: number; workers: number; historyMode?: 'candles' | 'days' | 'date_range'; historyValue?: number; startDate?: string; endDate?: string; hyperoptLoss?: string; spread?: string; slippage?: string; financingRatePerDayPercent?: string; commissionRatePercent?: string; positionSizeMode?: 'risk' | 'units' | 'account_amount'; positionSize?: string; stopDistanceMode?: 'static' | 'automatic'; stopLossMode?: 'pips' | 'percent' | 'money'; stopLossValue?: string; trailingStopLoss?: boolean }): Promise<{ pair: string; status: string; attemptsTotal: number; workers: number }> {
   const response = await fetch(buildApiUrl('/api/v1/hyperopt/start'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ resetPrevious: true, ...payload }),
   })
   if (!response.ok) return throwApiError(response, 'Hyperopt request rejected')
-  return response.json() as Promise<{ pair: string; status: string; attemptsTotal: number }>
+  return response.json() as Promise<{ pair: string; status: string; attemptsTotal: number; workers: number }>
 }
 
 export async function getHyperoptStatus(pair: string, strategyClass: string, timeframe: string): Promise<HyperoptStatus> {
@@ -467,6 +471,7 @@ export async function saveAutoHyperoptSchedule(schedule: {
   enabled: boolean
   weekdays: number[]
   time: string
+  workers: number
   pairs: AutoHyperoptPair[]
 }): Promise<AutoHyperoptSchedule> {
   const response = await fetch(buildApiUrl('/api/v1/auto-hyperopt'), {

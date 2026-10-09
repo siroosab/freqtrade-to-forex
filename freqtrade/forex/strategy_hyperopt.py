@@ -6,10 +6,13 @@ import math
 import random
 from collections import defaultdict
 from collections.abc import Callable
+from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from copy import deepcopy
+from dataclasses import dataclass
 from decimal import Decimal
 
 import pandas as pd
+from joblib import cpu_count
 
 from freqtrade.forex.backtest import BacktestResult, ForexBacktester
 from freqtrade.forex.models import OandaInstrument
@@ -43,6 +46,168 @@ DEFAULT_HYPEROPT_LOSS = "ProfitDrawDownHyperOptLoss"
 _REFERENCE_ROI_VOLATILITY_PER_5M = 0.0002
 _MIN_ROI_PROFIT_RATE = 0.00001
 _MAX_ROI_PROFIT_INCREMENT = 0.05
+
+
+@dataclass(frozen=True)
+class _HyperoptWorkerContext:
+    parameters: dict[str, BaseParameter]
+    strategy_class: str
+    timeframe: str
+    pair: str
+    informative_candles: dict[str, pd.DataFrame]
+    instrument: OandaInstrument
+    starting_balance: Decimal
+    risk_fraction: Decimal
+    optimize_stop_distance: bool
+    stop_loss_mode: str
+    stop_loss_value: Decimal
+    trailing_stop_loss: bool
+    spread: Decimal
+    slippage: Decimal
+    financing_rate_per_day: Decimal
+    commission_rate: Decimal
+    position_size_mode: str
+    position_size: Decimal
+    quote_to_account_rate: Decimal
+    train: pd.DataFrame
+    validation: pd.DataFrame
+    candles: pd.DataFrame
+    roi_volatility_per_5m: float
+    hyperopt_loss: str
+
+
+_HYPEROPT_WORKER_CONTEXT: _HyperoptWorkerContext | None = None
+_HyperoptTask = tuple[
+    int,
+    dict[str, object],
+    dict[str, int | float],
+    dict[str, float],
+    Decimal,
+]
+
+
+def hyperopt_worker_limit() -> int:
+    """Return the CPU count available to this process, respecting container limits."""
+    return max(1, cpu_count())
+
+
+def _initialize_hyperopt_worker(context: _HyperoptWorkerContext) -> None:
+    global _HYPEROPT_WORKER_CONTEXT
+    _HYPEROPT_WORKER_CONTEXT = context
+
+
+def _evaluate_hyperopt_candidate(
+    task: _HyperoptTask,
+    context: _HyperoptWorkerContext | None = None,
+) -> tuple[int, dict[str, object]]:
+    if context is None:
+        context = _HYPEROPT_WORKER_CONTEXT
+    if context is None:
+        raise RuntimeError("Hyperopt worker context was not initialized")
+    attempt, values, roi_parameters, minimal_roi, candidate_stop_pips = task
+    evaluate = _create_candidate_evaluator(
+        candidate_values=values,
+        candidate_minimal_roi=minimal_roi,
+        parameters=context.parameters,
+        strategy_class=context.strategy_class,
+        timeframe=context.timeframe,
+        pair=context.pair,
+        informative_candles=context.informative_candles,
+        instrument=context.instrument,
+        starting_balance=context.starting_balance,
+        risk_fraction=context.risk_fraction,
+        stop_pips=candidate_stop_pips,
+        stop_loss_mode="pips" if context.optimize_stop_distance else context.stop_loss_mode,
+        stop_loss_value=(
+            candidate_stop_pips if context.optimize_stop_distance else context.stop_loss_value
+        ),
+        trailing_stop_loss=context.trailing_stop_loss,
+        spread=context.spread,
+        slippage=context.slippage,
+        financing_rate_per_day=context.financing_rate_per_day,
+        commission_rate=context.commission_rate,
+        position_size_mode=context.position_size_mode,
+        position_size=context.position_size,
+        quote_to_account_rate=context.quote_to_account_rate,
+    )
+    train_result = evaluate(context.train)
+    validation_result = evaluate(
+        context.validation,
+        indicator_context=context.candles,
+    )
+    objective = compute_hyperopt_objective(validation_result, context.hyperopt_loss)
+    if not validation_result.trades:
+        objective = Decimal("-Infinity")
+    return attempt, {
+        "parameters": values,
+        "trailingStopLoss": context.trailing_stop_loss,
+        "stopLoss": {
+            "mode": "pips" if context.optimize_stop_distance else context.stop_loss_mode,
+            "value": str(
+                candidate_stop_pips if context.optimize_stop_distance else context.stop_loss_value
+            ),
+            "optimized": context.optimize_stop_distance,
+        },
+        "minimal_roi": minimal_roi,
+        "roi_parameters": roi_parameters,
+        "roi_volatility_per_5m": context.roi_volatility_per_5m,
+        "roi_volatility_regime": _roi_regime(context.roi_volatility_per_5m),
+        "objective": format(objective, ".2f"),
+        "trainNetPl": format(train_result.net_pl, ".2f"),
+        "validationNetPl": format(validation_result.net_pl, ".2f"),
+        "validationDrawdown": format(validation_result.max_drawdown, ".2f"),
+        "validationTrades": len(validation_result.trades),
+        "coverage": 2,
+        "trainTrades": len(train_result.trades),
+    }
+
+
+def _evaluate_hyperopt_tasks(
+    tasks: list[_HyperoptTask],
+    context: _HyperoptWorkerContext,
+    *,
+    workers: int,
+    total_attempts: int,
+    on_attempt: Callable[[int, int], None] | None,
+    on_candidate: Callable[[int, int, dict[str, object]], None] | None,
+    should_stop: Callable[[], bool] | None,
+) -> list[dict[str, object]]:
+    indexed_rows: list[tuple[int, dict[str, object]]] = []
+
+    def record_result(attempt: int, row: dict[str, object]) -> None:
+        indexed_rows.append((attempt, row))
+        completed = len(indexed_rows)
+        if on_candidate is not None:
+            on_candidate(completed, total_attempts, row)
+        if on_attempt is not None:
+            on_attempt(completed, total_attempts)
+
+    if workers == 1:
+        for task in tasks:
+            attempt, row = _evaluate_hyperopt_candidate(task, context)
+            record_result(attempt, row)
+    else:
+        with ProcessPoolExecutor(
+            max_workers=workers,
+            initializer=_initialize_hyperopt_worker,
+            initargs=(context,),
+        ) as executor:
+            pending = {executor.submit(_evaluate_hyperopt_candidate, task) for task in tasks}
+            while pending:
+                completed_futures, pending = wait(
+                    pending,
+                    timeout=0.25,
+                    return_when=FIRST_COMPLETED,
+                )
+                for future in completed_futures:
+                    attempt, row = future.result()
+                    record_result(attempt, row)
+                if should_stop is not None and should_stop():
+                    for future in pending:
+                        future.cancel()
+                    break
+    indexed_rows.sort(key=lambda item: item[0])
+    return [row for _, row in indexed_rows]
 
 
 def _estimate_roi_volatility_per_5m(candles: pd.DataFrame, timeframe: str) -> float:
@@ -159,11 +324,7 @@ def _sample_stop_distance_pips(
         ),
         axis=1,
     ).max(axis=1)
-    median_range = (
-        true_range.replace([float("inf"), float("-inf")], float("nan"))
-        .dropna()
-        .median()
-    )
+    median_range = true_range.replace([float("inf"), float("-inf")], float("nan")).dropna().median()
     if pd.isna(median_range) or median_range <= 0:
         raise ValueError("automatic stop distance could not be derived from candle volatility")
     median_pips = Decimal(str(median_range)) / instrument.pip_size
@@ -367,10 +528,20 @@ def run_strategy_hyperopt(
     on_candidate: Callable[[int, int, dict[str, object]], None] | None = None,
     indicator_context: pd.DataFrame | None = None,
     should_stop: Callable[[], bool] | None = None,
+    workers: int = 1,
 ) -> list[dict[str, object]]:
     """Optimize strategy parameters and ROI on held-out candles."""
     if len(candles) < 40:
         raise ValueError("strategy hyperopt requires at least 40 candles")
+    available_workers = hyperopt_worker_limit()
+    if (
+        isinstance(workers, bool)
+        or not isinstance(workers, int)
+        or not 1 <= workers <= available_workers
+    ):
+        raise ValueError(
+            f"workers must be an integer between 1 and the {available_workers} available CPUs"
+        )
     strategy = load_strategy(strategy_class, timeframe, pair)
     class_attributes: dict[str, object] = {}
     for strategy_type in reversed(type(strategy).__mro__):
@@ -394,9 +565,35 @@ def run_strategy_hyperopt(
     train = candles.iloc[:split_index]
     validation = candles.iloc[split_index:]
     rng = random.Random()  # noqa: S311
-    rows: list[dict[str, object]] = []
+    worker_context = _HyperoptWorkerContext(
+        parameters=parameters,
+        strategy_class=strategy_class,
+        timeframe=timeframe,
+        pair=pair,
+        informative_candles=informative_candles,
+        instrument=instrument,
+        starting_balance=starting_balance,
+        risk_fraction=risk_fraction,
+        optimize_stop_distance=optimize_stop_distance,
+        stop_loss_mode=stop_loss_mode,
+        stop_loss_value=stop_loss_value,
+        trailing_stop_loss=trailing_stop_loss,
+        spread=spread,
+        slippage=slippage,
+        financing_rate_per_day=financing_rate_per_day,
+        commission_rate=commission_rate,
+        position_size_mode=position_size_mode,
+        position_size=position_size,
+        quote_to_account_rate=quote_to_account_rate,
+        train=train,
+        validation=validation,
+        candles=indicator_context if indicator_context is not None else candles,
+        roi_volatility_per_5m=roi_volatility_per_5m,
+        hyperopt_loss=hyperopt_loss,
+    )
 
     total_attempts = max(1, min(max_attempts, 900))
+    tasks: list[_HyperoptTask] = []
     for attempt in range(1, total_attempts + 1):
         if should_stop is not None and should_stop():
             break
@@ -410,62 +607,17 @@ def run_strategy_hyperopt(
         }
         roi_parameters = _sample_roi_parameters(rng, timeframe, roi_volatility_per_5m)
         minimal_roi = _generate_roi_table(roi_parameters)
-        evaluate = _create_candidate_evaluator(
-            candidate_values=values,
-            candidate_minimal_roi=minimal_roi,
-            parameters=parameters,
-            strategy_class=strategy_class,
-            timeframe=timeframe,
-            pair=pair,
-            informative_candles=informative_candles,
-            instrument=instrument,
-            starting_balance=starting_balance,
-            risk_fraction=risk_fraction,
-            stop_pips=candidate_stop_pips,
-            stop_loss_mode="pips" if optimize_stop_distance else stop_loss_mode,
-            stop_loss_value=candidate_stop_pips if optimize_stop_distance else stop_loss_value,
-            trailing_stop_loss=trailing_stop_loss,
-            spread=spread,
-            slippage=slippage,
-            financing_rate_per_day=financing_rate_per_day,
-            commission_rate=commission_rate,
-            position_size_mode=position_size_mode,
-            position_size=position_size,
-            quote_to_account_rate=quote_to_account_rate,
-        )
-        train_result = evaluate(train)
-        validation_result = evaluate(
-            validation,
-            indicator_context=(indicator_context if indicator_context is not None else candles),
-        )
-        objective = compute_hyperopt_objective(validation_result, hyperopt_loss)
-        if not validation_result.trades:
-            objective = Decimal("-Infinity")
-        row = {
-            "parameters": values,
-            "trailingStopLoss": trailing_stop_loss,
-            "stopLoss": {
-                "mode": "pips" if optimize_stop_distance else stop_loss_mode,
-                "value": str(candidate_stop_pips if optimize_stop_distance else stop_loss_value),
-                "optimized": optimize_stop_distance,
-            },
-            "minimal_roi": minimal_roi,
-            "roi_parameters": roi_parameters,
-            "roi_volatility_per_5m": roi_volatility_per_5m,
-            "roi_volatility_regime": _roi_regime(roi_volatility_per_5m),
-            "objective": format(objective, ".2f"),
-            "trainNetPl": format(train_result.net_pl, ".2f"),
-            "validationNetPl": format(validation_result.net_pl, ".2f"),
-            "validationDrawdown": format(validation_result.max_drawdown, ".2f"),
-            "validationTrades": len(validation_result.trades),
-            "coverage": 2,
-            "trainTrades": len(train_result.trades),
-        }
-        rows.append(row)
-        if on_candidate is not None:
-            on_candidate(attempt, total_attempts, row)
-        if on_attempt is not None:
-            on_attempt(attempt, total_attempts)
+        tasks.append((attempt, values, roi_parameters, minimal_roi, candidate_stop_pips))
+
+    rows = _evaluate_hyperopt_tasks(
+        tasks,
+        worker_context,
+        workers=workers,
+        total_attempts=total_attempts,
+        on_attempt=on_attempt,
+        on_candidate=on_candidate,
+        should_stop=should_stop,
+    )
     rows.sort(key=lambda row: Decimal(str(row["objective"])), reverse=True)
     if not rows:
         raise ValueError("strategy hyperopt was stopped before completing any attempt")

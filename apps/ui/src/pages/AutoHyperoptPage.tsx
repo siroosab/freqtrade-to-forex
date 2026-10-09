@@ -22,6 +22,7 @@ type ScheduleDraft = {
   enabled: boolean
   weekdays: number[]
   time: string
+  workers: number
   pairs: string[]
 }
 
@@ -34,6 +35,7 @@ function scheduleDraft(schedule: AutoHyperoptSchedule): ScheduleDraft {
     enabled: schedule.enabled,
     weekdays: schedule.weekdays,
     time: schedule.time,
+    workers: schedule.workers,
     pairs: schedule.pairs.map(pairKey),
   }
 }
@@ -135,6 +137,7 @@ export function AutoHyperoptPage() {
   const currentEnabled = currentDraft?.enabled ?? false
   const currentWeekdays = currentDraft?.weekdays ?? [0, 3]
   const currentTime = currentDraft?.time ?? '12:00'
+  const currentWorkers = currentDraft?.workers ?? scheduleQuery.data?.availableWorkers ?? 1
   const currentSelectedPairs = currentDraft?.pairs ?? []
 
   const approvedPairs = scheduleQuery.data?.availablePairs ?? []
@@ -157,6 +160,7 @@ export function AutoHyperoptPage() {
         enabled: false,
         weekdays: [0, 3],
         time: '12:00',
+        workers: scheduleQuery.data?.availableWorkers ?? 1,
         pairs: [],
       }
       const currentDays = base.weekdays
@@ -176,6 +180,7 @@ export function AutoHyperoptPage() {
         enabled: false,
         weekdays: [0, 3],
         time: '12:00',
+        workers: scheduleQuery.data?.availableWorkers ?? 1,
         pairs: [],
       }
       const currentPairs = base.pairs
@@ -193,6 +198,7 @@ export function AutoHyperoptPage() {
       enabled: currentEnabled,
       weekdays: currentWeekdays,
       time: currentTime,
+      workers: currentWorkers,
       pairs: selectedPairDetails,
     })
   }
@@ -331,6 +337,7 @@ export function AutoHyperoptPage() {
                       enabled: false,
                       weekdays: [0, 3],
                       time: '12:00',
+                      workers: schedule?.availableWorkers ?? 1,
                       pairs: [],
                     }),
                     enabled: event.target.checked,
@@ -368,6 +375,7 @@ export function AutoHyperoptPage() {
                       enabled: false,
                       weekdays: [0, 3],
                       time: '12:00',
+                      workers: schedule?.availableWorkers ?? 1,
                       pairs: [],
                     }),
                     time: event.target.value,
@@ -378,6 +386,30 @@ export function AutoHyperoptPage() {
                   API server clock: {formatServerDateTime(schedule.scheduler.serverNow)}.
                   {' '}Your clock for that same instant: {formatBrowserDateTime(schedule.scheduler.serverNow)}.
                   {' '}This input is interpreted using server time, not your browser's local time.
+                </small>
+              </label>
+              <label className="auto-hyperopt-time">
+                <span className="auto-hyperopt-field-label">CPU worker processes</span>
+                <select
+                  value={currentWorkers}
+                  onChange={(event) => setDraft((current) => ({
+                    ...(current ?? currentDraft ?? {
+                      enabled: false,
+                      weekdays: [0, 3],
+                      time: '12:00',
+                      workers: schedule?.availableWorkers ?? 1,
+                      pairs: [],
+                    }),
+                    workers: Number(event.target.value),
+                  }))}
+                  disabled={activeQueue}
+                >
+                  {Array.from({ length: schedule?.availableWorkers ?? 1 }, (_, index) => index + 1).map((count) => (
+                    <option key={count} value={count}>{count}</option>
+                  ))}
+                </select>
+                <small>
+                  Available on the server: {schedule?.availableWorkers ?? 1}. This worker count is used for every pair in the scheduled queue. Choose fewer workers to reserve CPU for live trading.
                 </small>
               </label>
             </div>

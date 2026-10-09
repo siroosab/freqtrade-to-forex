@@ -103,6 +103,13 @@ coverage. Requests ending today are capped at one minute before the current UTC
 time so OANDA does not reject an end timestamp that is still in the future; the
 effective end is shown after the download.
 
+Manual and scheduled Hyperopt expose a CPU worker-process setting. Its default
+uses all CPUs available to the server (including container CPU limits), and
+each process evaluates separate candidates. Reduce the worker count if Hyperopt
+competes with live trading for CPU or memory. This parallelism applies to
+strategy Hyperopt only; the live trading loop remains event-driven and is not
+made multi-process by this setting.
+
 Inspect the currently selected pair settings and approval state without broker
 credentials:
 

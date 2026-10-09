@@ -61,6 +61,7 @@ from freqtrade.forex.strategy_execution import (
 from freqtrade.forex.strategy_hyperopt import (
     DEFAULT_HYPEROPT_LOSS,
     HYPEROPT_LOSS_FUNCTIONS,
+    hyperopt_worker_limit,
     run_strategy_hyperopt,
 )
 from freqtrade.timeframe import timeframe_to_seconds
@@ -70,6 +71,23 @@ logger = logging.getLogger(__name__)
 
 
 SYSTEMD_SERVICE_NAME = "freqtrade-forex"
+
+
+def _parse_hyperopt_workers(value: object) -> int:
+    available_workers = hyperopt_worker_limit()
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or not 1 <= value <= available_workers
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "workers must be an integer between 1 and the number of CPUs "
+                f"available to Hyperopt ({available_workers})"
+            ),
+        )
+    return value
 
 
 def _systemd_user_unavailable_reason() -> str | None:
@@ -795,6 +813,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         "enabled": False,
         "weekdays": [],
         "time": "12:00",
+        "workers": hyperopt_worker_limit(),
         "pairs": [],
         "queue": {"status": "idle"},
         "lastTriggeredDate": None,
@@ -1250,6 +1269,16 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         else:
             if isinstance(restored_auto_state, dict):
                 AUTO_HYPEROPT_STATE.update(restored_auto_state)
+                saved_workers = AUTO_HYPEROPT_STATE.get("workers")
+                if (
+                    isinstance(saved_workers, bool)
+                    or not isinstance(saved_workers, int)
+                    or not 1 <= saved_workers <= hyperopt_worker_limit()
+                ):
+                    logger.warning(
+                        "Resetting invalid persisted automatic Hyperopt worker count"
+                    )
+                    AUTO_HYPEROPT_STATE["workers"] = hyperopt_worker_limit()
                 restored_queue = AUTO_HYPEROPT_STATE.get("queue")
                 if isinstance(restored_queue, dict) and restored_queue.get("status") == "running":
                     interrupted_queue = {
@@ -3932,6 +3961,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         position_size: Decimal,
         account_currency: str,
         quote_to_account_rate: Decimal,
+        workers: int,
         candles: pd.DataFrame,
         instrument: OandaInstrument,
         spread: Decimal,
@@ -3969,6 +3999,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 position_size_mode=position_size_mode,
                 position_size=position_size,
                 quote_to_account_rate=quote_to_account_rate,
+                workers=workers,
                 on_attempt=on_attempt,
                 should_stop=stop_event.is_set,
             )
@@ -4121,6 +4152,15 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         return normalized_pair, normalized_timeframe
 
     def auto_hyperopt_response() -> dict[str, object]:
+        available_workers = hyperopt_worker_limit()
+        configured_workers = AUTO_HYPEROPT_STATE.get("workers", available_workers)
+        if (
+            isinstance(configured_workers, bool)
+            or not isinstance(configured_workers, int)
+            or configured_workers < 1
+        ):
+            configured_workers = available_workers
+        configured_workers = min(configured_workers, available_workers)
         setup = load_forex_config(
             Path(os.environ.get("OANDA_CONFIG_PATH", "user_data/config.json"))
         )
@@ -4250,6 +4290,8 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             "enabled": AUTO_HYPEROPT_STATE.get("enabled") is True,
             "weekdays": list(AUTO_HYPEROPT_STATE.get("weekdays", [])),
             "time": str(AUTO_HYPEROPT_STATE.get("time", "12:00")),
+            "workers": configured_workers,
+            "availableWorkers": available_workers,
             "timezone": "server-local",
             "pairs": [
                 dict(item) for item in selected_pairs if isinstance(item, dict)
@@ -4425,6 +4467,10 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "pair": pair,
                 "timeframe": timeframe,
                 "strategyClass": strategy_class,
+                "workers": min(
+                    int(AUTO_HYPEROPT_STATE.get("workers", hyperopt_worker_limit())),
+                    hyperopt_worker_limit(),
+                ),
                 "historyMode": history_mode,
                 "historyValue": history_value,
                 "steps": int(run_settings.get("steps", history_value)),
@@ -4635,6 +4681,12 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 status_code=400, detail="weekdays must contain day numbers from 0 to 6"
             )
         weekdays = sorted(set(weekdays))
+        workers = _parse_hyperopt_workers(
+            payload.get(
+                "workers",
+                AUTO_HYPEROPT_STATE.get("workers", hyperopt_worker_limit()),
+            )
+        )
         schedule_time = str(payload.get("time", ""))
         if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", schedule_time):
             raise HTTPException(status_code=400, detail="time must use the HH:MM format")
@@ -4679,6 +4731,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "enabled": enabled,
                 "weekdays": weekdays,
                 "time": schedule_time,
+                "workers": workers,
                 "pairs": selected_pairs,
             }
         )
@@ -4723,6 +4776,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "enabled": enabled,
                 "weekdays": weekdays,
                 "time": schedule_time,
+                "workers": workers,
                 "pairs": selected_pairs,
             },
             username=user_role,
@@ -4891,6 +4945,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         if not date_range_mode and steps < 40:
             raise HTTPException(status_code=400, detail="Hyperopt requires at least 40 candles")
         attempts = max(1, min(int(payload.get("attempts", 24)), 900))
+        workers = _parse_hyperopt_workers(
+            payload.get("workers", hyperopt_worker_limit())
+        )
         hyperopt_loss = str(payload.get("hyperoptLoss", DEFAULT_HYPEROPT_LOSS))
         if hyperopt_loss not in HYPEROPT_LOSS_FUNCTIONS:
             raise HTTPException(
@@ -5091,6 +5148,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             "historyValue": history_value,
             "steps": steps,
             "attempts": attempts,
+            "workers": workers,
             "stopDistanceMode": stop_distance_mode,
             "stopLossMode": stop_loss_mode,
             "stopLossValue": str(stop_loss_value),
@@ -5117,6 +5175,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             "automatic": AUTO_HYPEROPT_CONTEXT.get(),
             "attemptsCompleted": 0,
             "attemptsTotal": attempts,
+            "workers": workers,
             "stopDistanceMode": stop_distance_mode,
             "runSettings": run_settings,
             "startedAt": datetime.now(timezone.utc).isoformat(),
@@ -5153,6 +5212,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 spread=spread,
                 starting_balance=Decimal(str(account.balance)),
                 risk_fraction=Decimal(str(settings.risk_fraction)),
+                workers=workers,
                 data_hash=data_hash,
                 schema_hash=schema_hash,
             ),
@@ -5163,6 +5223,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             "strategyClass": strategy_class,
             "status": "running",
             "attemptsTotal": attempts,
+            "workers": workers,
         }
 
     @app.get("/api/v1/hyperopt/loss-functions")
@@ -5187,6 +5248,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "status": "idle",
                 "attemptsCompleted": 0,
                 "attemptsTotal": 0,
+                "availableWorkers": hyperopt_worker_limit(),
                 "hasLastReport": report_entry is not None,
             }
         return {
@@ -5196,6 +5258,8 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             "status": job["status"],
             "attemptsCompleted": job.get("attemptsCompleted", 0),
             "attemptsTotal": job.get("attemptsTotal", 0),
+            "workers": job.get("workers", 1),
+            "availableWorkers": hyperopt_worker_limit(),
             "startedAt": job.get("startedAt"),
             "error": job.get("error"),
             "report": job.get("report") if job.get("status") in {"completed", "stopped"} else None,
