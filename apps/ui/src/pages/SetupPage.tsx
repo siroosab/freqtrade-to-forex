@@ -168,6 +168,26 @@ export function SetupPage() {
     }
   }
   const selectedAccount = accounts.find((account) => account.accountId === selectedAccountId)
+  const serviceStatusLabel = serviceQuery.data?.activeState === 'active'
+    ? 'RUNNING'
+    : serviceQuery.data?.activeState === 'activating'
+      ? 'STARTING'
+      : serviceQuery.data?.activeState === 'failed'
+        ? 'FAILED'
+        : serviceQuery.data?.activeState === 'inactive'
+          ? 'STOPPED'
+          : serviceQuery.data?.loadState === 'not-found'
+            ? 'NOT INSTALLED'
+            : serviceQuery.isError
+              ? 'UNAVAILABLE'
+              : 'CHECKING'
+  const serviceStatusTone = serviceQuery.data?.activeState === 'active'
+    ? 'online'
+    : serviceQuery.data?.activeState === 'failed'
+      ? 'failed'
+      : serviceQuery.data?.loadState === 'not-found'
+        ? 'missing'
+        : 'idle'
   const discoverAccounts = () => {
     setError(null)
     setAccounts([])
@@ -293,46 +313,85 @@ export function SetupPage() {
             </div>
             <div className="systemd-control-card">
               <div className="systemd-control-heading">
-                <div>
-                  <strong>Linux systemd service</strong>
-                  <small>
-                    {userRole !== 'admin'
-                      ? 'Administrator role required to view service status, logs, or controls.'
-                      : serviceQuery.data?.supported === false
-                        ? serviceQuery.data.message
-                        : serviceQuery.data
-                          ? `${serviceQuery.data.activeState ?? 'unknown'}${serviceQuery.data.subState ? ` · ${serviceQuery.data.subState}` : ''} · ${serviceQuery.data.unitFileState ?? 'startup state unknown'}`
-                          : serviceQuery.isError
-                            ? serviceQuery.error.message
-                            : 'Checking freqtrade-forex service...'}
-                  </small>
+                <div className="systemd-service-identity">
+                  <span className="systemd-service-icon" aria-hidden="true">⚙️</span>
+                  <div>
+                    <strong>Linux systemd service</strong>
+                    <small>Manage the background process · freqtrade-forex</small>
+                  </div>
                 </div>
-                {userRole === 'admin' && serviceQuery.data?.supported && serviceQuery.data.loadState !== 'not-found' && (
-                  <div className="runtime-actions">
-                    <button type="button" className="secondary-action" onClick={() => runServiceAction('daemon-reload')} disabled={serviceMutation.isPending}>Reload unit files</button>
-                    <button type="button" className="secondary-action" onClick={() => runServiceAction('start')} disabled={serviceMutation.isPending}>Start</button>
-                    <button type="button" className="secondary-action" onClick={() => runServiceAction('restart')} disabled={serviceMutation.isPending}>Restart</button>
-                    <button type="button" className="danger-action" onClick={() => runServiceAction('stop')} disabled={serviceMutation.isPending}>Stop service</button>
-                    <button type="button" className="secondary-action" onClick={() => runServiceAction('enable-now')} disabled={serviceMutation.isPending}>Enable + start</button>
-                    <button type="button" className="secondary-action" onClick={() => runServiceAction('enable')} disabled={serviceMutation.isPending}>Enable autostart</button>
-                    <button type="button" className="secondary-action" onClick={() => runServiceAction('disable')} disabled={serviceMutation.isPending}>Disable autostart</button>
-                    <button type="button" className="danger-action" onClick={() => runServiceAction('disable-now')} disabled={serviceMutation.isPending}>Disable + stop</button>
+                {userRole === 'admin' && (
+                  <div className={`systemd-status-badge ${serviceStatusTone}`}>
+                    <span aria-hidden="true" />
+                    {serviceStatusLabel}
                   </div>
                 )}
               </div>
+              {userRole !== 'admin' && (
+                <p className="systemd-setup-note">
+                  🔒 Administrator role required to view service status, logs, or controls.
+                </p>
+              )}
+              {userRole === 'admin' && serviceQuery.data?.supported === false && (
+                <p className="systemd-setup-note">ℹ️ {serviceQuery.data.message}</p>
+              )}
+              {userRole === 'admin' && serviceQuery.isError && (
+                <p className="systemd-setup-note systemd-error-note" role="alert">
+                  ⚠️ {serviceQuery.error.message}
+                </p>
+              )}
+              {userRole === 'admin' && serviceQuery.data?.supported && serviceQuery.data.loadState !== 'not-found' && (
+                <>
+                  <div className="systemd-service-meta">
+                    <span>⚡ {serviceQuery.data.subState ?? serviceQuery.data.activeState ?? 'State unknown'}</span>
+                    <span>🚀 Startup: {serviceQuery.data.unitFileState ?? 'unknown'}</span>
+                    <button
+                      type="button"
+                      className="systemd-refresh-button"
+                      onClick={() => void serviceQuery.refetch()}
+                      disabled={serviceQuery.isFetching || serviceMutation.isPending}
+                    >
+                      {serviceQuery.isFetching ? '⏳ Checking…' : '🔄 Refresh status & logs'}
+                    </button>
+                  </div>
+                  <div className="systemd-action-groups">
+                    <section className="systemd-action-group" aria-label="Service controls">
+                      <h4>🧰 Service controls</h4>
+                      <div className="systemd-button-grid">
+                        <button type="button" className="systemd-action-button" onClick={() => runServiceAction('daemon-reload')} disabled={serviceMutation.isPending}>🗂️ Reload unit files</button>
+                        <button type="button" className="systemd-action-button" onClick={() => runServiceAction('start')} disabled={serviceMutation.isPending}>▶️ Start service</button>
+                        <button type="button" className="systemd-action-button" onClick={() => runServiceAction('restart')} disabled={serviceMutation.isPending}>🔄 Restart service</button>
+                        <button type="button" className="systemd-action-button danger" onClick={() => runServiceAction('stop')} disabled={serviceMutation.isPending}>🛑 Stop service</button>
+                      </div>
+                    </section>
+                    <section className="systemd-action-group" aria-label="Startup controls">
+                      <h4>🌅 Start-up behavior</h4>
+                      <div className="systemd-button-grid">
+                        <button type="button" className="systemd-action-button highlight" onClick={() => runServiceAction('enable-now')} disabled={serviceMutation.isPending}>🚀 Enable + start now</button>
+                        <button type="button" className="systemd-action-button" onClick={() => runServiceAction('enable')} disabled={serviceMutation.isPending}>🔁 Enable autostart</button>
+                        <button type="button" className="systemd-action-button" onClick={() => runServiceAction('disable')} disabled={serviceMutation.isPending}>🌙 Disable autostart</button>
+                        <button type="button" className="systemd-action-button danger" onClick={() => runServiceAction('disable-now')} disabled={serviceMutation.isPending}>⏹️ Disable + stop</button>
+                      </div>
+                    </section>
+                  </div>
+                </>
+              )}
               {userRole === 'admin' && serviceQuery.data?.supported && serviceQuery.data.loadState === 'not-found' && (
                 <p className="systemd-setup-note">
-                  The service unit has not been installed yet. Complete the one-time systemd setup in the README from a terminal, then refresh this page.
+                  🛠️ The service unit is not installed yet. Complete the one-time setup from a terminal, then refresh this page.
                 </p>
               )}
               {userRole === 'admin' && serviceQuery.data?.supported && serviceQuery.data.logs.length > 0 && (
-                <pre className="systemd-log" aria-label="Recent systemd service logs">{serviceQuery.data.logs.join('\n')}</pre>
+                <details className="systemd-log-details" open>
+                  <summary>📜 Recent service logs <span>{serviceQuery.data.logs.length} lines</span></summary>
+                  <pre className="systemd-log" aria-label="Recent systemd service logs">{serviceQuery.data.logs.join('\n')}</pre>
+                </details>
               )}
               {userRole === 'admin' && serviceQuery.data?.supported && serviceQuery.data.logs.length === 0 && serviceQuery.data.loadState !== 'not-found' && (
-                <p className="systemd-setup-note">No recent service journal entries.</p>
+                <p className="systemd-setup-note">📭 No recent service journal entries.</p>
               )}
-              {serviceMutation.isSuccess && <p className="setup-operation-message" role="status">{serviceMutation.data.message}</p>}
-              {serviceMutation.isError && <p className="setup-error" role="alert">{serviceMutation.error.message}</p>}
+              {serviceMutation.isSuccess && <p className="setup-operation-message" role="status">✨ {serviceMutation.data.message}</p>}
+              {serviceMutation.isError && <p className="setup-error" role="alert">⚠️ {serviceMutation.error.message}</p>}
             </div>
             {operationMessage && <p className="setup-operation-message" role="status">{operationMessage}</p>}
             {uploadMutation.isError && <p className="setup-error" role="alert">{uploadMutation.error instanceof Error ? uploadMutation.error.message : 'File upload was rejected'}</p>}

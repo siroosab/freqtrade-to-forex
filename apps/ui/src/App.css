@@ -2803,36 +2803,252 @@
 
 .systemd-control-card {
   display: block;
+  min-width: 0;
+  max-width: 100%;
+  margin-top: 12px;
+  padding: 18px;
+  overflow: hidden;
+  border-color: rgba(103, 232, 249, 0.2);
+  background:
+    radial-gradient(ellipse at 100% 0, rgba(8, 145, 178, 0.12), transparent 42%),
+    linear-gradient(145deg, rgba(8, 20, 38, 0.92), rgba(2, 6, 23, 0.5));
 }
 
 .systemd-control-heading {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
-  gap: 14px;
+  gap: 18px;
+  min-width: 0;
 }
 
-.systemd-control-heading .runtime-actions {
+.systemd-service-identity {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.systemd-service-identity > div {
+  min-width: 0;
+}
+
+.systemd-service-identity strong {
+  display: block;
+  font-size: 0.9rem;
+  letter-spacing: 0.01em;
+}
+
+.systemd-service-identity small {
+  overflow-wrap: anywhere;
+}
+
+.systemd-service-icon {
+  display: grid;
+  flex: none;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border: 1px solid rgba(103, 232, 249, 0.25);
+  border-radius: 12px;
+  background: rgba(8, 145, 178, 0.14);
+  font-size: 1.25rem;
+}
+
+.systemd-status-badge {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 11px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 999px;
+  color: #cbd5e1;
+  background: rgba(148, 163, 184, 0.08);
+  font-size: 0.63rem;
+  font-weight: 800;
+  letter-spacing: 0.07em;
+  white-space: nowrap;
+}
+
+.systemd-status-badge > span {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #94a3b8;
+}
+
+.systemd-status-badge.online {
+  border-color: rgba(52, 211, 153, 0.32);
+  color: #a7f3d0;
+  background: rgba(16, 185, 129, 0.1);
+}
+
+.systemd-status-badge.online > span {
+  background: #34d399;
+  box-shadow: 0 0 10px rgba(52, 211, 153, 0.7);
+}
+
+.systemd-status-badge.failed,
+.systemd-status-badge.missing {
+  border-color: rgba(248, 113, 113, 0.32);
+  color: #fecaca;
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.systemd-status-badge.failed > span,
+.systemd-status-badge.missing > span {
+  background: #f87171;
+}
+
+.systemd-service-meta {
+  display: flex;
+  align-items: center;
   flex-wrap: wrap;
-  justify-content: flex-end;
+  gap: 8px 16px;
+  margin-top: 16px;
+  padding: 10px 0;
+  border-top: 1px solid rgba(148, 163, 184, 0.1);
+  border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+  color: #a9bbcd;
+  font-size: 0.68rem;
+}
+
+.systemd-refresh-button {
+  margin-left: auto;
+  padding: 6px 9px;
+  border: 1px solid rgba(103, 232, 249, 0.2);
+  border-radius: 7px;
+  color: #a5f3fc;
+  background: rgba(8, 145, 178, 0.08);
+  font: inherit;
+  cursor: pointer;
+}
+
+.systemd-refresh-button:disabled,
+.systemd-action-button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}
+
+.systemd-action-groups {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.systemd-action-group {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.1);
+  border-radius: 10px;
+  background: rgba(2, 6, 23, 0.24);
+}
+
+.systemd-action-group h4 {
+  margin: 0 0 10px;
+  color: #b9cce0;
+  font-size: 0.68rem;
+  font-weight: 700;
+}
+
+.systemd-button-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.systemd-action-button {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 7px;
+  min-width: 0;
+  min-height: 38px;
+  padding: 8px 10px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 8px;
+  color: #d8e5f2;
+  background: rgba(148, 163, 184, 0.08);
+  font: inherit;
+  font-size: 0.66rem;
+  font-weight: 650;
+  line-height: 1.25;
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+  transition: border-color 0.18s ease, background 0.18s ease, transform 0.18s ease;
+}
+
+.systemd-action-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: rgba(103, 232, 249, 0.4);
+  background: rgba(8, 145, 178, 0.12);
+}
+
+.systemd-action-button.highlight {
+  border-color: rgba(52, 211, 153, 0.27);
+  color: #a7f3d0;
+  background: rgba(16, 185, 129, 0.09);
+}
+
+.systemd-action-button.danger {
+  border-color: rgba(248, 113, 113, 0.24);
+  color: #fecaca;
+  background: rgba(127, 29, 29, 0.12);
+}
+
+.systemd-action-button.danger:hover:not(:disabled) {
+  border-color: rgba(248, 113, 113, 0.48);
+  background: rgba(127, 29, 29, 0.26);
 }
 
 .systemd-setup-note {
   margin: 12px 0 0;
-  color: #fcd34d;
+  color: #cbd5e1;
   font-size: 0.72rem;
   line-height: 1.5;
 }
 
-.systemd-log {
-  max-height: 260px;
-  margin: 14px 0 0;
+.systemd-error-note {
+  color: #fca5a5;
+}
+
+.systemd-log-details {
+  margin-top: 14px;
   padding: 10px;
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  border-radius: 8px;
+  background: rgba(2, 6, 23, 0.3);
+}
+
+.systemd-log-details summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: #bacbdd;
+  font-size: 0.68rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.systemd-log-details summary span {
+  color: #8293a7;
+  font-size: 0.62rem;
+  font-weight: 500;
+}
+
+.systemd-log {
+  max-width: 100%;
+  max-height: 240px;
+  margin: 10px 0 0;
+  padding: 10px 2px 2px;
   overflow: auto;
-  border: 1px solid rgba(148, 163, 184, 0.14);
-  border-radius: 6px;
+  border-top: 1px solid rgba(148, 163, 184, 0.1);
   color: #b8c7d9;
-  background: rgba(2, 6, 23, 0.55);
+  background: transparent;
   font-size: 0.66rem;
   line-height: 1.45;
   white-space: pre-wrap;
@@ -2946,6 +3162,18 @@
     text-align: center;
   }
 
+  .systemd-control-card {
+    padding: 14px;
+  }
+
+  .systemd-control-heading {
+    align-items: center;
+  }
+
+  .systemd-action-groups {
+    grid-template-columns: 1fr;
+  }
+
   .setup-footer {
     align-items: stretch;
     flex-direction: column;
@@ -2953,6 +3181,20 @@
 
   .setup-submit {
     width: 100%;
+  }
+}
+
+@media (max-width: 420px) {
+  .systemd-control-heading {
+    align-items: flex-start;
+  }
+
+  .systemd-button-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .systemd-refresh-button {
+    margin-left: 0;
   }
 }
 
