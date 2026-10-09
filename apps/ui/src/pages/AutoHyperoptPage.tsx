@@ -59,6 +59,29 @@ function formatServerDateTime(value: string | null | undefined): string {
   return `${date} ${time}:${seconds} ${zone}`
 }
 
+function formatBrowserDateTime(value: string | null | undefined): string {
+  if (!value || Number.isNaN(new Date(value).getTime())) return 'Unavailable'
+  return new Date(value).toLocaleString(undefined, {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+    second: '2-digit',
+    timeZoneName: 'short',
+  })
+}
+
+function nextRunLabel(schedule: AutoHyperoptSchedule): string {
+  if (schedule.scheduler.nextRunAt) {
+    return formatServerDateTime(schedule.scheduler.nextRunAt)
+  }
+  if (!schedule.enabled) return 'Schedule is paused'
+  if (schedule.weekdays.length === 0) return 'Select at least one weekday'
+  if (schedule.pairs.length === 0) return 'Select at least one approved pair'
+  return 'The API did not return a next-run time'
+}
+
 function schedulerWindowLabel(schedule: AutoHyperoptSchedule): string {
   if (!schedule.enabled) return 'Schedule disabled'
   if (
@@ -266,7 +289,7 @@ export function AutoHyperoptPage() {
             </div>
             <div>
               <span>Next scheduled run</span>
-              <strong>{formatServerDateTime(schedule.scheduler.nextRunAt)}</strong>
+              <strong>{nextRunLabel(schedule)}</strong>
             </div>
             <div>
               <span>Last scheduler check</span>
@@ -352,8 +375,9 @@ export function AutoHyperoptPage() {
                   disabled={activeQueue}
                 />
                 <small>
-                  Server time now: {formatServerDateTime(schedule.scheduler.serverNow)}.
-                  {' '}For example, Monday and Thursday at 12:00.
+                  API server clock: {formatServerDateTime(schedule.scheduler.serverNow)}.
+                  {' '}Your clock for that same instant: {formatBrowserDateTime(schedule.scheduler.serverNow)}.
+                  {' '}This input is interpreted using server time, not your browser's local time.
                 </small>
               </label>
             </div>
@@ -429,7 +453,7 @@ export function AutoHyperoptPage() {
               <p className="eyebrow">03 · Queue status</p>
               <h3>
                 {queue?.message
-                  ?? `Next run: ${formatServerDateTime(schedule.scheduler.nextRunAt)}`}
+                  ?? `Next run: ${nextRunLabel(schedule)}`}
               </h3>
               <p>
                 Saved Hyperopt options (including attempts and stop-distance mode) are reused from each approved revision.
