@@ -2969,8 +2969,44 @@
 
 .auto-hyperopt-schedule-panel,
 .auto-hyperopt-pairs-panel,
-.auto-hyperopt-footer {
+.auto-hyperopt-footer,
+.auto-hyperopt-diagnostics {
   margin-bottom: 18px;
+}
+
+.auto-hyperopt-diagnostics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px 18px;
+  align-items: center;
+}
+
+.auto-hyperopt-diagnostics > div {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.auto-hyperopt-diagnostics > div > span {
+  color: #94a3b8;
+  font-size: 0.7rem;
+}
+
+.auto-hyperopt-diagnostics > div > strong,
+.auto-hyperopt-diagnostics > div:first-child > strong {
+  color: #e2e8f0;
+  font-size: 0.82rem;
+  overflow-wrap: anywhere;
+}
+
+.auto-hyperopt-diagnostic-reason {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding-top: 11px;
+  border-top: 1px solid rgba(148, 163, 184, 0.1);
+  color: #bae6fd;
+  font-size: 0.77rem;
 }
 
 .auto-hyperopt-enable {
@@ -3193,8 +3229,13 @@
 
 @media (max-width: 640px) {
   .auto-hyperopt-settings,
-  .auto-hyperopt-footer {
+  .auto-hyperopt-footer,
+  .auto-hyperopt-diagnostics {
     grid-template-columns: 1fr;
+  }
+
+  .auto-hyperopt-diagnostic-reason {
+    grid-column: auto;
   }
 
   .auto-hyperopt-pair-row {

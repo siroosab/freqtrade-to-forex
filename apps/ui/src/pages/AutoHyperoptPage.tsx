@@ -50,6 +50,14 @@ function relativeTime(value: string | null | undefined): string {
   return `${Math.floor(hours / 24)}d ago`
 }
 
+function formatServerDateTime(value: string | null | undefined): string {
+  if (!value) return 'Unavailable'
+  const parsed = new Date(value)
+  return Number.isNaN(parsed.getTime())
+    ? 'Unavailable'
+    : parsed.toLocaleString(undefined, { timeZoneName: 'short' })
+}
+
 function resultLabel(result: AutoHyperoptResult | null | undefined): string {
   if (!result) return 'No Hyperopt history'
   if (result.status === 'running') return 'Hyperopt in progress'
@@ -190,13 +198,37 @@ export function AutoHyperoptPage() {
               <strong>{daysLabel}</strong>
             </article>
             <article className="summary-card">
-              <span>Queue time · server local</span>
+              <span>Queue time · {schedule.scheduler.serverTimezone ?? 'server local'}</span>
               <strong>{currentTime}</strong>
             </article>
             <article className="summary-card">
               <span>Last queue</span>
               <strong>{queue?.status ?? 'idle'}</strong>
             </article>
+          </section>
+
+          <section className="panel auto-hyperopt-diagnostics" aria-live="polite">
+            <div>
+              <p className="eyebrow">Scheduler diagnostics</p>
+              <strong>
+                {schedule.scheduler.running ? 'Scheduler is running' : 'Scheduler is not running'}
+              </strong>
+            </div>
+            <div>
+              <span>Server clock</span>
+              <strong>{formatServerDateTime(schedule.scheduler.serverNow)}</strong>
+            </div>
+            <div>
+              <span>Next scheduled run</span>
+              <strong>{formatServerDateTime(schedule.scheduler.nextRunAt)}</strong>
+            </div>
+            <div>
+              <span>Last scheduler check</span>
+              <strong>{formatServerDateTime(schedule.scheduler.lastCheckedAt)}</strong>
+            </div>
+            <p className="auto-hyperopt-diagnostic-reason">
+              {schedule.scheduler.lastDecision ?? 'Waiting for the scheduler status.'}
+            </p>
           </section>
 
           <section className="panel auto-hyperopt-schedule-panel">

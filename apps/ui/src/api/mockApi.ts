@@ -280,6 +280,15 @@ export type AutoHyperoptSchedule = {
     total?: number
     message?: string
   }
+  scheduler: {
+    running: boolean
+    serverNow?: string
+    serverTimezone?: string
+    nextRunAt?: string | null
+    lastCheckedAt?: string | null
+    lastTriggeredDate?: string | null
+    lastDecision?: string
+  }
 }
 
 export type CandleCacheInventory = {
