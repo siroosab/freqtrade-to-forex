@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import time
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -16,6 +17,61 @@ from freqtrade.forex.models import OandaInstrument
 
 
 client = TestClient(app)
+
+
+def test_auto_hyperopt_clears_stale_trigger_marker_after_restart(tmp_path):
+    database_path = tmp_path / "stale-auto-hyperopt.sqlite"
+    create_app(database_path)
+    now = datetime.now().astimezone()
+    persisted_state = {
+        "enabled": True,
+        "weekdays": [now.weekday()],
+        "time": "00:00",
+        "pairs": [],
+        "queue": {"status": "queued", "scheduledAt": now.isoformat()},
+        "lastTriggeredDate": now.date().isoformat(),
+        "lastResults": {},
+    }
+    with sqlite3.connect(database_path) as database:
+        database.execute(
+            "INSERT OR REPLACE INTO auto_hyperopt_state(id, state_json) VALUES (1, ?)",
+            (json.dumps(persisted_state),),
+        )
+
+    restored_app = create_app(database_path)
+
+    assert restored_app.state.auto_hyperopt_state["lastTriggeredDate"] is None
+    assert restored_app.state.auto_hyperopt_state["queue"]["status"] == "queued"
+
+
+def test_auto_hyperopt_preserves_trigger_for_queue_started_today(tmp_path):
+    database_path = tmp_path / "running-auto-hyperopt.sqlite"
+    create_app(database_path)
+    now = datetime.now().astimezone()
+    persisted_state = {
+        "enabled": True,
+        "weekdays": [now.weekday()],
+        "time": "00:00",
+        "pairs": [],
+        "queue": {
+            "status": "running",
+            "startedAt": now.isoformat(),
+        },
+        "lastTriggeredDate": now.date().isoformat(),
+        "lastResults": {},
+    }
+    with sqlite3.connect(database_path) as database:
+        database.execute(
+            "INSERT OR REPLACE INTO auto_hyperopt_state(id, state_json) VALUES (1, ?)",
+            (json.dumps(persisted_state),),
+        )
+
+    restored_app = create_app(database_path)
+    restored_state = restored_app.state.auto_hyperopt_state
+
+    assert restored_state["lastTriggeredDate"] == now.date().isoformat()
+    assert restored_state["queue"]["status"] == "interrupted"
+    assert restored_state["queue"]["startedAt"] == now.isoformat()
 
 
 def _auth_headers(test_client, role="operator"):

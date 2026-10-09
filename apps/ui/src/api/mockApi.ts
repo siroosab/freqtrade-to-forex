@@ -287,6 +287,7 @@ export type AutoHyperoptSchedule = {
     nextRunAt?: string | null
     lastCheckedAt?: string | null
     lastTriggeredDate?: string | null
+    scheduleDue?: boolean
     lastDecision?: string
   }
 }

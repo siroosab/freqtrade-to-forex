@@ -1153,10 +1153,44 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 AUTO_HYPEROPT_STATE.update(restored_auto_state)
                 restored_queue = AUTO_HYPEROPT_STATE.get("queue")
                 if isinstance(restored_queue, dict) and restored_queue.get("status") == "running":
-                    AUTO_HYPEROPT_STATE["queue"] = {
+                    interrupted_queue = {
                         "status": "interrupted",
                         "message": "The server restarted while the automatic Hyperopt queue was running.",
                     }
+                    for key in ("scheduledAt", "startedAt", "completedAt"):
+                        if key in restored_queue:
+                            interrupted_queue[key] = restored_queue[key]
+                    AUTO_HYPEROPT_STATE["queue"] = interrupted_queue
+                    restored_queue = interrupted_queue
+                last_triggered_date = AUTO_HYPEROPT_STATE.get("lastTriggeredDate")
+                today_local = datetime.now().astimezone().date().isoformat()
+                if last_triggered_date == today_local and isinstance(restored_queue, dict):
+                    queue_timestamps = (
+                        restored_queue.get("startedAt"),
+                        restored_queue.get("completedAt"),
+                    )
+                    queue_ran_today = False
+                    for timestamp in queue_timestamps:
+                        if not isinstance(timestamp, str):
+                            continue
+                        try:
+                            timestamp_date = datetime.fromisoformat(timestamp).astimezone().date()
+                        except ValueError:
+                            logger.warning(
+                                "Ignoring invalid persisted automatic Hyperopt timestamp %s",
+                                timestamp,
+                            )
+                            continue
+                        if timestamp_date.isoformat() == today_local:
+                            queue_ran_today = True
+                            break
+                    if not queue_ran_today:
+                        AUTO_HYPEROPT_STATE["lastTriggeredDate"] = None
+                        logger.warning(
+                            "Cleared a stale automatic Hyperopt trigger marker for %s; "
+                            "the queue had not started today",
+                            today_local,
+                        )
 
     def persist_auto_hyperopt_state() -> None:
         with AUTO_HYPEROPT_DB_LOCK:
@@ -3999,6 +4033,12 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             and AUTO_HYPEROPT_STATE.get("weekdays")
         ) else None
         scheduler["lastTriggeredDate"] = AUTO_HYPEROPT_STATE.get("lastTriggeredDate")
+        scheduler["scheduleDue"] = bool(
+            AUTO_HYPEROPT_STATE.get("enabled") is True
+            and isinstance(AUTO_HYPEROPT_STATE.get("weekdays"), list)
+            and local_now.weekday() in AUTO_HYPEROPT_STATE.get("weekdays", [])
+            and local_now.strftime("%H:%M") >= str(AUTO_HYPEROPT_STATE.get("time", "12:00"))
+        )
         return {
             "enabled": AUTO_HYPEROPT_STATE.get("enabled") is True,
             "weekdays": list(AUTO_HYPEROPT_STATE.get("weekdays", [])),

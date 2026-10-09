@@ -52,10 +52,22 @@ function relativeTime(value: string | null | undefined): string {
 
 function formatServerDateTime(value: string | null | undefined): string {
   if (!value) return 'Unavailable'
-  const parsed = new Date(value)
-  return Number.isNaN(parsed.getTime())
-    ? 'Unavailable'
-    : parsed.toLocaleString(undefined, { timeZoneName: 'short' })
+  const match = value.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})(?::(\d{2}))?(?:\.\d+)?(Z|[+-]\d{2}:\d{2})$/)
+  if (!match) return 'Unavailable'
+  const [, date, time, seconds = '00', offset] = match
+  const zone = offset === 'Z' ? 'UTC+00:00' : `UTC${offset}`
+  return `${date} ${time}:${seconds} ${zone}`
+}
+
+function schedulerWindowLabel(schedule: AutoHyperoptSchedule): string {
+  if (!schedule.enabled) return 'Schedule disabled'
+  if (
+    schedule.scheduler.lastTriggeredDate
+    && schedule.scheduler.lastTriggeredDate === schedule.scheduler.serverNow?.slice(0, 10)
+  ) {
+    return 'Already triggered today'
+  }
+  return schedule.scheduler.scheduleDue ? 'Start time reached' : 'Waiting for selected day/time'
 }
 
 function resultLabel(result: AutoHyperoptResult | null | undefined): string {
@@ -219,6 +231,10 @@ export function AutoHyperoptPage() {
               <strong>{formatServerDateTime(schedule.scheduler.serverNow)}</strong>
             </div>
             <div>
+              <span>Today's schedule</span>
+              <strong>{schedulerWindowLabel(schedule)}</strong>
+            </div>
+            <div>
               <span>Next scheduled run</span>
               <strong>{formatServerDateTime(schedule.scheduler.nextRunAt)}</strong>
             </div>
@@ -362,7 +378,10 @@ export function AutoHyperoptPage() {
           <section className="panel auto-hyperopt-footer">
             <div>
               <p className="eyebrow">03 · Queue status</p>
-              <h3>{queue?.message ?? `Next runs: ${daysLabel} at ${currentTime} server-local time`}</h3>
+              <h3>
+                {queue?.message
+                  ?? `Next run: ${formatServerDateTime(schedule.scheduler.nextRunAt)}`}
+              </h3>
               <p>
                 Saved Hyperopt options (including attempts and stop-distance mode) are reused from each approved revision.
                 The broker spread is refreshed at run time; if no quote is available, the approved spread is retained.
