@@ -11,7 +11,10 @@ import math
 import os
 import re
 import secrets
+import shutil
 import sqlite3
+import subprocess
+import sys
 import threading
 from contextlib import suppress
 from contextvars import ContextVar
@@ -64,6 +67,85 @@ from freqtrade.timeframe import timeframe_to_seconds
 
 
 logger = logging.getLogger(__name__)
+
+
+SYSTEMD_SERVICE_NAME = "freqtrade-forex"
+
+
+def _systemd_user_unavailable_reason() -> str | None:
+    if sys.platform != "linux":
+        return "systemd user-service controls are available only on Linux."
+    if shutil.which("systemctl") is None:
+        return "systemctl is not installed or is not available on the server PATH."
+    return None
+
+
+def _run_systemd_user_command(*arguments: str, timeout: float = 10) -> str:
+    systemctl = shutil.which("systemctl")
+    if systemctl is None:
+        raise HTTPException(
+            status_code=503,
+            detail="systemctl is not installed or is not available on the server PATH.",
+        )
+    try:
+        result = subprocess.run(
+            [systemctl, "--user", *arguments],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="systemctl did not respond in time.") from exc
+    except OSError as exc:
+        logger.exception("Could not run systemctl user-service command")
+        raise HTTPException(status_code=503, detail=f"Could not run systemctl: {exc}") from exc
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        logger.error("systemctl user-service command failed: %s", detail)
+        raise HTTPException(
+            status_code=502,
+            detail=detail[:1000] or f"systemctl exited with status {result.returncode}.",
+        )
+    return result.stdout
+
+
+def _run_journalctl_user_command() -> str:
+    journalctl = shutil.which("journalctl")
+    if journalctl is None:
+        raise HTTPException(
+            status_code=503,
+            detail="journalctl is not installed or is not available on the server PATH.",
+        )
+    try:
+        result = subprocess.run(
+            [
+                journalctl,
+                "--user",
+                "-u",
+                SYSTEMD_SERVICE_NAME,
+                "--lines=80",
+                "--no-pager",
+                "--output=short-iso",
+            ],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=504, detail="journalctl did not respond in time.") from exc
+    except OSError as exc:
+        logger.exception("Could not read systemd user-service journal")
+        raise HTTPException(status_code=503, detail=f"Could not run journalctl: {exc}") from exc
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        logger.error("journalctl user-service query failed: %s", detail)
+        raise HTTPException(
+            status_code=502,
+            detail=detail[:1000] or f"journalctl exited with status {result.returncode}.",
+        )
+    return result.stdout
 
 
 def _validated_protection_values(
@@ -449,6 +531,23 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             raise HTTPException(status_code=403, detail="Missing CSRF token")
         if not hmac.compare_digest(csrf_token, expected_csrf):
             raise HTTPException(status_code=403, detail="Invalid CSRF token")
+
+    def validate_service_admin_access(
+        user_role: str | None,
+        session_token: str | None,
+    ) -> dict[str, str]:
+        session_user = resolve_session_user(session_token)
+        if session_user is None:
+            raise HTTPException(status_code=401, detail="Missing or invalid session token")
+        if user_role != session_user["role"]:
+            raise HTTPException(
+                status_code=403, detail="Forbidden: session role does not match request role"
+            )
+        if user_role != "admin":
+            raise HTTPException(
+                status_code=403, detail="Administrator role is required for systemd controls"
+            )
+        return session_user
 
     def resolve_setup_paths() -> tuple[Path, Path]:
         config_path = Path(os.environ.get("OANDA_CONFIG_PATH", "user_data/config.json"))
@@ -3452,6 +3551,102 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             "setup.runtime", details={"action": action, "state": state}, allowed=True
         )
         return {"state": state, "reloadPending": reload_pending, "message": message}
+
+    @app.get("/api/v1/setup/service")
+    def setup_service_status(
+        user_role: str | None = Header(default=None, alias="X-User-Role"),
+        session_token: str | None = Header(default=None, alias="X-Session-Token"),
+    ) -> dict:
+        validate_service_admin_access(user_role, session_token)
+        unavailable_reason = _systemd_user_unavailable_reason()
+        if unavailable_reason:
+            return {
+                "supported": False,
+                "serviceName": SYSTEMD_SERVICE_NAME,
+                "message": unavailable_reason,
+                "logs": [],
+            }
+
+        properties = _run_systemd_user_command(
+            "show",
+            SYSTEMD_SERVICE_NAME,
+            "--property=LoadState,ActiveState,SubState,UnitFileState",
+            "--no-pager",
+        )
+        service_status = dict(
+            line.split("=", 1) for line in properties.splitlines() if "=" in line
+        )
+        logs = (
+            _run_journalctl_user_command().splitlines()[-80:]
+            if service_status.get("LoadState") != "not-found"
+            else []
+        )
+        return {
+            "supported": True,
+            "serviceName": SYSTEMD_SERVICE_NAME,
+            "loadState": service_status.get("LoadState", "unknown"),
+            "activeState": service_status.get("ActiveState", "unknown"),
+            "subState": service_status.get("SubState", "unknown"),
+            "unitFileState": service_status.get("UnitFileState", "unknown"),
+            "logs": logs,
+        }
+
+    @app.post("/api/v1/setup/service")
+    def control_setup_service(
+        payload: dict,
+        user_role: str | None = Header(default=None, alias="X-User-Role"),
+        csrf_token: str | None = Header(default=None, alias="X-CSRF-Token"),
+        session_token: str | None = Header(default=None, alias="X-Session-Token"),
+    ) -> dict:
+        validate_write_access(user_role, csrf_token, session_token)
+        session_user = validate_service_admin_access(user_role, session_token)
+        action = str(payload.get("action", "")).strip().lower()
+        commands = {
+            "daemon-reload": ("daemon-reload",),
+            "start": ("--no-block", "start", SYSTEMD_SERVICE_NAME),
+            "stop": ("--no-block", "stop", SYSTEMD_SERVICE_NAME),
+            "restart": ("--no-block", "restart", SYSTEMD_SERVICE_NAME),
+            "enable": ("enable", SYSTEMD_SERVICE_NAME),
+            "disable": ("disable", SYSTEMD_SERVICE_NAME),
+            "enable-now": ("--no-block", "enable", "--now", SYSTEMD_SERVICE_NAME),
+            "disable-now": ("--no-block", "disable", "--now", SYSTEMD_SERVICE_NAME),
+        }
+        if action not in commands:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "action must be daemon-reload, start, stop, restart, enable, "
+                    "disable, enable-now, or disable-now"
+                ),
+            )
+        unavailable_reason = _systemd_user_unavailable_reason()
+        if unavailable_reason:
+            raise HTTPException(status_code=409, detail=unavailable_reason)
+
+        _run_systemd_user_command(*commands[action])
+        record_audit_event(
+            "setup.systemd_service",
+            details={"action": action, "service": SYSTEMD_SERVICE_NAME},
+            username=session_user["username"],
+            role=user_role,
+            allowed=True,
+        )
+        queued = action in {"start", "stop", "restart", "enable-now", "disable-now"}
+        message = (
+            "systemd user unit files reloaded."
+            if action == "daemon-reload"
+            else (
+                f"{action} request queued for {SYSTEMD_SERVICE_NAME}."
+                if queued
+                else f"{SYSTEMD_SERVICE_NAME} was {action}d."
+            )
+        )
+        return {
+            "action": action,
+            "serviceName": SYSTEMD_SERVICE_NAME,
+            "queued": queued,
+            "message": message,
+        }
 
     @app.get("/api/v1/strategy/auto-execution")
     async def strategy_auto_execution_status() -> dict:

@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
+import { Link } from 'react-router-dom'
 import { getServerExecutionStatus, getSettings } from '../api/mockApi'
 import { useUiStore } from '../store/useUiStore'
 
@@ -93,6 +94,7 @@ export function SettingsPage() {
             <p>These values are resolved from the backend environment and configuration file. This screen does not change the bot's execution mode.</p>
           </div>
         </div>
+        <Link to="/setup" className="secondary-action">Open setup and service controls</Link>
       </section>
 
       <section className="panel page-panel">

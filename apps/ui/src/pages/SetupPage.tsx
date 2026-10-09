@@ -2,11 +2,12 @@ import { useMutation, useQuery } from '@tanstack/react-query'
 import { startTransition, useEffect, useState } from 'react'
 import type { ChangeEvent, FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { controlRuntime, discoverSetupAccounts, getAvailableStrategies, getRuntimeStatus, getSetupFileUrl, getSetupInstruments, getSetupStatus, saveSetup, uploadSetupFile, type SetupAccount, type SetupPayload } from '../api/mockApi'
+import { controlRuntime, controlSystemdService, discoverSetupAccounts, getAvailableStrategies, getRuntimeStatus, getSetupFileUrl, getSetupInstruments, getSetupStatus, getSystemdServiceStatus, saveSetup, uploadSetupFile, type SetupAccount, type SetupPayload, type SystemdServiceAction } from '../api/mockApi'
 import { useUiStore } from '../store/useUiStore'
 
 export function SetupPage() {
   const navigate = useNavigate()
+  const userRole = useUiStore((state) => state.userRole)
   const sharedInstruments = useUiStore((state) => state.selectedInstruments)
   const setSelectedInstruments = useUiStore((state) => state.setSelectedInstruments)
   const [form, setForm] = useState<SetupPayload>({
@@ -32,6 +33,17 @@ export function SetupPage() {
   const strategiesQuery = useQuery({ queryKey: ['available-strategies'], queryFn: getAvailableStrategies })
   const savedSetupQuery = useQuery({ queryKey: ['setup-status'], queryFn: getSetupStatus })
   const runtimeMutation = useMutation({ mutationFn: controlRuntime, onSuccess: (result) => { setOperationMessage(result.message); void runtimeQuery.refetch() } })
+  const serviceQuery = useQuery({
+    queryKey: ['setup-systemd-service'],
+    queryFn: getSystemdServiceStatus,
+    enabled: userRole === 'admin',
+    refetchInterval: 10_000,
+    retry: false,
+  })
+  const serviceMutation = useMutation({
+    mutationFn: controlSystemdService,
+    onSuccess: () => void serviceQuery.refetch(),
+  })
   const uploadMutation = useMutation({ mutationFn: ({ kind, file }: { kind: 'config' | 'strategy'; file: File }) => uploadSetupFile(kind, file), onSuccess: () => setOperationMessage('File uploaded. Reload the bot before the next cycle.') })
   const instrumentsQuery = useQuery({
     queryKey: ['setup-instruments', form.environment, form.token, selectedAccountId],
@@ -125,6 +137,15 @@ export function SetupPage() {
     if (action === 'stop' && !window.confirm('Stop the bot completely? New trades and open-trade management will both be disabled.')) return
     setOperationMessage(null)
     runtimeMutation.mutate(action)
+  }
+  const runServiceAction = (action: SystemdServiceAction) => {
+    if (action === 'stop' || action === 'disable-now') {
+      if (!window.confirm('Stop the systemd service? The UI connection will be interrupted.')) return
+    }
+    if (action === 'restart') {
+      if (!window.confirm('Restart the systemd service? The UI connection will be interrupted briefly.')) return
+    }
+    serviceMutation.mutate(action)
   }
   const handleFile = (kind: 'config' | 'strategy', event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]
@@ -269,6 +290,49 @@ export function SetupPage() {
             <div className="runtime-control-card">
               <div><strong>Bot runtime</strong><small>{runtimeQuery.data?.message ?? 'Checking runtime state...'}</small></div>
               <div className="runtime-actions"><button type="button" className="secondary-action" onClick={() => runRuntimeAction('reload')} disabled={runtimeMutation.isPending}>Reload</button>{runtimeQuery.data?.state === 'paused' || runtimeQuery.data?.state === 'stopped' ? <button type="button" className="secondary-action" onClick={() => runRuntimeAction('resume')} disabled={runtimeMutation.isPending}>Resume</button> : <button type="button" className="secondary-action" onClick={() => runRuntimeAction('pause')} disabled={runtimeMutation.isPending}>Pause</button>}<button type="button" className="danger-action" onClick={() => runRuntimeAction('stop')} disabled={runtimeMutation.isPending}>Stop bot</button></div>
+            </div>
+            <div className="systemd-control-card">
+              <div className="systemd-control-heading">
+                <div>
+                  <strong>Linux systemd service</strong>
+                  <small>
+                    {userRole !== 'admin'
+                      ? 'Administrator role required to view service status, logs, or controls.'
+                      : serviceQuery.data?.supported === false
+                        ? serviceQuery.data.message
+                        : serviceQuery.data
+                          ? `${serviceQuery.data.activeState ?? 'unknown'}${serviceQuery.data.subState ? ` · ${serviceQuery.data.subState}` : ''} · ${serviceQuery.data.unitFileState ?? 'startup state unknown'}`
+                          : serviceQuery.isError
+                            ? serviceQuery.error.message
+                            : 'Checking freqtrade-forex service...'}
+                  </small>
+                </div>
+                {userRole === 'admin' && serviceQuery.data?.supported && serviceQuery.data.loadState !== 'not-found' && (
+                  <div className="runtime-actions">
+                    <button type="button" className="secondary-action" onClick={() => runServiceAction('daemon-reload')} disabled={serviceMutation.isPending}>Reload unit files</button>
+                    <button type="button" className="secondary-action" onClick={() => runServiceAction('start')} disabled={serviceMutation.isPending}>Start</button>
+                    <button type="button" className="secondary-action" onClick={() => runServiceAction('restart')} disabled={serviceMutation.isPending}>Restart</button>
+                    <button type="button" className="danger-action" onClick={() => runServiceAction('stop')} disabled={serviceMutation.isPending}>Stop service</button>
+                    <button type="button" className="secondary-action" onClick={() => runServiceAction('enable-now')} disabled={serviceMutation.isPending}>Enable + start</button>
+                    <button type="button" className="secondary-action" onClick={() => runServiceAction('enable')} disabled={serviceMutation.isPending}>Enable autostart</button>
+                    <button type="button" className="secondary-action" onClick={() => runServiceAction('disable')} disabled={serviceMutation.isPending}>Disable autostart</button>
+                    <button type="button" className="danger-action" onClick={() => runServiceAction('disable-now')} disabled={serviceMutation.isPending}>Disable + stop</button>
+                  </div>
+                )}
+              </div>
+              {userRole === 'admin' && serviceQuery.data?.supported && serviceQuery.data.loadState === 'not-found' && (
+                <p className="systemd-setup-note">
+                  The service unit has not been installed yet. Complete the one-time systemd setup in the README from a terminal, then refresh this page.
+                </p>
+              )}
+              {userRole === 'admin' && serviceQuery.data?.supported && serviceQuery.data.logs.length > 0 && (
+                <pre className="systemd-log" aria-label="Recent systemd service logs">{serviceQuery.data.logs.join('\n')}</pre>
+              )}
+              {userRole === 'admin' && serviceQuery.data?.supported && serviceQuery.data.logs.length === 0 && serviceQuery.data.loadState !== 'not-found' && (
+                <p className="systemd-setup-note">No recent service journal entries.</p>
+              )}
+              {serviceMutation.isSuccess && <p className="setup-operation-message" role="status">{serviceMutation.data.message}</p>}
+              {serviceMutation.isError && <p className="setup-error" role="alert">{serviceMutation.error.message}</p>}
             </div>
             {operationMessage && <p className="setup-operation-message" role="status">{operationMessage}</p>}
             {uploadMutation.isError && <p className="setup-error" role="alert">{uploadMutation.error instanceof Error ? uploadMutation.error.message : 'File upload was rejected'}</p>}

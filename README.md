@@ -303,7 +303,8 @@ systemctl --user status freqtrade-forex
 
 برای اجرای دائمی روی Ubuntu می‌توانید از `systemd` استفاده کنید. نصب پروژه
 در این راهنما داخل `~/forex_bot` انجام شده است و فایل `freqtrade.service` نیز
-همین مسیر را استفاده می‌کند. سرویس کاربر را فعال کنید:
+همین مسیر را استفاده می‌کند. این فرمان‌ها را یک‌بار از ترمینال کاربر سرور اجرا
+کنید تا unit نصب و فعال شود:
 
 ```bash
 mkdir -p ~/.config/systemd/user
@@ -312,6 +313,12 @@ systemctl --user daemon-reload
 systemctl --user enable --now freqtrade-forex
 systemctl --user status freqtrade-forex
 ```
+
+بعد از نصب unit، مدیر سیستم می‌تواند از بخش **Linux systemd service** در
+صفحهٔ `/setup` وضعیت سرویس، آخرین ۸۰ خط لاگ، و عملیات start، stop، restart،
+daemon-reload و enable/disable را مدیریت کند. این کنترل‌ها فقط برای نقش admin
+و روی Linux فعال‌اند؛ فرمان‌ها به سرویس ثابت `freqtrade-forex` محدود هستند.
+اگر unit نصب نشده باشد، راه‌اندازی اولیه همچنان باید از ترمینال انجام شود.
 
 مشاهده لاگ‌ها:
 

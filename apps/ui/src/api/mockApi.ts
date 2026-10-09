@@ -1001,6 +1001,56 @@ export async function controlRuntime(action: 'reload' | 'resume' | 'pause' | 'st
   return response.json() as Promise<RuntimeStatus>
 }
 
+export type SystemdServiceStatus = {
+  supported: boolean
+  serviceName: string
+  message?: string
+  loadState?: string
+  activeState?: string
+  subState?: string
+  unitFileState?: string
+  logs: string[]
+}
+
+export type SystemdServiceAction =
+  | 'daemon-reload'
+  | 'start'
+  | 'stop'
+  | 'restart'
+  | 'enable'
+  | 'disable'
+  | 'enable-now'
+  | 'disable-now'
+
+export async function getSystemdServiceStatus(): Promise<SystemdServiceStatus> {
+  const response = await fetch(buildApiUrl('/api/v1/setup/service'))
+  if (!response.ok) {
+    const detail = (await response.json().catch(() => ({}))) as { detail?: string }
+    throw new Error(detail.detail ?? 'Systemd service status unavailable')
+  }
+  return response.json() as Promise<SystemdServiceStatus>
+}
+
+export async function controlSystemdService(
+  action: SystemdServiceAction,
+): Promise<{ action: SystemdServiceAction; serviceName: string; queued: boolean; message: string }> {
+  const response = await fetch(buildApiUrl('/api/v1/setup/service'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action }),
+  })
+  if (!response.ok) {
+    const detail = (await response.json().catch(() => ({}))) as { detail?: string }
+    throw new Error(detail.detail ?? 'Systemd service action was rejected')
+  }
+  return response.json() as Promise<{
+    action: SystemdServiceAction
+    serviceName: string
+    queued: boolean
+    message: string
+  }>
+}
+
 export async function uploadSetupFile(fileKind: 'config' | 'strategy', file: File): Promise<{ uploaded: boolean; reloadRequired: boolean; strategyNames?: string[] }> {
   const content = await file.text()
   const response = await fetch(buildApiUrl(`/api/v1/setup/files/${fileKind}`), {

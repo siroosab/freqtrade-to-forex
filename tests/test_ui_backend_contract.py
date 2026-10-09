@@ -2666,3 +2666,109 @@ def test_hyperopt_report_formats_generic_strategy_parameters():
     assert "ROI volatility: medium (0.0200% typical range per 5m)" in formatted
     assert "ROI search parameters: roi_t1=60 roi_p1=0.001" in formatted
     assert "minimal_roi=0=0.01 30=0.005 60=0.0 roi_parameters=roi_t1=60 roi_p1=0.001" in formatted
+
+
+def test_setup_service_status_and_controls_are_admin_only():
+    assert client.get("/api/v1/setup/service").status_code == 401
+
+    operator_headers = _auth_headers(client, role="operator")
+    assert client.get("/api/v1/setup/service", headers=operator_headers).status_code == 403
+    assert (
+        client.post(
+            "/api/v1/setup/service",
+            json={"action": "restart"},
+            headers=operator_headers,
+        ).status_code
+        == 403
+    )
+
+
+def test_setup_service_status_returns_unit_state_and_recent_logs(monkeypatch):
+    commands = []
+
+    def fake_systemctl(*arguments, **kwargs):
+        commands.append(arguments)
+        return (
+            "LoadState=loaded\nActiveState=active\nSubState=running\n"
+            "UnitFileState=enabled\n"
+        )
+
+    monkeypatch.setattr("freqtrade.forex.api._systemd_user_unavailable_reason", lambda: None)
+    monkeypatch.setattr("freqtrade.forex.api._run_systemd_user_command", fake_systemctl)
+    monkeypatch.setattr(
+        "freqtrade.forex.api._run_journalctl_user_command",
+        lambda: "2026-10-09T12:00:00+00:00 service started\n",
+    )
+
+    response = client.get("/api/v1/setup/service", headers=_auth_headers(client, role="admin"))
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "supported": True,
+        "serviceName": "freqtrade-forex",
+        "loadState": "loaded",
+        "activeState": "active",
+        "subState": "running",
+        "unitFileState": "enabled",
+        "logs": ["2026-10-09T12:00:00+00:00 service started"],
+    }
+    assert commands == [
+        (
+            "show",
+            "freqtrade-forex",
+            "--property=LoadState,ActiveState,SubState,UnitFileState",
+            "--no-pager",
+        )
+    ]
+
+
+def test_setup_service_actions_are_allowlisted_and_queued(monkeypatch):
+    commands = []
+    monkeypatch.setattr("freqtrade.forex.api._systemd_user_unavailable_reason", lambda: None)
+    monkeypatch.setattr(
+        "freqtrade.forex.api._run_systemd_user_command",
+        lambda *arguments, **kwargs: commands.append(arguments) or "",
+    )
+    admin_headers = _auth_headers(client, role="admin")
+
+    response = client.post(
+        "/api/v1/setup/service",
+        json={"action": "restart"},
+        headers=admin_headers,
+    )
+    invalid_action = client.post(
+        "/api/v1/setup/service",
+        json={"action": "run arbitrary shell"},
+        headers=admin_headers,
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["queued"] is True
+    assert commands == [("--no-block", "restart", "freqtrade-forex")]
+    assert invalid_action.status_code == 400
+
+    reload_units = client.post(
+        "/api/v1/setup/service",
+        json={"action": "daemon-reload"},
+        headers=admin_headers,
+    )
+    assert reload_units.status_code == 200, reload_units.text
+    assert reload_units.json()["queued"] is False
+    assert commands[-1] == ("daemon-reload",)
+
+
+def test_setup_service_status_explains_unsupported_platform(monkeypatch):
+    monkeypatch.setattr(
+        "freqtrade.forex.api._systemd_user_unavailable_reason",
+        lambda: "systemd user-service controls are available only on Linux.",
+    )
+
+    response = client.get("/api/v1/setup/service", headers=_auth_headers(client, role="admin"))
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "supported": False,
+        "serviceName": "freqtrade-forex",
+        "message": "systemd user-service controls are available only on Linux.",
+        "logs": [],
+    }
