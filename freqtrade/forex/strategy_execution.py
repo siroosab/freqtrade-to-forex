@@ -297,6 +297,32 @@ class FreqtradeStrategyAdapter:
             return Signal.SHORT
         return Signal.FLAT
 
+    def signal_series(self, candles: pd.DataFrame) -> list[Signal]:
+        """Return one signal per candle, precomputing only opt-in causal strategies."""
+        if not getattr(self.strategy, "precompute_backtest_indicators", False):
+            return [
+                self.signal(candles.iloc[: index + 1])
+                for index in range(len(candles))
+            ]
+        if candles.empty:
+            return []
+
+        self.prepare_backtest(candles)
+        if self._prepared_frame is None:
+            return [Signal.FLAT] * len(candles)
+        long_signals = self._prepared_frame.get(
+            "enter_long", pd.Series(False, index=self._prepared_frame.index)
+        )
+        short_signals = self._prepared_frame.get(
+            "enter_short", pd.Series(False, index=self._prepared_frame.index)
+        )
+        return [
+            Signal.LONG if bool(long_signal)
+            else Signal.SHORT if bool(short_signal)
+            else Signal.FLAT
+            for long_signal, short_signal in zip(long_signals, short_signals, strict=True)
+        ]
+
     def exit_signal(self, candles: pd.DataFrame, direction: Signal) -> bool:
         if hasattr(self.strategy, "signal"):
             return False

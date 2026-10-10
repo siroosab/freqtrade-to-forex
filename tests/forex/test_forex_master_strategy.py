@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 from freqtrade.forex.models import OandaInstrument
-from freqtrade.forex.strategy_execution import load_strategy
+from freqtrade.forex.strategy_execution import FreqtradeStrategyAdapter, load_strategy
 from freqtrade.forex.strategy_hyperopt import hyperopt_worker_limit, run_strategy_hyperopt
 
 
@@ -58,6 +58,40 @@ def test_forex_master_matches_pine_crossover_signals() -> None:
 
     assert result["enter_long"].tolist() == [False, False, True, False]
     assert result["enter_short"].tolist() == [False, False, False, True]
+
+
+def test_forex_master_signal_series_matches_prefix_signals(monkeypatch) -> None:
+    closes = [1.1 + math.sin(index / 3) * 0.002 for index in range(240)]
+    candles = pd.DataFrame(
+        {
+            "date": pd.date_range("2026-01-01", periods=len(closes), freq="15min", tz="UTC"),
+            "open": closes,
+            "high": [close + 0.001 for close in closes],
+            "low": [close - 0.001 for close in closes],
+            "close": closes,
+            "volume": [0.0] * len(closes),
+        }
+    )
+    strategy = load_strategy("ForexMasterStrategy", "15m", "EUR/USD")
+    original_populate_indicators = strategy.populate_indicators
+    populated_batches = 0
+
+    def count_populations(dataframe, metadata):
+        nonlocal populated_batches
+        populated_batches += 1
+        return original_populate_indicators(dataframe, metadata)
+
+    monkeypatch.setattr(strategy, "populate_indicators", count_populations)
+    adapter = FreqtradeStrategyAdapter(strategy, "EUR/USD")
+    actual = adapter.signal_series(candles)
+
+    for end in (80, 150, len(candles)):
+        expected = FreqtradeStrategyAdapter(
+            load_strategy("ForexMasterStrategy", "15m", "EUR/USD"),
+            "EUR/USD",
+        ).signal(candles.iloc[:end])
+        assert actual[end - 1] is expected
+    assert populated_batches == 1
 
 
 def test_forex_master_requires_adx_condition() -> None:

@@ -637,6 +637,9 @@ def test_hyperopt_approval_flows_into_chart_strategy(
             signal = "long" if len(candles) == 1 else "short" if len(candles) == 2 else "flat"
             return type("Signal", (), {"value": signal})()
 
+        def signal_series(self, candles):
+            return [self.signal(candles.iloc[: index + 1]) for index in range(len(candles))]
+
     def fake_hyperopt(*args, **kwargs):
         hyperopt_options.update(kwargs)
         return [

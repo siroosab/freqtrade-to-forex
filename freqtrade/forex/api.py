@@ -2319,18 +2319,11 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     strategy, normalized_pair, informative_candles
                 )
 
-                def signal_for_window(window: pd.DataFrame) -> dict[str, str]:
-                    return {
-                        "signal": strategy_adapter.signal(window).value,
-                        "reason": "approved_strategy_signal",
-                    }
-
                 signals: list[dict] = []
                 previous = "flat"
-                for index in range(len(frame)):
-                    window = frame.iloc[: index + 1]
-                    trace = signal_for_window(window)
-                    signal = str(trace["signal"])
+                strategy_signals = strategy_adapter.signal_series(frame)
+                for index, strategy_signal in enumerate(strategy_signals):
+                    signal = strategy_signal.value
                     if signal in {"long", "short"} and signal != previous:
                         row = frame.iloc[index]
                         signal_time = pd.Timestamp(row["date"])
