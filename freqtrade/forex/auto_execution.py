@@ -343,11 +343,7 @@ class OandaAutoStrategyExecutor:
             side,
             is_stop=False,
         )
-        risk_fraction = _risk_fraction(
-            risk.get("riskBudget", ""),
-            str(risk.get("riskBudgetMode", "percent")),
-            account.nav,
-        )
+        risk_fraction = _configured_risk_fraction(self.settings.risk_fraction)
         conversion = await self._quote_to_account_rate(
             metadata.quote_currency,
             account.currency,
@@ -573,18 +569,10 @@ def _filled_close(result: dict[str, Any]) -> bool:
     return bool(result.get("orderFillTransaction"))
 
 
-def _risk_fraction(value: object, mode: str, equity: Decimal) -> Decimal:
-    amount = _positive_decimal(value, "risk budget")
-    if mode == "percent":
-        fraction = amount / Decimal(100)
-    elif mode == "absolute":
-        if equity <= 0:
-            raise AutoExecutionError("OANDA account equity must be positive")
-        fraction = amount / equity
-    else:
-        raise AutoExecutionError("Risk budget mode must be percent or absolute")
-    if not Decimal(0) < fraction < Decimal(1):
-        raise AutoExecutionError("Risk budget must be greater than 0% and less than 100% of equity")
+def _configured_risk_fraction(value: object) -> Decimal:
+    fraction = _positive_decimal(value, "configured risk fraction")
+    if fraction >= Decimal(1):
+        raise AutoExecutionError("Configured risk fraction must be less than 1")
     return fraction
 
 

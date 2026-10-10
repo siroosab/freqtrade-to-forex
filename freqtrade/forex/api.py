@@ -914,8 +914,6 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         normalized = pair.replace("_", "/").upper()
         defaults = {
             "pair": normalized,
-            "riskBudget": "0.50",
-            "riskBudgetMode": "percent",
             "leverage": "1x",
             "maxExposure": "10",
             "maxExposureMode": "margin_percent",
@@ -933,9 +931,12 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             RISK_CONFIG_BY_PAIR[normalized] = defaults
         config = {**defaults, **RISK_CONFIG_BY_PAIR[normalized]}
         config.pop("units", None)
-        for key in ("riskBudget", "maxExposure"):
-            if isinstance(config[key], str):
-                config[key] = config[key].replace("$", "").replace(",", "").replace("%", "").strip()
+        config.pop("riskBudget", None)
+        config.pop("riskBudgetMode", None)
+        if isinstance(config["maxExposure"], str):
+            config["maxExposure"] = (
+                config["maxExposure"].replace("$", "").replace(",", "").replace("%", "").strip()
+            )
         RISK_CONFIG_BY_PAIR[normalized] = config
         return config
 
@@ -1897,8 +1898,6 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         current = risk_config_for_pair(pair)
         candidate = dict(current)
         configurable_fields = (
-            "riskBudget",
-            "riskBudgetMode",
             "leverage",
             "maxExposure",
             "maxExposureMode",
@@ -1917,10 +1916,6 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         if str(candidate["side"]).upper() not in {"LONG", "SHORT", "BOTH", "NONE"}:
             raise HTTPException(
                 status_code=400, detail="Risk side must be LONG, SHORT, BOTH, or NONE"
-            )
-        if candidate["riskBudgetMode"] not in {"percent", "absolute"}:
-            raise HTTPException(
-                status_code=400, detail="riskBudgetMode must be percent or absolute"
             )
         if candidate["maxExposureMode"] not in {
             "margin_gbp",
@@ -1941,13 +1936,8 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         candidate["pair"] = pair.replace("_", "/").upper()
         candidate["source"] = "operator-config"
         candidate.pop("units", None)
-        risk_budget = positive_risk_config_value(candidate["riskBudget"], "riskBudget")
-        if candidate["riskBudgetMode"] == "percent" and risk_budget >= 100:
-            raise HTTPException(
-                status_code=400,
-                detail="riskBudget must be positive and below 100% when using percent mode",
-            )
-        candidate["riskBudget"] = str(risk_budget)
+        candidate.pop("riskBudget", None)
+        candidate.pop("riskBudgetMode", None)
         max_exposure = positive_risk_config_value(candidate["maxExposure"], "maxExposure")
         if candidate["maxExposureMode"] == "margin_percent" and max_exposure > 100:
             raise HTTPException(
@@ -3827,10 +3817,10 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                         status_code=409,
                         detail=f"Configure an allowed entry side for {pair} in Risk controls",
                     )
-                if not risk.get("riskBudget") or not risk.get("maxExposure"):
+                if not risk.get("maxExposure"):
                     raise HTTPException(
                         status_code=409,
-                        detail=f"Configure risk budget and maximum exposure for {pair}",
+                        detail=f"Configure maximum exposure for {pair}",
                     )
             runtime_state_path = Path("user_data/oanda/runtime-state.json")
             if runtime_state_path.exists():

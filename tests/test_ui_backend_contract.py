@@ -539,6 +539,8 @@ def test_risk_config_accepts_live_exposure_modes(tmp_path, mode, value):
     assert response.json()["maxExposure"] == value
     assert response.json()["maxExposureMode"] == mode
     assert "units" not in response.json()
+    assert "riskBudget" not in response.json()
+    assert "riskBudgetMode" not in response.json()
 
 
 def test_risk_config_rejects_margin_percent_over_100(tmp_path):

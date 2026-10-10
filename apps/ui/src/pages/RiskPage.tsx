@@ -364,14 +364,6 @@ export function RiskPage() {
           {form && <>
             <div className="settings-grid risk-settings-grid">
               <label className="field-block">
-                <span>Risk budget</span>
-                <div className="value-mode">
-                  <input type="number" min="0.01" step="any" inputMode="decimal" value={form.riskBudget} onChange={(event) => update('riskBudget', event.target.value)} />
-                  <select aria-label="Risk budget unit" value={form.riskBudgetMode} onChange={(event) => update('riskBudgetMode', event.target.value as RiskConfig['riskBudgetMode'])}><option value="percent">% equity</option><option value="absolute">{quote?.accountCurrency ?? 'Account'} amount</option></select>
-                </div>
-                <small className="risk-field-help">💡 The amount of account equity you are willing to lose if the stop-loss is hit. It sizes the position; it is not the margin allocated to the order.</small>
-              </label>
-              <label className="field-block">
                 <span>Max exposure</span>
                 <div className="value-mode">
                   <input type="number" min="0.01" max={form.maxExposureMode === 'margin_percent' ? '100' : undefined} step="any" inputMode="decimal" value={form.maxExposure} onChange={(event) => update('maxExposure', event.target.value)} />
@@ -400,6 +392,7 @@ export function RiskPage() {
               </div>
               <label className="field-block"><span>Allowed side</span><select value={form.side} onChange={(event) => update('side', event.target.value as RiskConfig['side'])}><option value="NONE">NONE — no new entries</option><option value="LONG">LONG only</option><option value="SHORT">SHORT only</option><option value="BOTH">LONG and SHORT</option></select></label>
             </div>
+            <p className="risk-helper">ℹ️ Position sizing uses the risk fraction already configured in Setup. These controls independently enforce the exposure, direction, and protection limits before an automatic order reaches OANDA.</p>
             <div className="risk-summary">
               <div><span>OANDA available · LONG</span><strong>{availableUnits?.long ? Number(availableUnits.long).toLocaleString() : 'Unavailable'}</strong></div>
               <div><span>OANDA available · SHORT</span><strong>{availableUnits?.short ? Number(availableUnits.short).toLocaleString() : 'Unavailable'}</strong></div>

@@ -119,6 +119,8 @@ class AutoTestStrategy(IStrategy):
     timeframe = "5m"
     startup_candle_count = 2
     can_short = True
+    minimal_roi = {"0": 0.0005}
+    stoploss = -0.50
 
     def populate_indicators(self, dataframe, metadata):
         return dataframe
@@ -160,7 +162,11 @@ def _candles(direction: str) -> list[OandaCandle]:
     ]
 
 
-def _executor(client: FakeOandaClient) -> OandaAutoStrategyExecutor:
+def _executor(
+    client: FakeOandaClient,
+    *,
+    risk_fraction: str = "0.01",
+) -> OandaAutoStrategyExecutor:
     setup = {
         "pair_approved_revisions": {
             "EUR_USD": {
@@ -174,10 +180,7 @@ def _executor(client: FakeOandaClient) -> OandaAutoStrategyExecutor:
     }
     risk = {
         "EUR/USD": {
-            "units": "5000",
             "side": "BOTH",
-            "riskBudget": "0.50%",
-            "riskBudgetMode": "percent",
             "maxExposure": "$10,000",
             "maxExposureMode": "absolute",
             "stopLoss": "10",
@@ -192,6 +195,7 @@ def _executor(client: FakeOandaClient) -> OandaAutoStrategyExecutor:
             "token",
             "test-account",
             instruments=("EUR_USD",),
+            risk_fraction=risk_fraction,
             execution_mode="practice",
         ),
         setup,
@@ -221,6 +225,22 @@ async def test_approved_long_and_short_signals_submit_signed_protected_oanda_ord
         "1.1022" if direction == "long" else "1.0980"
     )
     assert client.orders[0][1]["trade_client_extensions"]["tag"] == "auto"
+
+
+@pytest.mark.asyncio
+async def test_setup_risk_fraction_sizes_orders_while_panel_stop_overrides_strategy_stoploss(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _strategy_directory(tmp_path, monkeypatch)
+    client = FakeOandaClient(_candles("long"))
+    executor = _executor(client, risk_fraction="0.0001")
+
+    results = await executor.run_cycle()
+
+    assert results[0]["status"] == "filled"
+    assert client.orders[0][0] == ("EUR_USD", 1000)
+    assert client.orders[0][1]["stop_loss_price"] == "1.0992"
 
 
 @pytest.mark.asyncio
@@ -553,7 +573,11 @@ def test_auto_execution_api_requires_approved_strategy_before_enable(
     assert status.json()["enabled"] is False
     assert default_risk.status_code == 200
     assert default_risk.json()["side"] == "NONE"
+    assert "riskBudget" not in default_risk.json()
+    assert "riskBudgetMode" not in default_risk.json()
     assert saved_risk.status_code == 200
+    assert "riskBudget" not in saved_risk.json()
+    assert "riskBudgetMode" not in saved_risk.json()
     assert "units" not in saved_risk.json()
     assert saved_other_pair.status_code == 200
     assert "units" not in saved_other_pair.json()
