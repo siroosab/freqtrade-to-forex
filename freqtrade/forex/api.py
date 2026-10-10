@@ -3252,7 +3252,10 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             "instruments": instruments,
             "pairTimeframes": pair_timeframes,
             "pairStrategies": pair_strategies,
-            "riskFraction": OandaSettings.from_environment().risk_fraction,
+            "riskFraction": os.environ.get(
+                "OANDA_RISK_FRACTION",
+                exchange.get("oanda_risk_fraction", "0.01"),
+            ),
             "accountIdConfigured": bool(account_id),
             "tokenConfigured": bool(token),
             "strategyFile": str(strategy_path),
@@ -3366,8 +3369,21 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             for item in payload.get("instruments", ["EUR_USD", "GBP_USD"])
             if str(item).strip()
         ]
+        config_path = Path(
+            payload.get("configPath")
+            or os.environ.get("OANDA_CONFIG_PATH", "user_data/config.json")
+        )
+        current = load_forex_config(config_path)
+        current_exchange = current.get("exchange", {})
         try:
-            risk_fraction = Decimal(str(payload.get("riskFraction", "0.01")))
+            risk_fraction_value = payload.get(
+                "riskFraction",
+                os.environ.get(
+                    "OANDA_RISK_FRACTION",
+                    current_exchange.get("oanda_risk_fraction", "0.01"),
+                ),
+            )
+            risk_fraction = Decimal(str(risk_fraction_value))
         except Exception as exc:
             raise HTTPException(status_code=400, detail="riskFraction must be a number") from exc
         if not token or not account_id:
@@ -3426,7 +3442,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             )
         pair_timeframes = {
             str(pair).strip().upper().replace("/", "_"): str(timeframe).strip().lower()
-            for pair, timeframe in dict(payload.get("pairTimeframes", {})).items()
+            for pair, timeframe in dict(
+                payload.get("pairTimeframes", current.get("pair_timeframes", {}))
+            ).items()
             if str(pair).strip() and str(timeframe).strip()
         }
         supported_timeframes = {"1m", "5m", "15m", "30m", "1h", "4h", "1d", "1w", "1mo"}
@@ -3436,21 +3454,19 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             )
         pair_strategies = {
             str(pair).strip().upper().replace("/", "_"): str(strategy).strip()
-            for pair, strategy in dict(payload.get("pairStrategies", {})).items()
+            for pair, strategy in dict(
+                payload.get("pairStrategies", current.get("pair_strategies", {}))
+            ).items()
             if str(pair).strip() and str(strategy).strip()
         }
-        available_strategy_names = {item.name for item in discover_strategy_files()}
-        unknown_strategies = sorted(set(pair_strategies.values()) - available_strategy_names)
-        if unknown_strategies:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Unknown strategy class(es): {', '.join(unknown_strategies)}",
-            )
-        config_path = Path(
-            payload.get("configPath")
-            or os.environ.get("OANDA_CONFIG_PATH", "user_data/config.json")
-        )
-        current = load_forex_config(config_path)
+        if "pairStrategies" in payload:
+            available_strategy_names = {item.name for item in discover_strategy_files()}
+            unknown_strategies = sorted(set(pair_strategies.values()) - available_strategy_names)
+            if unknown_strategies:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Unknown strategy class(es): {', '.join(unknown_strategies)}",
+                )
         approved_revisions = dict(current.get("pair_approved_revisions") or {})
         for pair_key, revision in list(approved_revisions.items()):
             if (
@@ -6296,11 +6312,11 @@ def _setup_html() -> str:
 h1{margin:0 0 8px;font:400 2.4rem Georgia,serif}.intro{color:#66736c;margin:0 0 28px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}label{display:grid;gap:7px;font-size:.85rem;font-weight:700}input,select{width:100%;padding:11px;border:1px solid var(--line);background:#fff;font:inherit}button{margin-top:22px;padding:12px 18px;border:0;background:var(--accent);color:#fff;font-weight:700;cursor:pointer}.message{min-height:24px;margin-top:18px}.error{color:#a44}.success{color:#28724a}@media(max-width:640px){.card{margin:0;min-height:100vh;border:0}.grid{grid-template-columns:1fr}}
 </style></head>
 <body><main class="card"><h1>Forex setup</h1><p class="intro">Configure the OANDA Practice connection. Credentials are saved on this server.</p>
-<form id="setup-form"><div class="grid"><label>OANDA Practice token<input id="token" type="password" autocomplete="new-password" required></label><label>Account ID<input id="accountId" required></label><label>Instruments<input id="instruments" value="EUR_USD,GBP_USD" required></label><label>Risk fraction<input id="riskFraction" type="number" min="0.0001" max="1" step="0.0001" value="0.01" required></label><label>Execution mode<select id="executionMode"><option value="dry_run">Dry run</option><option value="practice">Practice</option></select></label></div><button type="submit">Save setup</button><p id="message" class="message"></p></form></main>
+<form id="setup-form"><div class="grid"><label>OANDA Practice token<input id="token" type="password" autocomplete="new-password" required></label><label>Account ID<input id="accountId" required></label><label>Instruments<input id="instruments" value="EUR_USD,GBP_USD" required></label><label>Execution mode<select id="executionMode"><option value="dry_run">Dry run</option><option value="practice">Practice</option></select></label></div><button type="submit">Save setup</button><p id="message" class="message"></p></form></main>
 <script>
 const form=document.getElementById('setup-form');const message=document.getElementById('message');
 fetch('/api/v1/setup/status').then(response=>response.json()).then(status=>{if(status.tokenConfigured)document.getElementById('token').placeholder='Already configured';if(status.accountIdConfigured)document.getElementById('accountId').placeholder='Already configured';if(status.instruments?.length)document.getElementById('instruments').value=status.instruments.join(',')}).catch(()=>{});
-form.addEventListener('submit',async event=>{event.preventDefault();message.className='message';message.textContent='Saving...';const payload={token:document.getElementById('token').value,accountId:document.getElementById('accountId').value,instruments:document.getElementById('instruments').value.split(',').map(value=>value.trim()).filter(Boolean),riskFraction:document.getElementById('riskFraction').value,executionMode:document.getElementById('executionMode').value,environment:'practice',pairTimeframes:{}};try{const response=await fetch('/api/v1/setup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const result=await response.json();if(!response.ok)throw new Error(result.detail||'Setup failed');message.className='message success';message.textContent='Setup saved. You can return to the dashboard.';form.reset()}catch(error){message.className='message error';message.textContent=error.message}});
+form.addEventListener('submit',async event=>{event.preventDefault();message.className='message';message.textContent='Saving...';const payload={token:document.getElementById('token').value,accountId:document.getElementById('accountId').value,instruments:document.getElementById('instruments').value.split(',').map(value=>value.trim()).filter(Boolean),executionMode:document.getElementById('executionMode').value,environment:'practice'};try{const response=await fetch('/api/v1/setup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const result=await response.json();if(!response.ok)throw new Error(result.detail||'Setup failed');message.className='message success';message.textContent='Setup saved. You can return to the dashboard.';form.reset()}catch(error){message.className='message error';message.textContent=error.message}});
 </script></body></html>"""
 
 

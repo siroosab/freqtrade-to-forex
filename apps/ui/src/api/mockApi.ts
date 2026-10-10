@@ -892,9 +892,6 @@ export type SetupPayload = {
   liveConfirmed: boolean
   environment: 'practice' | 'live'
   instruments: string[]
-  pairTimeframes: Record<string, string>
-  pairStrategies: Record<string, string>
-  riskFraction: string
 }
 
 export type SetupInstrument = {

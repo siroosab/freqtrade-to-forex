@@ -2741,13 +2741,16 @@
   color: #fca5a5;
 }
 
-.pair-timeframe-list {
+.setup-pair-list {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 
-.pair-timeframe-row,
+.setup-pair-item,
 .setup-file-card,
 .runtime-control-card,
 .systemd-control-card {
@@ -2761,22 +2764,13 @@
   background: rgba(2, 6, 23, 0.26);
 }
 
-.pair-timeframe-row > span,
+.setup-pair-item,
 .setup-file-card strong,
 .runtime-control-card strong,
 .systemd-control-card strong {
   color: #dbeafe;
   font-size: 0.78rem;
   font-weight: 700;
-}
-
-.pair-timeframe-row select {
-  width: 100px;
-  padding: 7px 9px;
-  border: 1px solid rgba(148, 163, 184, 0.2);
-  border-radius: 6px;
-  color: #f8fafc;
-  background: rgba(15, 23, 42, 0.86);
 }
 
 .setup-file-grid {
@@ -3140,7 +3134,7 @@
     grid-template-columns: 1fr;
   }
 
-  .pair-timeframe-list {
+  .setup-pair-list {
     grid-template-columns: 1fr;
   }
 

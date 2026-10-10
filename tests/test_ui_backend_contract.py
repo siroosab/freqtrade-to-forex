@@ -2416,8 +2416,11 @@ def test_setup_runtime_and_file_endpoints_work_with_configured_paths(monkeypatch
             "executionMode": "dry_run",
             "instruments": ["EUR_USD", "GBP_USD"],
             "pairTimeframes": {"EUR_USD": "5m", "GBP_USD": "1h"},
-            "pairStrategies": {"EUR_USD": "ForexMasterStrategy", "GBP_USD": "ForexEmaStrategy"},
-            "riskFraction": "0.01",
+            "pairStrategies": {
+                "EUR_USD": "ForexMasterStrategy",
+                "GBP_USD": "ForexMasterStrategy",
+            },
+            "riskFraction": "0.025",
             "configPath": str(config_path),
         },
         headers=_auth_headers(client),
@@ -2429,8 +2432,36 @@ def test_setup_runtime_and_file_endpoints_work_with_configured_paths(monkeypatch
     assert payload["accountTypeCode"] == "003"
     assert payload["pairStrategies"] == {
         "EUR_USD": "ForexMasterStrategy",
-        "GBP_USD": "ForexEmaStrategy",
+        "GBP_USD": "ForexMasterStrategy",
     }
+
+    setup_without_pair_defaults = client.post(
+        "/api/v1/setup",
+        json={
+            "token": "demo-token",
+            "accountId": "101-000-1234567-001",
+            "accountTypeCode": "003",
+            "accountConfirmed": True,
+            "liveConfirmed": False,
+            "environment": "practice",
+            "executionMode": "dry_run",
+            "instruments": ["EUR_USD", "GBP_USD"],
+            "configPath": str(config_path),
+        },
+        headers=_auth_headers(client),
+    )
+    assert setup_without_pair_defaults.status_code == 200, setup_without_pair_defaults.text
+    saved_status = client.get("/api/v1/setup/status")
+    assert saved_status.status_code == 200, saved_status.text
+    assert saved_status.json()["pairTimeframes"] == {
+        "EUR_USD": "5m",
+        "GBP_USD": "1h",
+    }
+    assert saved_status.json()["pairStrategies"] == {
+        "EUR_USD": "ForexMasterStrategy",
+        "GBP_USD": "ForexMasterStrategy",
+    }
+    assert saved_status.json()["riskFraction"] == "0.025"
 
 
 def test_setup_discovery_returns_only_supported_accounts_and_never_token(monkeypatch):
