@@ -1097,12 +1097,12 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         ]
 
     def resolve_history_request(
-        payload: dict, timeframe: str, *, max_candles: int = 10000
+        payload: dict, timeframe: str, *, max_candles: int | None = 10000
     ) -> tuple[str, int]:
         mode = str(payload.get("historyMode", "candles")).lower()
         value = max(1, int(payload.get("historyValue", payload.get("steps", 250))))
         if mode == "candles":
-            return mode, min(value, max_candles)
+            return mode, value if max_candles is None else min(value, max_candles)
         if mode != "days":
             raise HTTPException(status_code=400, detail="historyMode must be candles or days")
         try:
@@ -1117,7 +1117,11 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 status_code=400, detail=f"Days history is unsupported for timeframe {timeframe}"
             ) from exc
         requested_candles = (value * 86400 + timeframe_seconds - 1) // timeframe_seconds
-        return mode, min(requested_candles, max_candles)
+        return mode, (
+            requested_candles
+            if max_candles is None
+            else min(requested_candles, max_candles)
+        )
 
     def resolve_date_range_request(payload: dict) -> tuple[datetime, datetime]:
         try:
@@ -4994,7 +4998,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             steps = 0
             history_value = 0
         else:
-            history_mode, steps = resolve_history_request(payload, timeframe)
+            history_mode, steps = resolve_history_request(
+                payload, timeframe, max_candles=None
+            )
             history_value = int(payload.get("historyValue", steps))
         if not date_range_mode and steps < 40:
             raise HTTPException(status_code=400, detail="Hyperopt requires at least 40 candles")
@@ -5128,11 +5134,6 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                         raise HTTPException(
                             status_code=400,
                             detail="Date range Hyperopt requires at least 40 completed candles",
-                        )
-                    if len(candles) > 10000:
-                        raise HTTPException(
-                            status_code=400,
-                            detail="Date range Hyperopt is limited to 10000 candles; narrow the selected range",
                         )
                     steps = len(candles)
                     history_value = steps

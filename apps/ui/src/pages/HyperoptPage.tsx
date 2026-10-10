@@ -242,7 +242,6 @@ export function HyperoptPage() {
     ? dateRangeValid
     : Number.isInteger(historyValue)
       && historyValue >= (historyMode === 'candles' ? 40 : 1)
-      && historyValue <= 10000
   const effectiveSpread = spreadOverride?.pair === pair
     ? spreadOverride.value
     : quoteQuery.data?.spread ?? ''
@@ -420,7 +419,6 @@ export function HyperoptPage() {
                 <input
                   type="number"
                   min={historyMode === 'candles' ? 40 : 1}
-                  max="10000"
                   value={historyValue}
                   onChange={(event) => setHistoryValue(Number(event.target.value))}
                 />

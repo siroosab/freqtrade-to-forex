@@ -1144,7 +1144,10 @@ def test_hyperopt_uses_selected_date_range_instead_of_candle_default(tmp_path, m
             assert instrument == "EUR_USD"
             assert granularity == "M15"
             start = datetime.fromisoformat(from_time.replace("Z", "+00:00"))
-            return [FakeCandle(start + timedelta(minutes=15 * index)) for index in range(80)]
+            return [
+                FakeCandle(start + timedelta(minutes=15 * index))
+                for index in range(10_001)
+            ]
 
     class FakeStrategy:
         minimal_roi = {"0": 0.01}
@@ -1196,7 +1199,7 @@ def test_hyperopt_uses_selected_date_range_instead_of_candle_default(tmp_path, m
                 "historyMode": "date_range",
                 "historyValue": 500,
                 "startDate": "2026-01-01",
-                "endDate": "2026-01-02",
+                "endDate": "2026-12-31",
                 "attempts": 1,
             },
         )
@@ -1213,12 +1216,15 @@ def test_hyperopt_uses_selected_date_range_instead_of_candle_default(tmp_path, m
             time.sleep(0.01)
 
     assert status.get("status") == "completed", status
-    assert received_candle_counts == [80]
+    assert len(received_candle_counts) == 1
+    assert received_candle_counts[0] > 10_000
     assert status["report"]["historyMode"] == "date_range"
-    assert status["report"]["historyValue"] == 80
-    assert status["report"]["steps"] == 80
-    assert status["report"]["trainCandles"] == 40
-    assert status["report"]["validationCandles"] == 40
+    assert status["report"]["historyValue"] == received_candle_counts[0]
+    assert status["report"]["steps"] == received_candle_counts[0]
+    assert (
+        status["report"]["trainCandles"] + status["report"]["validationCandles"]
+        == received_candle_counts[0]
+    )
     assert status["report"]["costSettings"] == {
         "spread": "0.0001",
         "slippage": "0",
