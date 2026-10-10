@@ -11,15 +11,21 @@ import {
   getOrdersChart,
   getRiskConfig,
   getRiskSummary,
+  getSetupStatus,
   saveRiskConfig,
+  getStrategyReview,
   type LiveQuote,
   type RiskConfig,
+  type StrategyReview,
 } from '../api/mockApi'
 import { useUiStore } from '../store/useUiStore'
 import { convertTrailingStopPipsToDistance } from '../utils/trailingStopLoss'
 
 type ProtectionMode = 'price' | 'percent' | 'pips'
 type ProtectedValue = 'stopLoss' | 'takeProfit' | 'averageEntry'
+type ApprovedHyperopt = NonNullable<
+  NonNullable<StrategyReview['approvedRevision']>['hyperopt']
+>
 
 function resolvePrice(
   value: string | null,
@@ -57,12 +63,71 @@ function displayedValues(priceText: string | null, reference: number, pipSize: n
   }
 }
 
+function normalizePair(pair: string): string {
+  return pair.replace(/_/g, '/').toUpperCase()
+}
+
+function normalizeTimeframe(timeframe: string): string {
+  const normalized = timeframe.trim().toUpperCase()
+  const unitFirst = normalized.match(/^([MHDW])(\d+)$/)
+  return unitFirst ? `${unitFirst[2]}${unitFirst[1]}` : normalized
+}
+
+function hyperoptStopLossSummary(hyperopt: ApprovedHyperopt | null): string {
+  const stopLoss = hyperopt?.stopLoss
+  if (!stopLoss) return 'No stop-loss value is available in the approved Hyperopt result.'
+  const unit = stopLoss.unit
+    ?? (stopLoss.mode === 'pips' ? 'pips' : stopLoss.mode === 'percent' ? '% of entry price' : 'account currency')
+  const kind = stopLoss.mode === 'money' ? 'maximum loss' : 'distance'
+  const trailing = hyperopt.trailingStopLoss === true ? ' · trailing stop enabled' : ''
+  return `Approved Hyperopt: ${stopLoss.value} ${unit} ${kind}${stopLoss.optimized ? ' · optimized' : ''}${trailing}`
+}
+
+function hyperoptRoiSummary(hyperopt: ApprovedHyperopt | null): string {
+  const roi = hyperopt?.minimal_roi ?? hyperopt?.bestMinimalRoi
+  if (!roi || !Object.keys(roi).length) {
+    return 'No ROI exit schedule is available in the approved Hyperopt result.'
+  }
+  return `Approved Hyperopt ROI exits: ${Object.entries(roi)
+    .sort(([left], [right]) => Number(left) - Number(right))
+    .map(([minutes, rate]) => `${minutes} min: ${(rate * 100).toFixed(2)}%`)
+    .join(' · ')}`
+}
+
+function hyperoptParametersSummary(hyperopt: ApprovedHyperopt | null): string {
+  const parameters = hyperopt?.parameters ?? hyperopt?.bestParameters
+  if (!parameters || !Object.keys(parameters).length) {
+    return 'No strategy parameter overrides are available in the approved Hyperopt result.'
+  }
+  return Object.entries(parameters).map(([name, value]) => `${name} = ${value}`).join(' · ')
+}
+
 export function RiskPage() {
   const queryClient = useQueryClient()
   const { data, isLoading, isError } = useQuery({ queryKey: ['risk'], queryFn: getRiskSummary })
   const availablePairs = useUiStore((state) => state.selectedInstruments)
   const [pair, setPair] = useState(availablePairs[0] ?? 'EUR/USD')
   const selectedPair = availablePairs.length && !availablePairs.includes(pair) ? availablePairs[0] : pair
+  const setupQuery = useQuery({ queryKey: ['setup-status'], queryFn: getSetupStatus })
+  const selectedPairKey = selectedPair.replace(/\//g, '_').toUpperCase()
+  const pairStrategy = setupQuery.data?.pairStrategies[selectedPairKey]
+  const pairTimeframe = setupQuery.data?.pairTimeframes[selectedPairKey]
+  const hyperoptReviewQuery = useQuery({
+    queryKey: ['risk-hyperopt-review', selectedPair, pairStrategy, pairTimeframe],
+    queryFn: () => {
+      if (!pairStrategy || !pairTimeframe) {
+        throw new Error(`No configured strategy and timeframe are available for ${selectedPair}.`)
+      }
+      return getStrategyReview(selectedPair, pairTimeframe, pairStrategy)
+    },
+    enabled: Boolean(pairStrategy && pairTimeframe),
+  })
+  const revision = hyperoptReviewQuery.data?.approvedRevision
+  const revisionMatches = Boolean(revision
+    && normalizePair(revision.pair) === normalizePair(selectedPair)
+    && revision.strategyClass === pairStrategy
+    && normalizeTimeframe(revision.timeframe) === normalizeTimeframe(pairTimeframe ?? ''))
+  const approvedHyperopt = revisionMatches && revision ? revision.hyperopt ?? null : null
   const [timeframe, setTimeframe] = useState('M15')
   const [countMultiplier, setCountMultiplier] = useState(1)
   const configQuery = useQuery({ queryKey: ['risk-config', selectedPair], queryFn: () => getRiskConfig(selectedPair) })
@@ -102,32 +167,35 @@ export function RiskPage() {
   const protectionMutation = useMutation({
     mutationFn: ({ tradeId, payload }: {
       tradeId: string
-      payload: { stopLoss: string | null; takeProfit: string | null; trailingStopLossDistance: string | null }
+      payload: Partial<{ stopLoss: string; takeProfit: string; trailingStopLossDistance: string }>
     }) => applyBrokerRiskProtection(tradeId, payload),
     onSuccess: async () => {
-      setExecutionFeedback({ message: 'Protection update sent to OANDA.', error: false })
+      setExecutionFeedback({ message: 'Protection update sent to OANDA.', error: false, kind: 'protection' })
       await queryClient.invalidateQueries({ queryKey: ['broker-positions'] })
     },
     onError: (error) => setExecutionFeedback({
       message: error instanceof Error ? error.message : 'OANDA protection update failed.',
       error: true,
+      kind: 'protection',
     }),
   })
   const averageMutation = useMutation({
     mutationFn: ({ tradeId, payload }: {
       tradeId: string
-      payload: { units: string; price: string; stopLoss: string | null; takeProfit: string | null }
+      payload: { units: string; price: string; stopLoss?: string; takeProfit?: string }
     }) => createAverageEntryOrder(tradeId, payload),
     onSuccess: async () => {
       setExecutionFeedback({
         message: 'Average-entry limit order placed at OANDA; it will be cancelled if its parent trade closes.',
         error: false,
+        kind: 'average',
       })
       await queryClient.invalidateQueries({ queryKey: ['broker-pending-orders'] })
     },
     onError: (error) => setExecutionFeedback({
       message: error instanceof Error ? error.message : 'OANDA average-entry order failed.',
       error: true,
+      kind: 'average',
     }),
   })
   const [selection, setSelection] = useState<ProtectedValue>('stopLoss')
@@ -135,7 +203,11 @@ export function RiskPage() {
   const [averageUnitsByTrade, setAverageUnitsByTrade] = useState<Record<string, string>>({})
   const [trailingStopPips, setTrailingStopPips] = useState('')
   const [saveFeedback, setSaveFeedback] = useState<string | null>(null)
-  const [executionFeedback, setExecutionFeedback] = useState<{ message: string; error: boolean } | null>(null)
+  const [executionFeedback, setExecutionFeedback] = useState<{
+    message: string
+    error: boolean
+    kind: 'protection' | 'average'
+  } | null>(null)
 
   const pairConfig = configQuery.data?.pair.replace('_', '/').toUpperCase() === selectedPair.toUpperCase()
     ? configQuery.data
@@ -407,58 +479,120 @@ export function RiskPage() {
             </small>
           </>}
         </div>
+      </section>
 
+      <section className="content-grid risk-post-trade-grid">
         <div className="panel">
-          <div className="panel-header compact"><div><p className="eyebrow">Post-trade</p><h3>After order controls</h3></div></div>
+          <div className="panel-header compact">
+            <div><p className="eyebrow">Post-trade · Live protection</p><h3>Apply protections on OANDA</h3></div>
+            <span className="pill neutral">{selectedTrade ? `${selectedTrade.side} · ${selectedTrade.id}` : 'No open trade'}</span>
+          </div>
+          <p className="risk-helper">Only protection fields with values are sent to the selected open trade. Blank fields are left unchanged.</p>
+          {setupQuery.isError && <p className="risk-helper" role="alert">Could not load the configured strategy for Hyperopt comparison: {setupQuery.error instanceof Error ? setupQuery.error.message : 'setup unavailable'}</p>}
+          {hyperoptReviewQuery.isError && <p className="risk-helper" role="alert">Could not load approved Hyperopt values: {hyperoptReviewQuery.error instanceof Error ? hyperoptReviewQuery.error.message : 'review unavailable'}</p>}
+          {revision && !revisionMatches && <p className="risk-helper">The approved Hyperopt result does not match the currently configured strategy and timeframe for {selectedPair}.</p>}
+          {revisionMatches && !approvedHyperopt && <p className="risk-helper">The approved strategy revision has no Hyperopt values available for {selectedPair}.</p>}
+          {!revision && !hyperoptReviewQuery.isLoading && !hyperoptReviewQuery.isError && pairStrategy && pairTimeframe && <p className="risk-helper">No approved Hyperopt result is available for {selectedPair}.</p>}
+          {approvedHyperopt && <details className="risk-hyperopt-summary">
+            <summary>Approved strategy parameters used for this pair</summary>
+            <p>{hyperoptParametersSummary(approvedHyperopt)}</p>
+          </details>}
           {form && <>
             <div className="settings-grid">
-              <label className="field-block"><span>Stop loss</span><div className="value-mode"><input value={form.stopLoss ?? ''} placeholder="Chart or value" onChange={(event) => update('stopLoss', event.target.value || null)} />{modeOptions(form.stopLossMode, (value) => update('stopLossMode', value))}</div>{renderValues(stopValues)}</label>
-              <label className="field-block"><span>Take profit</span><div className="value-mode"><input value={form.takeProfit ?? ''} placeholder="Chart or value" onChange={(event) => update('takeProfit', event.target.value || null)} />{modeOptions(form.takeProfitMode, (value) => update('takeProfitMode', value))}</div>{renderValues(takeProfitValues)}</label>
-              <label className="field-block"><span>Trailing stop loss (pips)</span><input type="number" min="0.1" step="0.1" value={trailingStopPips} onChange={(event) => setTrailingStopPips(event.target.value)} /><small className="calculated-price">Price distance: {trailingDistance ?? '—'} {quote?.quoteCurrency ?? ''} · 1 pip = {quote?.pipSize ?? '—'}</small></label>
-              <label className="field-block"><span>Average-entry target</span><div className="value-mode"><input value={form.averageEntry ?? ''} placeholder="Chart or value" onChange={(event) => update('averageEntry', event.target.value || null)} />{modeOptions(form.averageEntryMode, (value) => update('averageEntryMode', value))}</div>{renderValues(averageValues)}</label>
-              <label className="field-block"><span>Average-entry order units</span><input type="number" min="1" step="1" value={averageUnits} onChange={(event) => selectedTrade && setAverageUnitsByTrade((current) => ({ ...current, [selectedTrade.id]: event.target.value }))} /><small className="calculated-price">Suggested from the selected open trade; editable independently.</small></label>
-              <label className="field-block"><span>Max averaging adds</span><input value={form.maxAdds} onChange={(event) => update('maxAdds', event.target.value)} /></label>
+              <label className="field-block">
+                <span>Stop loss</span>
+                <div className="value-mode"><input value={form.stopLoss ?? ''} placeholder="Chart or value" onChange={(event) => update('stopLoss', event.target.value || null)} />{modeOptions(form.stopLossMode, (value) => update('stopLossMode', value))}</div>
+                {renderValues(stopValues)}
+                <small className="risk-hyperopt-reference">{hyperoptStopLossSummary(approvedHyperopt)}</small>
+              </label>
+              <label className="field-block">
+                <span>Take profit</span>
+                <div className="value-mode"><input value={form.takeProfit ?? ''} placeholder="Chart or value" onChange={(event) => update('takeProfit', event.target.value || null)} />{modeOptions(form.takeProfitMode, (value) => update('takeProfitMode', value))}</div>
+                {renderValues(takeProfitValues)}
+                <small className="risk-hyperopt-reference">{hyperoptRoiSummary(approvedHyperopt)}</small>
+                <small className="risk-field-help">{form.takeProfit?.trim()
+                  ? 'With a fixed take profit, the OANDA target handles exits; strategy-exit signals and Hyperopt ROI are ignored. Opposite entry signals can still reverse a position.'
+                  : 'Without a fixed take profit, automatic strategy-exit signals and Hyperopt ROI exits remain active.'}</small>
+              </label>
+              <label className="field-block">
+                <span>Trailing stop loss (pips)</span>
+                <input type="number" min="0.1" step="0.1" value={trailingStopPips} onChange={(event) => setTrailingStopPips(event.target.value)} />
+                <small className="calculated-price">Price distance: {trailingDistance ?? '—'} {quote?.quoteCurrency ?? ''} · 1 pip = {quote?.pipSize ?? '—'}</small>
+                <small className="risk-hyperopt-reference">Approved Hyperopt trailing stop: {approvedHyperopt?.trailingStopLoss === true ? 'enabled' : approvedHyperopt?.trailingStopLoss === false ? 'disabled' : 'not specified'}{approvedHyperopt?.stopLoss ? ` · distance: ${approvedHyperopt.stopLoss.value} ${approvedHyperopt.stopLoss.unit ?? approvedHyperopt.stopLoss.mode}` : ''}</small>
+              </label>
             </div>
             <div className="chart-controls risk-click-controls">
               <button type="button" onClick={() => {
                 if (!selectedTrade) return
                 if (trailingStopPips.trim() && stopLossConfigured) {
-                  setExecutionFeedback({ message: 'Choose either a fixed stop-loss price or trailing stop, not both.', error: true })
+                  setExecutionFeedback({ message: 'Choose either a fixed stop-loss price or trailing stop, not both.', error: true, kind: 'protection' })
                   return
                 }
                 if (trailingStopPips.trim() && !trailingDistance) {
-                  setExecutionFeedback({ message: 'Enter a valid trailing-stop pip distance and wait for the live instrument pip size.', error: true })
+                  setExecutionFeedback({ message: 'Enter a valid trailing-stop pip distance and wait for the live instrument pip size.', error: true, kind: 'protection' })
                   return
                 }
                 if (stopLossInvalid || takeProfitInvalid) {
-                  setExecutionFeedback({ message: 'Enter valid stop-loss and take-profit values in the selected units.', error: true })
+                  setExecutionFeedback({ message: 'Enter valid stop-loss and take-profit values in the selected units.', error: true, kind: 'protection' })
                   return
                 }
                 if (!stopPrice && !takeProfitPrice && !trailingDistance) {
-                  setExecutionFeedback({ message: 'Set a stop loss, take profit, or trailing stop before applying.', error: true })
+                  setExecutionFeedback({ message: 'Set a stop loss, take profit, or trailing stop before applying.', error: true, kind: 'protection' })
                   return
                 }
                 setExecutionFeedback(null)
                 protectionMutation.mutate({
                   tradeId: selectedTrade.id,
                   payload: {
-                    stopLoss: trailingDistance ? null : stopPrice,
-                    takeProfit: takeProfitPrice,
-                    trailingStopLossDistance: trailingDistance,
+                    ...(!trailingDistance && stopPrice ? { stopLoss: stopPrice } : {}),
+                    ...(takeProfitPrice ? { takeProfit: takeProfitPrice } : {}),
+                    ...(trailingDistance ? { trailingStopLossDistance: trailingDistance } : {}),
                   },
                 })
-              }} disabled={!selectedTrade || !quote?.tradeable || protectionMutation.isPending}>{protectionMutation.isPending ? 'Updating OANDA…' : 'Apply protections on OANDA'}</button>
+              }} disabled={!selectedTrade || !quote?.tradeable || protectionMutation.isPending}>{protectionMutation.isPending ? 'Updating OANDA…' : 'Apply filled protection fields to this trade'}</button>
+            </div>
+          </>}
+          {executionFeedback?.kind === 'protection' && <p className="risk-save-feedback" role={executionFeedback.error ? 'alert' : 'status'}>{executionFeedback.message}</p>}
+          {!selectedTrade && <p className="risk-helper">Select an open OANDA trade for {selectedPair} before applying protection values.</p>}
+        </div>
+
+        <div className="panel">
+          <div className="panel-header compact">
+            <div><p className="eyebrow">Post-trade · Average entry</p><h3>Place average-entry limit on OANDA</h3></div>
+            <span className="pill neutral">Separate order</span>
+          </div>
+          <p className="risk-helper">This creates a separate linked limit order; only populated stop-loss and take-profit values are attached to it.</p>
+          {form && <>
+            <div className="settings-grid">
+              <label className="field-block">
+                <span>Average-entry target</span>
+                <div className="value-mode"><input value={form.averageEntry ?? ''} placeholder="Chart or value" onChange={(event) => update('averageEntry', event.target.value || null)} />{modeOptions(form.averageEntryMode, (value) => update('averageEntryMode', value))}</div>
+                {renderValues(averageValues)}
+                <small className="risk-hyperopt-reference">Average-entry targets are not tuned by Hyperopt for this pair.</small>
+              </label>
+              <label className="field-block">
+                <span>Average-entry order units</span>
+                <input type="number" min="1" step="1" value={averageUnits} onChange={(event) => selectedTrade && setAverageUnitsByTrade((current) => ({ ...current, [selectedTrade.id]: event.target.value }))} />
+                <small className="calculated-price">Suggested from the selected open trade; editable independently.</small>
+              </label>
+              <label className="field-block">
+                <span>Max averaging adds</span>
+                <input value={form.maxAdds} onChange={(event) => update('maxAdds', event.target.value)} />
+                <small className="risk-hyperopt-reference">Averaging-add limits are not tuned by Hyperopt.</small>
+              </label>
+            </div>
+            <div className="chart-controls risk-click-controls">
               <button type="button" onClick={() => {
                 if (!selectedTrade || !averagePrice) {
-                  setExecutionFeedback({ message: 'Select an open trade and enter a valid average-entry target.', error: true })
+                  setExecutionFeedback({ message: 'Select an open trade and enter a valid average-entry target.', error: true, kind: 'average' })
                   return
                 }
                 if (averageEntryInvalid || stopLossInvalid || takeProfitInvalid) {
-                  setExecutionFeedback({ message: 'Enter valid average-entry, stop-loss, and take-profit values in the selected units.', error: true })
+                  setExecutionFeedback({ message: 'Enter valid average-entry, stop-loss, and take-profit values in the selected units.', error: true, kind: 'average' })
                   return
                 }
                 if (!/^[1-9]\d*$/.test(averageUnits)) {
-                  setExecutionFeedback({ message: 'Average-entry order units must be a positive whole number.', error: true })
+                  setExecutionFeedback({ message: 'Average-entry order units must be a positive whole number.', error: true, kind: 'average' })
                   return
                 }
                 setExecutionFeedback(null)
@@ -467,15 +601,15 @@ export function RiskPage() {
                   payload: {
                     units: averageUnits,
                     price: averagePrice,
-                    stopLoss: stopPrice,
-                    takeProfit: takeProfitPrice,
+                    ...(stopPrice ? { stopLoss: stopPrice } : {}),
+                    ...(takeProfitPrice ? { takeProfit: takeProfitPrice } : {}),
                   },
                 })
               }} disabled={!selectedTrade || !quote?.tradeable || averageMutation.isPending}>{averageMutation.isPending ? 'Placing OANDA order…' : 'Place average-entry limit on OANDA'}</button>
             </div>
           </>}
-          {executionFeedback && <p className="risk-save-feedback" role={executionFeedback.error ? 'alert' : 'status'}>{executionFeedback.message}</p>}
-          {!selectedTrade && <p className="risk-helper">An open OANDA trade for this pair is required to apply protections or place an average-entry order.</p>}
+          {executionFeedback?.kind === 'average' && <p className="risk-save-feedback" role={executionFeedback.error ? 'alert' : 'status'}>{executionFeedback.message}</p>}
+          {!selectedTrade && <p className="risk-helper">An open OANDA trade for {selectedPair} is required to create a linked average-entry order.</p>}
         </div>
       </section>
 

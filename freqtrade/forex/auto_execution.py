@@ -222,6 +222,7 @@ class OandaAutoStrategyExecutor:
         strategy_trades = [trade for trade in open_trades if trade.get("instrument") == instrument]
         automated_trades = [trade for trade in strategy_trades if _is_automated_trade(trade)]
         manual_trades = [trade for trade in strategy_trades if not _is_automated_trade(trade)]
+        take_profit_configured = bool(str(risk.get("takeProfit") or "").strip())
 
         close_result = await self._close_on_strategy_exit(
             pair,
@@ -233,6 +234,7 @@ class OandaAutoStrategyExecutor:
             price,
             automated_trades,
             open_trades,
+            ignore_strategy_exits=take_profit_configured,
         )
         if close_result:
             return close_result
@@ -415,20 +417,25 @@ class OandaAutoStrategyExecutor:
         price: OandaPrice,
         automated_trades: list[dict[str, Any]],
         open_trades: list[dict[str, Any]],
+        *,
+        ignore_strategy_exits: bool = False,
     ) -> dict[str, object] | None:
         if not automated_trades:
             return None
         automated_side = _trade_side(automated_trades[0])
-        should_exit = adapter.exit_signal(
-            candles,
-            Signal.LONG if automated_side == "long" else Signal.SHORT,
+        should_exit = (
+            not ignore_strategy_exits
+            and adapter.exit_signal(
+                candles,
+                Signal.LONG if automated_side == "long" else Signal.SHORT,
+            )
         )
         opposite = (signal is Signal.SHORT and automated_side == "long") or (
             signal is Signal.LONG and automated_side == "short"
         )
         roi_exit = (
             _roi_exit_due(automated_trades[0], adapter.minimal_roi, price, automated_side)
-            if not should_exit and not opposite
+            if not should_exit and not opposite and not ignore_strategy_exits
             else False
         )
         if not should_exit and not opposite and not roi_exit:

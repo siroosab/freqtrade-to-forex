@@ -119,6 +119,7 @@ class AutoTestStrategy(IStrategy):
     timeframe = "5m"
     startup_candle_count = 2
     can_short = True
+    entry_threshold = 0.0
     minimal_roi = {"0": 0.0005}
     stoploss = -0.50
 
@@ -127,8 +128,15 @@ class AutoTestStrategy(IStrategy):
 
     def populate_entry_trend(self, dataframe, metadata):
         close = dataframe["close"]
-        dataframe["enter_long"] = (close > close.shift(1)) & (close.shift(1) <= close.shift(2))
-        dataframe["enter_short"] = (close < close.shift(1)) & (close.shift(1) >= close.shift(2))
+        threshold = float(self.entry_threshold)
+        dataframe["enter_long"] = (
+            (close > close.shift(1) * (1 + threshold))
+            & (close.shift(1) <= close.shift(2))
+        )
+        dataframe["enter_short"] = (
+            (close < close.shift(1) * (1 - threshold))
+            & (close.shift(1) >= close.shift(2))
+        )
         return dataframe
 
     def populate_exit_trend(self, dataframe, metadata):
@@ -225,6 +233,25 @@ async def test_approved_long_and_short_signals_submit_signed_protected_oanda_ord
         "1.1022" if direction == "long" else "1.0980"
     )
     assert client.orders[0][1]["trade_client_extensions"]["tag"] == "auto"
+
+
+@pytest.mark.asyncio
+async def test_approved_hyperopt_strategy_parameters_are_used_for_new_orders(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _strategy_directory(tmp_path, monkeypatch)
+    client = FakeOandaClient(_candles("long"))
+    executor = _executor(client)
+    executor.setup["pair_approved_revisions"]["EUR_USD"]["hyperopt"] = {
+        "parameters": {"entry_threshold": 0.2},
+    }
+
+    results = await executor.run_cycle()
+
+    assert results[0]["signal"] == "flat"
+    assert results[0]["status"] == "no_entry"
+    assert client.orders == []
 
 
 @pytest.mark.asyncio
@@ -374,6 +401,7 @@ async def test_opposite_signal_closes_automated_trade_before_reversing(
         }
     ]
     executor = _executor(client)
+    executor.risk_configs["EUR/USD"]["takeProfit"] = "30"
 
     results = await executor.run_cycle()
 
@@ -471,6 +499,7 @@ async def test_approved_minimal_roi_closes_profitable_automated_trade(
         }
     ]
     executor = _executor(client)
+    executor.risk_configs["EUR/USD"]["takeProfit"] = None
     executor.setup["pair_approved_revisions"]["EUR_USD"]["hyperopt"] = {
         "minimal_roi": {"0": 0.0005},
     }
@@ -480,6 +509,44 @@ async def test_approved_minimal_roi_closes_profitable_automated_trade(
     assert client.closed_trade_ids == ["trade-roi"]
     assert client.orders == []
     assert results[0]["status"] == "closed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exit_trigger", ["strategy", "roi"])
+async def test_configured_take_profit_suppresses_strategy_and_roi_exits(
+    tmp_path,
+    monkeypatch,
+    exit_trigger,
+) -> None:
+    _strategy_directory(tmp_path, monkeypatch)
+    client = FakeOandaClient(_candles("long"))
+    client.open_trades = [
+        {
+            "id": "trade-take-profit",
+            "instrument": "EUR_USD",
+            "currentUnits": "1000",
+            "price": "1.0990",
+            "openTime": "2026-10-03T17:45:00Z",
+            "tradeClientExtensions": {"tag": "auto"},
+        }
+    ]
+    executor = _executor(client)
+    executor.risk_configs["EUR/USD"]["takeProfit"] = "30"
+    if exit_trigger == "strategy":
+        monkeypatch.setattr(
+            "freqtrade.forex.auto_execution.FreqtradeStrategyAdapter.exit_signal",
+            lambda self, candles, side: True,
+        )
+    else:
+        executor.setup["pair_approved_revisions"]["EUR_USD"]["hyperopt"] = {
+            "minimal_roi": {"0": 0.0005},
+        }
+
+    results = await executor.run_cycle()
+
+    assert client.closed_trade_ids == []
+    assert results[0]["status"] == "blocked"
+    assert client.orders == []
 
 
 async def _no_depth_quote(instruments: tuple[str, ...]) -> list[OandaPrice]:

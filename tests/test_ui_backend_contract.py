@@ -319,10 +319,18 @@ def test_risk_protection_is_applied_to_the_open_oanda_trade(monkeypatch):
             {
                 "stop_loss_price": "1.0800",
                 "take_profit_price": "1.1200",
-                "trailing_stop_loss_distance": None,
             },
         )
     ]
+
+    partial_response = client.post(
+        "/api/v1/positions/risk-trade-1/risk-protection",
+        headers=_auth_headers(client),
+        json={"takeProfit": "1.1250"},
+    )
+
+    assert partial_response.status_code == 200, partial_response.text
+    assert modifications[-1] == ("risk-trade-1", {"take_profit_price": "1.1250"})
 
 
 def test_average_entry_creates_adverse_limit_order_linked_to_parent_trade(monkeypatch):

@@ -151,11 +151,15 @@ export type StrategyReview = {
     strategyClass: string
     approvedAt: string
     hyperopt?: Record<string, unknown> & {
+      parameters?: Record<string, string | number | boolean>
+      bestParameters?: Record<string, string | number | boolean>
+      minimal_roi?: Record<string, number>
+      bestMinimalRoi?: Record<string, number>
       trailingStopLoss?: boolean
       stopLoss?: {
         mode: 'pips' | 'percent' | 'money'
         value: string
-        unit: string
+        unit?: string
         optimized: boolean
       }
     }
@@ -768,7 +772,7 @@ export async function modifyManualPosition(
   return response.json() as Promise<{ status: string; tradeId: string; transactionId?: string }>
 }
 
-async function brokerAction<T>(path: string, payload: Record<string, string | null>): Promise<T> {
+async function brokerAction<T>(path: string, payload: Record<string, string | null | undefined>): Promise<T> {
   const response = await fetch(buildApiUrl(path), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -784,7 +788,7 @@ async function brokerAction<T>(path: string, payload: Record<string, string | nu
 
 export function applyBrokerRiskProtection(
   tradeId: string,
-  payload: { stopLoss: string | null; takeProfit: string | null; trailingStopLossDistance: string | null },
+  payload: Partial<{ stopLoss: string; takeProfit: string; trailingStopLossDistance: string }>,
 ) {
   return brokerAction<{ status: string; tradeId: string; transactionId?: string }>(
     `/api/v1/positions/${encodeURIComponent(tradeId)}/risk-protection`,
@@ -794,7 +798,7 @@ export function applyBrokerRiskProtection(
 
 export function createAverageEntryOrder(
   tradeId: string,
-  payload: { units: string; price: string; stopLoss: string | null; takeProfit: string | null },
+  payload: { units: string; price: string; stopLoss?: string; takeProfit?: string },
 ) {
   return brokerAction<{ status: string; tradeId: string; orderId: string; transactionId?: string }>(
     `/api/v1/positions/${encodeURIComponent(tradeId)}/average-entry`,

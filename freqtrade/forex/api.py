@@ -3045,16 +3045,16 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                         status_code=403,
                         detail="Only trades opened from the manual ticket can be modified here",
                     )
-                result = await client.modify_trade_orders(
-                    trade_id,
-                    stop_loss_price=str(stop_loss) if stop_loss is not None else None,
-                    take_profit_price=str(take_profit) if take_profit is not None else None,
-                    trailing_stop_loss_distance=(
-                        str(trailing_stop_loss_distance)
-                        if trailing_stop_loss_distance is not None
-                        else None
-                    ),
-                )
+                protection_updates = {}
+                if stop_loss is not None:
+                    protection_updates["stop_loss_price"] = str(stop_loss)
+                if take_profit is not None:
+                    protection_updates["take_profit_price"] = str(take_profit)
+                if trailing_stop_loss_distance is not None:
+                    protection_updates["trailing_stop_loss_distance"] = str(
+                        trailing_stop_loss_distance
+                    )
+                result = await client.modify_trade_orders(trade_id, **protection_updates)
             record_audit_event(
                 "positions.manual.modify",
                 details={
@@ -3113,16 +3113,16 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 )
                 if trade is None:
                     raise HTTPException(status_code=404, detail="Open broker trade not found")
-                result = await client.modify_trade_orders(
-                    trade_id,
-                    stop_loss_price=str(stop_loss) if stop_loss is not None else None,
-                    take_profit_price=str(take_profit) if take_profit is not None else None,
-                    trailing_stop_loss_distance=(
-                        str(trailing_stop_loss_distance)
-                        if trailing_stop_loss_distance is not None
-                        else None
-                    ),
-                )
+                protection_updates = {}
+                if stop_loss is not None:
+                    protection_updates["stop_loss_price"] = str(stop_loss)
+                if take_profit is not None:
+                    protection_updates["take_profit_price"] = str(take_profit)
+                if trailing_stop_loss_distance is not None:
+                    protection_updates["trailing_stop_loss_distance"] = str(
+                        trailing_stop_loss_distance
+                    )
+                result = await client.modify_trade_orders(trade_id, **protection_updates)
             record_audit_event(
                 "positions.risk_protection.update",
                 details={
@@ -3221,18 +3221,22 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 stop_loss = payload.get("stopLoss")
                 take_profit = payload.get("takeProfit")
                 client_order_id = f"risk-average-for-{trade_id}-{secrets.token_hex(6)}"
+                order_options = {}
+                if stop_loss:
+                    order_options["stop_loss_price"] = str(stop_loss)
+                if take_profit:
+                    order_options["take_profit_price"] = str(take_profit)
                 result = await client.create_limit_order(
                     instrument,
                     int(units) if is_long else -int(units),
                     str(price),
-                    stop_loss_price=str(stop_loss) if stop_loss else None,
-                    take_profit_price=str(take_profit) if take_profit else None,
                     client_order_id=client_order_id,
                     trade_client_extensions={
                         "id": client_order_id,
                         "tag": "risk-average",
                         "comment": f"average-for:{trade_id}",
                     },
+                    **order_options,
                 )
             record_audit_event(
                 "positions.average_entry.create",

@@ -1599,6 +1599,36 @@
   font-size: 0.78rem;
 }
 
+.risk-hyperopt-reference {
+  display: block;
+  margin-top: 6px;
+  color: #7dd3fc;
+  font-size: 0.72rem;
+  line-height: 1.5;
+}
+
+.risk-hyperopt-summary {
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border: 1px solid rgba(56, 189, 248, 0.18);
+  border-radius: 12px;
+  background: rgba(8, 47, 73, 0.16);
+  color: #bae6fd;
+  font-size: 0.78rem;
+}
+
+.risk-hyperopt-summary summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.risk-hyperopt-summary p {
+  margin: 8px 0 0;
+  color: #94a3b8;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
 .risk-settings-grid {
   align-items: start;
 }
