@@ -95,6 +95,7 @@ class FakeOandaClient:
                 display_precision=5,
                 trade_units_precision=0,
                 minimum_trade_size=Decimal(1),
+                margin_rate=Decimal("0.02"),
             )
         ]
 
@@ -257,19 +258,67 @@ async def test_signal_is_blocked_when_oanda_does_not_return_depth(
 
 
 @pytest.mark.asyncio
-async def test_automatic_order_respects_saved_units_cap(
+async def test_automatic_order_respects_panel_units_exposure_cap(
     tmp_path,
     monkeypatch,
 ) -> None:
     _strategy_directory(tmp_path, monkeypatch)
     client = FakeOandaClient(_candles("short"))
     executor = _executor(client)
-    executor.risk_configs["EUR/USD"]["units"] = "1200"
+    executor.risk_configs["EUR/USD"]["maxExposure"] = "1200"
+    executor.risk_configs["EUR/USD"]["maxExposureMode"] = "units"
 
     results = await executor.run_cycle()
 
     assert results[0]["status"] == "filled"
     assert client.orders[0][0] == ("EUR_USD", -1200)
+
+
+@pytest.mark.asyncio
+async def test_automatic_order_respects_available_margin_percent_cap(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _strategy_directory(tmp_path, monkeypatch)
+    client = FakeOandaClient(_candles("short"))
+    executor = _executor(client)
+    executor.risk_configs["EUR/USD"]["maxExposure"] = "0.1"
+    executor.risk_configs["EUR/USD"]["maxExposureMode"] = "margin_percent"
+
+    results = await executor.run_cycle()
+
+    assert results[0]["status"] == "filled"
+    assert client.orders[0][0] == ("EUR_USD", -409)
+
+
+@pytest.mark.asyncio
+async def test_automatic_order_uses_gbp_margin_cap_and_panel_stop_over_strategy_trailing(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _strategy_directory(tmp_path, monkeypatch)
+    client = FakeOandaClient(_candles("long"))
+    executor = _executor(client)
+    executor.setup["pair_approved_revisions"]["EUR_USD"]["hyperopt"] = {
+        "trailingStopLoss": True,
+        "stopLoss": {"mode": "pips", "value": "40"},
+    }
+    executor.risk_configs["EUR/USD"]["maxExposure"] = "1"
+    executor.risk_configs["EUR/USD"]["maxExposureMode"] = "margin_gbp"
+
+    async def gbp_to_usd(source_currency: str | None, account_currency: str) -> Decimal:
+        if source_currency == "GBP" and account_currency == "USD":
+            return Decimal("1.25")
+        return Decimal(1)
+
+    executor._quote_to_account_rate = gbp_to_usd
+
+    results = await executor.run_cycle()
+
+    assert results[0]["status"] == "filled"
+    assert client.orders[0][0] == ("EUR_USD", 56)
+    assert client.orders[0][1]["stop_loss_price"] == "1.0992"
+    assert client.orders[0][1]["trailing_stop_loss_distance"] is None
 
 
 @pytest.mark.asyncio
@@ -349,6 +398,7 @@ async def test_approved_optimized_stop_distance_overrides_risk_config(
     executor.setup["pair_approved_revisions"]["EUR_USD"]["hyperopt"] = {
         "stopLoss": {"mode": "pips", "value": "5.0", "optimized": True},
     }
+    executor.risk_configs["EUR/USD"]["stopLoss"] = None
 
     results = await executor.run_cycle()
 
@@ -370,6 +420,7 @@ async def test_approved_trailing_stop_flag_controls_oanda_order_protection(
         "stopLoss": {"mode": "pips", "value": "5.0", "optimized": True},
         "trailingStopLoss": trailing_enabled,
     }
+    executor.risk_configs["EUR/USD"]["stopLoss"] = None
 
     results = await executor.run_cycle()
 
@@ -464,10 +515,10 @@ def test_auto_execution_api_requires_approved_strategy_before_enable(
             "/api/v1/account/risk/config",
             json={
                 "pair": "EUR/USD",
-                "units": "2400",
                 "side": "BOTH",
                 "riskBudget": "0.5%",
                 "maxExposure": "$10,000",
+                "maxExposureMode": "absolute",
                 "stopLoss": "10",
                 "stopLossMode": "pips",
             },
@@ -477,10 +528,10 @@ def test_auto_execution_api_requires_approved_strategy_before_enable(
             "/api/v1/account/risk/config",
             json={
                 "pair": "GBP/USD",
-                "units": "900",
                 "side": "SHORT",
                 "riskBudget": "0.25%",
                 "maxExposure": "$5,000",
+                "maxExposureMode": "absolute",
                 "stopLoss": "12",
                 "stopLossMode": "pips",
             },
@@ -503,17 +554,17 @@ def test_auto_execution_api_requires_approved_strategy_before_enable(
     assert default_risk.status_code == 200
     assert default_risk.json()["side"] == "NONE"
     assert saved_risk.status_code == 200
-    assert saved_risk.json()["units"] == "2400"
+    assert "units" not in saved_risk.json()
     assert saved_other_pair.status_code == 200
-    assert saved_other_pair.json()["units"] == "900"
-    assert eur_after_gbp_save.json()["units"] == "2400"
+    assert "units" not in saved_other_pair.json()
+    assert "units" not in eur_after_gbp_save.json()
     assert eur_after_gbp_save.json()["side"] == "BOTH"
-    assert gbp_after_save.json()["units"] == "900"
+    assert "units" not in gbp_after_save.json()
     assert gbp_after_save.json()["side"] == "SHORT"
     assert restored_risk.status_code == 200
     assert restored_risk.json()["side"] == "BOTH"
-    assert restored_risk.json()["units"] == "2400"
+    assert "units" not in restored_risk.json()
     assert restored_other_pair.json()["side"] == "SHORT"
-    assert restored_other_pair.json()["units"] == "900"
+    assert "units" not in restored_other_pair.json()
     assert enable.status_code == 409
     assert "approved strategy revision" in enable.json()["detail"]

@@ -914,12 +914,11 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         normalized = pair.replace("_", "/").upper()
         defaults = {
             "pair": normalized,
-            "units": "1000",
-            "riskBudget": "0.50%",
+            "riskBudget": "0.50",
             "riskBudgetMode": "percent",
             "leverage": "1x",
-            "maxExposure": "$10,000",
-            "maxExposureMode": "absolute",
+            "maxExposure": "10",
+            "maxExposureMode": "margin_percent",
             "side": "NONE",
             "stopLoss": None,
             "stopLossMode": "price",
@@ -932,7 +931,13 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         }
         if normalized not in RISK_CONFIG_BY_PAIR:
             RISK_CONFIG_BY_PAIR[normalized] = defaults
-        return RISK_CONFIG_BY_PAIR[normalized]
+        config = {**defaults, **RISK_CONFIG_BY_PAIR[normalized]}
+        config.pop("units", None)
+        for key in ("riskBudget", "maxExposure"):
+            if isinstance(config[key], str):
+                config[key] = config[key].replace("$", "").replace(",", "").replace("%", "").strip()
+        RISK_CONFIG_BY_PAIR[normalized] = config
+        return config
 
     def read_strategy_execution_state() -> dict[str, object]:
         if not strategy_execution_state_path.exists():
@@ -1807,6 +1812,14 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 quote_to_account_rate, conversion_error = await currency_conversion_rate(
                     client, quote_currency, account_currency
                 )
+                account_to_gbp_rate, margin_conversion_error = await currency_conversion_rate(
+                    client, account_currency, "GBP"
+                )
+                margin_available_gbp = None
+                if account_to_gbp_rate is not None:
+                    margin_available_gbp = str(
+                        account.margin_available * Decimal(account_to_gbp_rate)
+                    )
             return {
                 "pair": normalize_pair(price.instrument),
                 "bid": str(price.bid),
@@ -1837,6 +1850,8 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "unitsAvailable": price.units_available,
                 "accountCurrency": account_currency,
                 "marginAvailable": str(account.margin_available),
+                "marginAvailableGbp": margin_available_gbp,
+                "marginConversionError": margin_conversion_error,
                 "quoteToAccountRate": quote_to_account_rate,
                 "conversionError": conversion_error,
             }
@@ -1853,6 +1868,23 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
     async def risk_config(pair: str = "EUR/USD") -> dict:
         return dict(risk_config_for_pair(pair))
 
+    def positive_risk_config_value(value: object, name: str) -> Decimal:
+        try:
+            parsed = Decimal(
+                str(value)
+                .replace(",", "")
+                .replace("$", "")
+                .replace("%", "")
+                .strip()
+            )
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=400, detail=f"{name} must be a positive number"
+            ) from exc
+        if not parsed.is_finite() or parsed <= 0:
+            raise HTTPException(status_code=400, detail=f"{name} must be a positive number")
+        return parsed
+
     @app.post("/api/v1/account/risk/config")
     async def save_risk_config(
         payload: dict,
@@ -1865,7 +1897,6 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         current = risk_config_for_pair(pair)
         candidate = dict(current)
         configurable_fields = (
-            "units",
             "riskBudget",
             "riskBudgetMode",
             "leverage",
@@ -1887,9 +1918,21 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             raise HTTPException(
                 status_code=400, detail="Risk side must be LONG, SHORT, BOTH, or NONE"
             )
-        for key in ("riskBudgetMode", "maxExposureMode"):
-            if candidate[key] not in {"percent", "absolute"}:
-                raise HTTPException(status_code=400, detail=f"{key} must be percent or absolute")
+        if candidate["riskBudgetMode"] not in {"percent", "absolute"}:
+            raise HTTPException(
+                status_code=400, detail="riskBudgetMode must be percent or absolute"
+            )
+        if candidate["maxExposureMode"] not in {
+            "margin_gbp",
+            "margin_percent",
+            "units",
+            "percent",
+            "absolute",
+        }:
+            raise HTTPException(
+                status_code=400,
+                detail="maxExposureMode must be margin_gbp, margin_percent, or units",
+            )
         for key in ("stopLossMode", "takeProfitMode", "averageEntryMode"):
             if candidate[key] not in {"percent", "price", "pips"}:
                 raise HTTPException(
@@ -1897,13 +1940,21 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 )
         candidate["pair"] = pair.replace("_", "/").upper()
         candidate["source"] = "operator-config"
-        try:
-            units = Decimal(str(candidate["units"]).replace(",", "").strip())
-        except (InvalidOperation, TypeError, ValueError) as exc:
-            raise HTTPException(status_code=400, detail="units must be a positive number") from exc
-        if not units.is_finite() or units <= 0:
-            raise HTTPException(status_code=400, detail="units must be a positive number")
-        candidate["units"] = str(units)
+        candidate.pop("units", None)
+        risk_budget = positive_risk_config_value(candidate["riskBudget"], "riskBudget")
+        if candidate["riskBudgetMode"] == "percent" and risk_budget >= 100:
+            raise HTTPException(
+                status_code=400,
+                detail="riskBudget must be positive and below 100% when using percent mode",
+            )
+        candidate["riskBudget"] = str(risk_budget)
+        max_exposure = positive_risk_config_value(candidate["maxExposure"], "maxExposure")
+        if candidate["maxExposureMode"] == "margin_percent" and max_exposure > 100:
+            raise HTTPException(
+                status_code=400,
+                detail="maxExposure must be positive; margin_percent cannot exceed 100",
+            )
+        candidate["maxExposure"] = str(max_exposure)
         persisted_configs = {
             **RISK_CONFIG_BY_PAIR,
             candidate["pair"]: candidate,

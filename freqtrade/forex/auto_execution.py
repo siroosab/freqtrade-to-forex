@@ -201,12 +201,18 @@ class OandaAutoStrategyExecutor:
         if self.checkpoint:
             self.checkpoint()
 
-        risk = _risk_with_approved_stop_loss(
-            self.risk_configs.get(pair, {}),
-            parameters.get("stopLoss"),
-            use_approved_setting=parameters.get("trailingStopLoss") is True,
+        risk = self.risk_configs.get(pair, {})
+        panel_stop_loss = risk.get("stopLoss")
+        trailing_stop_loss = (
+            parameters.get("trailingStopLoss") is True
+            and (panel_stop_loss is None or not str(panel_stop_loss).strip())
         )
-        trailing_stop_loss = parameters.get("trailingStopLoss") is True
+        if panel_stop_loss is None or not str(panel_stop_loss).strip():
+            risk = _risk_with_approved_stop_loss(
+                risk,
+                parameters.get("stopLoss"),
+                use_approved_setting=trailing_stop_loss,
+            )
         price_values = await self.client.get_prices((instrument,))
         if not price_values:
             raise AutoExecutionError(f"OANDA returned no current quote for {pair}")
@@ -354,17 +360,22 @@ class OandaAutoStrategyExecutor:
             instrument=metadata,
             quote_to_account_rate=conversion,
         )
+        gbp_to_account_rate = None
+        if str(risk.get("maxExposureMode", "margin_percent")) == "margin_gbp":
+            gbp_to_account_rate = await self._quote_to_account_rate("GBP", account.currency)
         units = min(
             risk_units,
-            _configured_units_cap(risk.get("units", "1000"), metadata.trade_units_precision),
             _depth_available_units(price, side, metadata.trade_units_precision),
             _max_exposure_units(
                 risk.get("maxExposure"),
-                str(risk.get("maxExposureMode", "absolute")),
+                str(risk.get("maxExposureMode", "margin_percent")),
                 entry_price,
                 conversion,
                 metadata.trade_units_precision,
                 account.nav,
+                margin_available=account.margin_available,
+                margin_rate=metadata.margin_rate,
+                gbp_to_account_rate=gbp_to_account_rate,
             ),
         )
         units = int(units)
@@ -640,12 +651,6 @@ def _depth_available_units(
     return int(min(available, visible).quantize(step, rounding=ROUND_DOWN))
 
 
-def _configured_units_cap(value: object, units_precision: int) -> int:
-    configured = _positive_decimal(value, "maximum units")
-    step = Decimal(1).scaleb(-units_precision)
-    return int(configured.quantize(step, rounding=ROUND_DOWN))
-
-
 def _max_exposure_units(
     raw_value: object,
     mode: str,
@@ -653,18 +658,47 @@ def _max_exposure_units(
     quote_to_account_rate: Decimal,
     units_precision: int,
     account_equity: Decimal,
+    *,
+    margin_available: Decimal,
+    margin_rate: Decimal | None,
+    gbp_to_account_rate: Decimal | None,
 ) -> int:
     exposure = _positive_decimal(raw_value, "maximum exposure")
-    maximum = (
-        exposure
-        if mode == "absolute"
-        else (account_equity * exposure / Decimal(100) if mode == "percent" else None)
-    )
-    if maximum is None:
-        raise AutoExecutionError("Maximum exposure mode must be absolute or percent")
+    if mode == "units":
+        maximum_units = exposure
+    elif mode in {"margin_gbp", "margin_percent"}:
+        if margin_rate is None or not margin_rate.is_finite() or margin_rate <= 0:
+            raise AutoExecutionError("OANDA did not report a valid margin rate for this instrument")
+        if mode == "margin_gbp":
+            if (
+                gbp_to_account_rate is None
+                or not gbp_to_account_rate.is_finite()
+                or gbp_to_account_rate <= 0
+            ):
+                raise AutoExecutionError("Cannot convert the GBP margin limit to account currency")
+            margin_cap = exposure * gbp_to_account_rate
+        else:
+            if exposure > 100:
+                raise AutoExecutionError("Maximum margin percent cannot exceed 100%")
+            if not margin_available.is_finite() or margin_available <= 0:
+                raise AutoExecutionError("OANDA account has no available margin")
+            margin_cap = margin_available * exposure / Decimal(100)
+        maximum_units = margin_cap / (
+            entry_price * quote_to_account_rate * margin_rate
+        )
+    elif mode in {"absolute", "percent"}:
+        # Preserve existing saved notional limits until an operator selects a live margin mode.
+        maximum_notional = (
+            exposure
+            if mode == "absolute"
+            else account_equity * exposure / Decimal(100)
+        )
+        maximum_units = maximum_notional / (entry_price * quote_to_account_rate)
+    else:
+        raise AutoExecutionError("Maximum exposure mode is unsupported")
     step = Decimal(1).scaleb(-units_precision)
     return int(
-        (maximum / (entry_price * quote_to_account_rate)).quantize(step, rounding=ROUND_DOWN)
+        maximum_units.quantize(step, rounding=ROUND_DOWN)
     )
 
 

@@ -156,6 +156,25 @@ export function RiskPage() {
 
   const quote: LiveQuote | undefined = quoteQuery.data
   const availableUnits = quote?.unitsAvailable?.default
+  const availableLongUnits = Number(availableUnits?.long)
+  const availableShortUnits = Number(availableUnits?.short)
+  const liveUnitsLimit = Math.max(
+    Number.isFinite(availableLongUnits) ? availableLongUnits : 0,
+    Number.isFinite(availableShortUnits) ? availableShortUnits : 0,
+  )
+  const liveMarginLimitGbp = Number(quote?.marginAvailableGbp)
+  const exposureSliderMaximum = form?.maxExposureMode === 'units'
+    ? liveUnitsLimit
+    : form?.maxExposureMode === 'margin_gbp'
+      ? liveMarginLimitGbp
+      : form?.maxExposureMode === 'margin_percent'
+        ? 100
+        : 0
+  const exposureSliderStep = form?.maxExposureMode === 'margin_percent'
+    ? 1
+    : form?.maxExposureMode === 'margin_gbp'
+      ? Math.max(exposureSliderMaximum / 200, 0.01)
+      : 1
   const precision = quote?.displayPrecision ?? (selectedPair.endsWith('/JPY') ? 3 : 5)
   const pipSize = Number(quote?.pipSize)
   const side = selectedTrade?.side ?? 'BUY'
@@ -319,11 +338,11 @@ export function RiskPage() {
       </section>
 
       <section className="content-grid">
-        <div className="panel">
+        <div className="panel risk-controls-panel">
           <div className="panel-header compact">
-            <div><p className="eyebrow">Pre-trade</p><h3>Before order controls</h3></div>
+            <div><p className="eyebrow">Pre-trade · Priority policy</p><h3>Before order controls</h3><p className="risk-panel-intro">Saved here, these controls take priority over strategy risk settings on every automatic order sent to OANDA.</p></div>
             <div className="chart-controls">
-              <span className="pill neutral">{form?.source ?? 'default-policy'}</span>
+              <span className="pill neutral">🛡️ {form?.source ?? 'default-policy'}</span>
               <button
                 type="button"
                 className="primary-action"
@@ -332,7 +351,7 @@ export function RiskPage() {
                   setSaveFeedback(null)
                   saveMutation.mutate(form, {
                     onSuccess: () => setSaveFeedback('Risk policy saved and connected to automatic execution.'),
-                    onError: () => setSaveFeedback('Risk policy was rejected by the backend.'),
+                    onError: (error) => setSaveFeedback(error instanceof Error ? error.message : 'Risk policy was rejected by the backend.'),
                   })
                 }}
                 disabled={!form || saveMutation.isPending}
@@ -343,36 +362,55 @@ export function RiskPage() {
           </div>
           {saveFeedback && <p className="risk-save-feedback" role="status">{saveFeedback}</p>}
           {form && <>
-            <div className="settings-grid">
+            <div className="settings-grid risk-settings-grid">
               <label className="field-block">
-                <span>Maximum order units</span>
-                <input
-                  type="number"
-                  min={quote?.minimumTradeSize ?? '1'}
-                  step={quote?.tradeUnitsPrecision ? 'any' : '1'}
-                  value={form.units}
-                  onChange={(event) => update('units', event.target.value)}
-                />
-                <small className="calculated-price">An additional cap; risk sizing and OANDA limits may make the actual order smaller.</small>
+                <span>Risk budget</span>
+                <div className="value-mode">
+                  <input type="number" min="0.01" step="any" inputMode="decimal" value={form.riskBudget} onChange={(event) => update('riskBudget', event.target.value)} />
+                  <select aria-label="Risk budget unit" value={form.riskBudgetMode} onChange={(event) => update('riskBudgetMode', event.target.value as RiskConfig['riskBudgetMode'])}><option value="percent">% equity</option><option value="absolute">{quote?.accountCurrency ?? 'Account'} amount</option></select>
+                </div>
+                <small className="risk-field-help">💡 The amount of account equity you are willing to lose if the stop-loss is hit. It sizes the position; it is not the margin allocated to the order.</small>
               </label>
-              <label className="field-block"><span>Risk budget</span><div className="value-mode"><input value={form.riskBudget} onChange={(event) => update('riskBudget', event.target.value)} /><select value={form.riskBudgetMode} onChange={(event) => update('riskBudgetMode', event.target.value as RiskConfig['riskBudgetMode'])}><option value="percent">%</option><option value="absolute">Amount</option></select></div></label>
-              <label className="field-block"><span>Max exposure</span><div className="value-mode"><input value={form.maxExposure} onChange={(event) => update('maxExposure', event.target.value)} /><select value={form.maxExposureMode} onChange={(event) => update('maxExposureMode', event.target.value as RiskConfig['maxExposureMode'])}><option value="absolute">Amount</option><option value="percent">%</option></select></div></label>
+              <label className="field-block">
+                <span>Max exposure</span>
+                <div className="value-mode">
+                  <input type="number" min="0.01" max={form.maxExposureMode === 'margin_percent' ? '100' : undefined} step="any" inputMode="decimal" value={form.maxExposure} onChange={(event) => update('maxExposure', event.target.value)} />
+                  <select aria-label="Maximum exposure mode" value={form.maxExposureMode} onChange={(event) => update('maxExposureMode', event.target.value as RiskConfig['maxExposureMode'])}>
+                    <option value="margin_gbp">GBP margin</option>
+                    <option value="margin_percent">% available margin</option>
+                    <option value="units">Units</option>
+                    {(form.maxExposureMode === 'absolute' || form.maxExposureMode === 'percent') && <option value={form.maxExposureMode}>Legacy notional cap</option>}
+                  </select>
+                </div>
+                <small className="risk-field-help">🔒 This is a hard ceiling applied after risk sizing; OANDA available units and market depth can reduce it further.</small>
+              </label>
+              <div className="field-block risk-exposure-slider">
+                <div className="risk-slider-heading"><span>Live OANDA limit selector</span><strong>{exposureSliderMaximum > 0 ? `${Math.min(Number(form.maxExposure), exposureSliderMaximum).toLocaleString(undefined, { maximumFractionDigits: 2 })} / ${exposureSliderMaximum.toLocaleString(undefined, { maximumFractionDigits: 2 })} ${form.maxExposureMode === 'units' ? 'units' : form.maxExposureMode === 'margin_gbp' ? 'GBP' : '%'}` : 'Live limit unavailable'}</strong></div>
+                <input
+                  type="range"
+                  aria-label="Maximum exposure from live OANDA limits"
+                  min="0"
+                  max={exposureSliderMaximum > 0 ? exposureSliderMaximum : 100}
+                  step={exposureSliderStep}
+                  value={Math.min(Number(form.maxExposure) || 0, exposureSliderMaximum > 0 ? exposureSliderMaximum : 0)}
+                  disabled={exposureSliderMaximum <= 0}
+                  onChange={(event) => update('maxExposure', event.target.value)}
+                />
+                <div className="risk-slider-labels"><small>0</small><small>{form.maxExposureMode === 'units' ? `${liveUnitsLimit.toLocaleString()} units available` : form.maxExposureMode === 'margin_gbp' ? `£${Number.isFinite(liveMarginLimitGbp) ? liveMarginLimitGbp.toLocaleString(undefined, { maximumFractionDigits: 2 }) : '—'} available` : form.maxExposureMode === 'margin_percent' ? '100% available margin' : 'Select one of the live modes to use the slider'}</small></div>
+              </div>
               <label className="field-block"><span>Allowed side</span><select value={form.side} onChange={(event) => update('side', event.target.value as RiskConfig['side'])}><option value="NONE">NONE — no new entries</option><option value="LONG">LONG only</option><option value="SHORT">SHORT only</option><option value="BOTH">LONG and SHORT</option></select></label>
             </div>
-            <p className="risk-helper">
-              OANDA available units refresh from the broker quote. Automatic entries use the lowest of this
-              value, your maximum units, risk budget, exposure limit, and visible market depth.
-            </p>
             <div className="risk-summary">
               <div><span>OANDA available · LONG</span><strong>{availableUnits?.long ? Number(availableUnits.long).toLocaleString() : 'Unavailable'}</strong></div>
               <div><span>OANDA available · SHORT</span><strong>{availableUnits?.short ? Number(availableUnits.short).toLocaleString() : 'Unavailable'}</strong></div>
               <div><span>Broker margin rate</span><strong>{quote?.marginRate ? `${(Number(quote.marginRate) * 100).toFixed(2)}%` : 'Unavailable'}</strong><small>Set by OANDA for this account and instrument</small></div>
-              <div><span>Margin available</span><strong>{quote?.marginAvailable ? `${Number(quote.marginAvailable).toLocaleString()} ${quote.accountCurrency ?? ''}` : 'Unavailable'}</strong></div>
+              <div><span>Margin available</span><strong>{quote?.marginAvailable ? `${Number(quote.marginAvailable).toLocaleString()} ${quote.accountCurrency ?? ''}` : 'Unavailable'}</strong><small>From OANDA account summary</small></div>
+              <div><span>Margin available · GBP</span><strong>{quote?.marginAvailableGbp ? `£${Number(quote.marginAvailableGbp).toLocaleString(undefined, { maximumFractionDigits: 2 })}` : 'Unavailable'}</strong><small>{quote?.marginConversionError ?? 'Converted using live OANDA prices'}</small></div>
             </div>
             <small className="calculated-price">
-              Available units are indicative and can change before the order reaches OANDA
+              Available units and margin are indicative and can change before the order reaches OANDA
               {quote?.time ? ` · quote ${new Date(quote.time).toLocaleTimeString()}` : ''}.
-              Leverage is determined by OANDA; it is not a per-order setting.
+              The % mode caps the share of current available margin; GBP mode limits required margin. Leverage is determined by OANDA.
             </small>
           </>}
         </div>

@@ -1586,6 +1586,71 @@
   font-size: 0.82rem;
 }
 
+.risk-controls-panel {
+  border-color: rgba(56, 189, 248, 0.2);
+  background:
+    radial-gradient(circle at 100% 0, rgba(14, 116, 144, 0.13), transparent 32%),
+    linear-gradient(145deg, rgba(15, 23, 42, 0.96), rgba(2, 6, 23, 0.94));
+}
+
+.risk-panel-intro {
+  margin: 6px 0 0;
+  color: #94a3b8;
+  font-size: 0.78rem;
+}
+
+.risk-settings-grid {
+  align-items: start;
+}
+
+.risk-field-help {
+  color: #94a3b8;
+  font-size: 0.72rem;
+  line-height: 1.55;
+}
+
+.risk-exposure-slider {
+  grid-column: 1 / -1;
+  padding: 14px 16px;
+  border: 1px solid rgba(56, 189, 248, 0.2);
+  border-radius: 12px;
+  background: rgba(8, 47, 73, 0.18);
+}
+
+.risk-slider-heading,
+.risk-slider-labels {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.risk-slider-heading strong {
+  color: #bae6fd;
+  font-size: 0.82rem;
+}
+
+.risk-exposure-slider input[type="range"] {
+  width: 100%;
+  margin: 14px 0 6px;
+  accent-color: #38bdf8;
+  cursor: pointer;
+}
+
+.risk-exposure-slider input[type="range"]:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.risk-slider-labels {
+  color: #94a3b8;
+  font-size: 0.7rem;
+}
+
+.risk-slider-labels small:last-child {
+  text-align: right;
+}
+
 .volatility-range-visual {
   position: relative;
   margin: 28px 4px 10px;

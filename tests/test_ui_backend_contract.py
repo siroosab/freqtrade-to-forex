@@ -197,6 +197,8 @@ def test_market_quote_endpoint_reads_current_broker_price(monkeypatch):
         "unitsAvailable": {"default": {"long": "200000", "short": "180000"}},
         "accountCurrency": "GBP",
         "marginAvailable": "9000.00",
+        "marginAvailableGbp": "9000.00",
+        "marginConversionError": None,
         "quoteToAccountRate": "0.7800",
         "conversionError": None,
     }
@@ -511,6 +513,47 @@ def test_risk_config_accepts_pips_for_post_trade_controls(tmp_path):
     assert response.json()["stopLossMode"] == "pips"
     assert response.json()["takeProfitMode"] == "pips"
     assert response.json()["averageEntryMode"] == "pips"
+
+
+@pytest.mark.parametrize(
+    ("mode", "value"),
+    [
+        ("margin_gbp", "250"),
+        ("margin_percent", "35"),
+        ("units", "1200"),
+    ],
+)
+def test_risk_config_accepts_live_exposure_modes(tmp_path, mode, value):
+    with TestClient(create_app(tmp_path / f"risk-{mode}.sqlite")) as scoped_client:
+        response = scoped_client.post(
+            "/api/v1/account/risk/config",
+            headers=_auth_headers(scoped_client),
+            json={
+                "pair": "EUR/USD",
+                "maxExposure": value,
+                "maxExposureMode": mode,
+            },
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["maxExposure"] == value
+    assert response.json()["maxExposureMode"] == mode
+    assert "units" not in response.json()
+
+
+def test_risk_config_rejects_margin_percent_over_100(tmp_path):
+    with TestClient(create_app(tmp_path / "risk-margin-percent.sqlite")) as scoped_client:
+        response = scoped_client.post(
+            "/api/v1/account/risk/config",
+            headers=_auth_headers(scoped_client),
+            json={
+                "pair": "EUR/USD",
+                "maxExposure": "101",
+                "maxExposureMode": "margin_percent",
+            },
+        )
+
+    assert response.status_code == 400
 
 
 def test_websocket_market_channel_connects():
