@@ -121,7 +121,7 @@ export function ForexChart({ data, onPriceSelect }: { data: ForexChartData; onPr
       if (index < visibleStartIndex || index > visibleEndIndex) return null
       return { ...trade, x: scaleX(index), y: scaleY(trade.price ?? data.candles[index].close) }
     }).filter(Boolean) as Array<ChartTrade & { x: number; y: number }>
-    const candleWidth = Math.max(3, Math.min(14, (width - padding * 2) / Math.max(visibleCount, 1) * 0.62))
+    const candleWidth = Math.max(3, Math.min(16, plotWidth / Math.max(visibleCount, 1) * 0.74))
     return { line, ema20, ema50, ema100, signalMarkers, roiMarkers, tradeMarkers, scaleX, scaleY, priceAtY, percentageTicks, min, max, candleWidth }
   }, [data, plotWidth, visibleCount, visibleEndIndex, visibleReferencePrice, visibleStartIndex])
 
@@ -220,7 +220,10 @@ export function ForexChart({ data, onPriceSelect }: { data: ForexChartData; onPr
             const highY = chart.scaleY(candle.high)
             const lowY = chart.scaleY(candle.low)
             const bullish = candle.close >= candle.open
-            return <g key={candle.time} className="chart-candle"><line x1={x} x2={x} y1={highY} y2={lowY} stroke={bullish ? '#34d399' : '#fb7185'} strokeWidth="1" /><rect x={x - chart.candleWidth / 2} y={Math.min(openY, closeY)} width={chart.candleWidth} height={Math.max(1, Math.abs(closeY - openY))} fill={bullish ? '#34d399' : '#fb7185'} opacity="0.88" /></g>
+            const color = bullish ? '#34d399' : '#fb7185'
+            const bodyHeight = Math.max(2.5, Math.abs(closeY - openY))
+            const bodyCenter = (openY + closeY) / 2
+            return <g key={candle.time} className="chart-candle"><line x1={x} x2={x} y1={highY} y2={lowY} stroke={color} strokeWidth="1.2" /><rect x={x - chart.candleWidth / 2} y={bodyCenter - bodyHeight / 2} width={chart.candleWidth} height={bodyHeight} fill={color} stroke={color} strokeWidth="0.75" /></g>
           })}
           {visible.close && <polyline points={chart.line(data.candles.slice(visibleStartIndex, visibleEndIndex + 1).map((candle) => candle.close), visibleStartIndex)} fill="none" stroke="#38bdf8" strokeWidth="1.5" />}
           {visible.ema20 && <polyline points={chart.line(chart.ema20.slice(visibleStartIndex, visibleEndIndex + 1), visibleStartIndex)} fill="none" stroke="#fbbf24" strokeWidth="1.5" strokeDasharray="5 4" />}
