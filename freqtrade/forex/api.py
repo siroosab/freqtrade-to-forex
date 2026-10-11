@@ -4993,6 +4993,10 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             reset_pair_research_state(pair, strategy_class, timeframe)
         history_mode = str(payload.get("historyMode", "candles")).lower()
         date_range_mode = history_mode == "date_range"
+        rolling_days_mode = AUTO_HYPEROPT_CONTEXT.get() and history_mode == "days"
+        historical_range_mode = date_range_mode or rolling_days_mode
+        start: datetime | None = None
+        end: datetime | None = None
         if date_range_mode:
             start, end = resolve_date_range_request(payload)
             steps = 0
@@ -5002,6 +5006,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 payload, timeframe, max_candles=None
             )
             history_value = int(payload.get("historyValue", steps))
+            if rolling_days_mode:
+                end = datetime.now(UTC) - timedelta(minutes=1)
+                start = end - timedelta(days=history_value)
         if not date_range_mode and steps < 40:
             raise HTTPException(status_code=400, detail="Hyperopt requires at least 40 candles")
         attempts = max(1, min(int(payload.get("attempts", 24)), 900))
@@ -5110,13 +5117,16 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 )
                 if instrument is None:
                     raise HTTPException(status_code=400, detail=f"Unknown OANDA instrument: {pair}")
-                if date_range_mode:
+                if historical_range_mode:
+                    if start is None or end is None:
+                        raise RuntimeError("Hyperopt historical range was not initialized")
                     candles = await provider.fetch_historical(
                         pair,
                         freqtrade_timeframe(timeframe),
                         start=start.isoformat().replace("+00:00", "Z"),
                         end=end.isoformat().replace("+00:00", "Z"),
                         store=candle_store,
+                        refresh=AUTO_HYPEROPT_CONTEXT.get(),
                     )
                 else:
                     candles = await provider.fetch_latest(
@@ -5124,19 +5134,25 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                         freqtrade_timeframe(timeframe),
                         count=steps,
                         store=candle_store,
+                        refresh=AUTO_HYPEROPT_CONTEXT.get(),
                     )
                 if candles.empty:
                     raise HTTPException(
                         status_code=400, detail=f"No historical candles returned for {pair}"
                     )
-                if date_range_mode:
+                if historical_range_mode:
                     if len(candles) < 40:
                         raise HTTPException(
                             status_code=400,
-                            detail="Date range Hyperopt requires at least 40 completed candles",
+                            detail=(
+                                "Date range Hyperopt requires at least 40 completed candles"
+                                if date_range_mode
+                                else "Hyperopt requires at least 40 completed candles"
+                            ),
                         )
                     steps = len(candles)
-                    history_value = steps
+                    if date_range_mode:
+                        history_value = steps
                 market_spread: Decimal | None = None
                 try:
                     market_prices = await client.get_prices((instrument_name,))
@@ -5182,6 +5198,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                         informative_timeframe,
                         count=informative_count,
                         store=candle_store,
+                        refresh=AUTO_HYPEROPT_CONTEXT.get(),
                     )
                     if informative_frame.empty:
                         raise HTTPException(

@@ -93,6 +93,18 @@ def _auth_headers(test_client, role="operator"):
     }
 
 
+def _assert_auto_hyperopt_history_requests(requests, history_mode, history_value):
+    if history_mode == "days":
+        rolling_requests = [request for request in requests if "start" in request]
+        assert len(rolling_requests) == 1
+        rolling_request = rolling_requests[0]
+        assert rolling_request["end"] - rolling_request["start"] == timedelta(days=history_value)
+        assert datetime.now().astimezone() - rolling_request["end"] < timedelta(minutes=2)
+    else:
+        latest_requests = [request for request in requests if "count" in request]
+        assert [request["count"] for request in latest_requests] == [history_value]
+
+
 def test_account_summary_endpoint_exists():
     response = client.get("/api/v1/account/summary")
     assert response.status_code == 200, response.text
@@ -606,6 +618,10 @@ def test_websocket_market_channel_connects():
         ),
     ],
 )
+@pytest.mark.parametrize(
+    ("history_mode", "history_value", "requested_candles"),
+    [("days", 20, 1920), ("candles", 1000, 1000)],
+)
 @pytest.mark.parametrize("trailing_stop_loss_enabled", [True, False])
 def test_hyperopt_approval_flows_into_chart_strategy(
     tmp_path,
@@ -615,6 +631,9 @@ def test_hyperopt_approval_flows_into_chart_strategy(
     expected_stop_loss,
     expected_stop_pips,
     expected_optimization,
+    history_mode,
+    history_value,
+    requested_candles,
     trailing_stop_loss_enabled,
 ):
     from datetime import timezone
@@ -625,12 +644,11 @@ def test_hyperopt_approval_flows_into_chart_strategy(
     hyperopt_options = {}
 
     class FakeCandle:
-        def __init__(self, index):
-            self.time = (
-                (datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(minutes=15 * index))
-                .isoformat()
-                .replace("+00:00", "Z")
+        def __init__(self, index, timestamp=None):
+            candle_time = timestamp or (
+                datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(minutes=15 * index)
             )
+            self.time = candle_time.isoformat().replace("+00:00", "Z")
             self.complete = True
             self.open = Decimal(str(1.1 + index * 0.00001))
             self.high = Decimal(str(1.101 + index * 0.00001))
@@ -669,9 +687,50 @@ def test_hyperopt_approval_flows_into_chart_strategy(
             assert instruments == ("USD_GBP",)
             return [SimpleNamespace(bid=Decimal("0.78"))]
 
-        async def get_candles(self, instrument, granularity, *, count):
-            candle_requests.append((instrument, granularity, count))
-            return [FakeCandle(index) for index in range(100)]
+        async def get_candles(
+            self,
+            instrument,
+            granularity,
+            *,
+            count=None,
+            from_time=None,
+            to_time=None,
+        ):
+            if count is not None:
+                candle_requests.append(
+                    {
+                        "instrument": instrument,
+                        "granularity": granularity,
+                        "count": count,
+                    }
+                )
+                latest = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+                return [
+                    FakeCandle(
+                        index,
+                        latest - timedelta(minutes=15 * (99 - index)),
+                    )
+                    for index in range(100)
+                ]
+
+            start = datetime.fromisoformat(from_time.replace("Z", "+00:00"))
+            end = datetime.fromisoformat(to_time.replace("Z", "+00:00"))
+            candle_requests.append(
+                {
+                    "instrument": instrument,
+                    "granularity": granularity,
+                    "start": start,
+                    "end": end,
+                }
+            )
+            candle_count = int((end - start).total_seconds() // (15 * 60))
+            return [
+                FakeCandle(
+                    index,
+                    start + timedelta(minutes=15 * index),
+                )
+                for index in range(candle_count)
+            ]
 
         async def get_open_trades(self):
             return []
@@ -737,8 +796,8 @@ def test_hyperopt_approval_flows_into_chart_strategy(
                 "pair": "EUR/USD",
                 "timeframe": "M15",
                 "strategyClass": "ForexMasterStrategy",
-                "historyMode": "days",
-                "historyValue": 2,
+                "historyMode": history_mode,
+                "historyValue": history_value,
                 "attempts": 1,
                 "workers": 1,
                 "spread": "0.0002",
@@ -835,6 +894,7 @@ def test_hyperopt_approval_flows_into_chart_strategy(
         scoped_client.app.state.auto_hyperopt_state["queue"] = {"status": "idle"}
         if stop_distance_mode == "automatic" and trailing_stop_loss_enabled:
             manual_options = dict(hyperopt_options)
+            automatic_request_start = len(candle_requests)
             local_weekday = datetime.now().astimezone().weekday()
             scoped_client.app.state.auto_hyperopt_state["lastTriggeredDate"] = (
                 datetime.now().astimezone().date().isoformat()
@@ -873,6 +933,14 @@ def test_hyperopt_approval_flows_into_chart_strategy(
             assert completed_queue["hyperoptStartedAt"]
             automatic_status = scoped_client.get(status_url).json()
             assert automatic_status["report"]["attemptsRequested"] == 1
+            automatic_main_requests = [
+                request
+                for request in candle_requests[automatic_request_start:]
+                if request["instrument"] == "EUR_USD" and request["granularity"] == "M15"
+            ]
+            _assert_auto_hyperopt_history_requests(
+                automatic_main_requests, history_mode, history_value
+            )
             assert automatic_status["report"]["stopDistanceMode"] == "automatic"
             assert automatic_status["report"]["costSettings"]["spread"] == "0.0001"
             hyperopt_options.clear()
@@ -943,7 +1011,10 @@ def test_hyperopt_approval_flows_into_chart_strategy(
     assert [signal["roiPercent"] for signal in chart_signals] == [1.0, 1.0]
     assert abs(chart_signals[0]["roiTargetPrice"] - 1.111) < 1e-12
     assert abs(chart_signals[1]["roiTargetPrice"] - (1.10001 * 0.99)) < 1e-12
-    assert candle_requests[0] == ("EUR_USD", "M15", 192)
+    assert candle_requests[0]["count"] == requested_candles
+    approved_settings = approved.json()["approvedRevision"]["hyperopt"]["runSettings"]
+    assert approved_settings["historyMode"] == history_mode
+    assert approved_settings["historyValue"] == history_value
 
 
 def test_hyperopt_rejects_invalid_cost_settings(tmp_path):
