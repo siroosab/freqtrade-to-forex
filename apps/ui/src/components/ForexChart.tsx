@@ -1,5 +1,7 @@
 import { useMemo, useRef, useState } from 'react'
 
+const MAX_ZOOM_LEVEL = 8
+
 type ChartCandle = { time: string; open: number; high: number; low: number; close: number }
 type ChartSignal = {
   time: string
@@ -130,7 +132,7 @@ export function ForexChart({ data, onPriceSelect }: { data: ForexChartData; onPr
   const toggle = (key: keyof typeof visible) => setVisible((current) => ({ ...current, [key]: !current[key] }))
   const zoom = (direction: -1 | 1) => {
     setHoveredIndex(null)
-    const nextZoomLevel = Math.max(0, Math.min(4, zoomLevel + direction))
+    const nextZoomLevel = Math.max(0, Math.min(MAX_ZOOM_LEVEL, zoomLevel + direction))
     const nextVisibleCount = Math.max(1, Math.ceil(data.candles.length / (1.5 ** nextZoomLevel)))
     setZoomLevel(nextZoomLevel)
     setPanOffset((current) => Math.min(current, Math.max(0, data.candles.length - nextVisibleCount)))
@@ -162,7 +164,7 @@ export function ForexChart({ data, onPriceSelect }: { data: ForexChartData; onPr
         <span>{data.candles.length} candles</span>
         <div className="chart-zoom-controls" aria-label="Chart zoom controls">
           <button type="button" aria-label="Zoom out" title="Zoom out" onClick={() => zoom(-1)} disabled={zoomLevel === 0}>-</button>
-          <button type="button" aria-label="Zoom in" title="Zoom in" onClick={() => zoom(1)} disabled={zoomLevel === 4 || data.candles.length <= 1}>+</button>
+          <button type="button" aria-label="Zoom in" title="Zoom in" onClick={() => zoom(1)} disabled={zoomLevel === MAX_ZOOM_LEVEL || data.candles.length <= 1}>+</button>
           <button type="button" className="chart-zoom-reset" onClick={resetZoom} disabled={zoomLevel === 0 && visibleStartIndex === 0}>Reset zoom</button>
         </div>
       </div>
