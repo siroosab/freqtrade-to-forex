@@ -1,9 +1,9 @@
 import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
-import { getOrders, getOrdersChart, type OrderHistoryStatus } from '../api/mockApi'
+import { getOrders, getOrdersChart, getSetupStatus, type OrderHistoryStatus } from '../api/mockApi'
 import { ForexChart } from '../components/ForexChart'
 import { ChartDataControls } from '../components/ChartDataControls'
-import { chartCandleCount } from '../components/chartOptions'
+import { chartCandleCount, chartTimeframeFromStrategy } from '../components/chartOptions'
 import { useUiStore } from '../store/useUiStore'
 
 export function OrdersPage() {
@@ -20,9 +20,18 @@ export function OrdersPage() {
   const pair = availablePairs.length && !availablePairs.includes(selectedPair)
     ? availablePairs[0]
     : selectedPair
-  const [timeframe, setTimeframe] = useState('M15')
+  const setupQuery = useQuery({ queryKey: ['setup-status'], queryFn: getSetupStatus })
+  const [timeframeOverride, setTimeframeOverride] = useState<string | null>(null)
+  const pairKey = pair.replace(/\//g, '_').toUpperCase()
+  const timeframe = timeframeOverride
+    ?? chartTimeframeFromStrategy(setupQuery.data?.pairTimeframes[pairKey], 'M15')
   const [countMultiplier, setCountMultiplier] = useState(1)
-  const chartQuery = useQuery({ queryKey: ['orders-chart', pair, timeframe, countMultiplier], queryFn: () => getOrdersChart(pair, timeframe, chartCandleCount(countMultiplier)), refetchInterval: 30000 })
+  const chartQuery = useQuery({
+    queryKey: ['orders-chart', pair, timeframe, countMultiplier],
+    queryFn: () => getOrdersChart(pair, timeframe, chartCandleCount(countMultiplier)),
+    refetchInterval: 30000,
+    enabled: !setupQuery.isLoading,
+  })
   const orders = ordersQuery.data?.orders ?? []
 
   const formatPnl = (value: string | null, currency: string) => {
@@ -51,7 +60,7 @@ export function OrdersPage() {
       <section className="panel page-panel">
         <div className="panel-header compact">
           <div><p className="eyebrow">Market context</p><h3>Signals and trade map</h3></div>
-          <div className="chart-controls"><select aria-label="Chart pair" value={pair} onChange={(event) => setSelectedPair(event.target.value)}>{(availablePairs.length ? availablePairs : ['EUR/USD','GBP/USD','USD/JPY']).map((item) => <option key={item} value={item}>{item}</option>)}</select><ChartDataControls timeframe={timeframe} countMultiplier={countMultiplier} onTimeframeChange={setTimeframe} onCountMultiplierChange={setCountMultiplier} /></div>
+          <div className="chart-controls"><select aria-label="Chart pair" value={pair} onChange={(event) => setSelectedPair(event.target.value)}>{(availablePairs.length ? availablePairs : ['EUR/USD','GBP/USD','USD/JPY']).map((item) => <option key={item} value={item}>{item}</option>)}</select><ChartDataControls timeframe={timeframe} countMultiplier={countMultiplier} onTimeframeChange={setTimeframeOverride} onCountMultiplierChange={setCountMultiplier} /></div>
         </div>
         {chartQuery.isLoading && <p>Loading broker candles and approved strategy signals…</p>}
         {chartQuery.isError && <p role="alert">{chartQuery.error instanceof Error ? chartQuery.error.message : 'Chart data unavailable from the broker API.'}</p>}

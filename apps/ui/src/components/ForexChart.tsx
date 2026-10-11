@@ -40,7 +40,7 @@ export function ForexChart({ data, onPriceSelect }: { data: ForexChartData; onPr
   const padding = 28
   const plotRight = width - 78
   const plotWidth = plotRight - padding
-  const [visible, setVisible] = useState({ candles: true, close: true, ema20: true, ema50: true, ema100: true, buy: true, sell: true, signals: true, roiTargets: true, trades: true })
+  const [visible, setVisible] = useState({ candles: true, close: false, ema20: true, ema50: true, ema100: true, buy: false, sell: false, signals: false, roiTargets: false, trades: false })
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null)
   const [zoomLevel, setZoomLevel] = useState(0)
   const dataKey = `${data.pair}:${data.timeframe}`

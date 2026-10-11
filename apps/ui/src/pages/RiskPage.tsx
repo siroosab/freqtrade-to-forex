@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 import { ForexChart } from '../components/ForexChart'
 import { ChartDataControls } from '../components/ChartDataControls'
-import { chartCandleCount } from '../components/chartOptions'
+import { chartCandleCount, chartTimeframeFromStrategy } from '../components/chartOptions'
 import {
   applyBrokerRiskProtection,
   createAverageEntryOrder,
@@ -128,13 +128,16 @@ export function RiskPage() {
     && revision.strategyClass === pairStrategy
     && normalizeTimeframe(revision.timeframe) === normalizeTimeframe(pairTimeframe ?? ''))
   const approvedHyperopt = revisionMatches && revision ? revision.hyperopt ?? null : null
-  const [timeframe, setTimeframe] = useState('M15')
+  const [timeframeOverride, setTimeframeOverride] = useState<string | null>(null)
+  const timeframe = timeframeOverride
+    ?? chartTimeframeFromStrategy(pairTimeframe, 'M15')
   const [countMultiplier, setCountMultiplier] = useState(1)
   const configQuery = useQuery({ queryKey: ['risk-config', selectedPair], queryFn: () => getRiskConfig(selectedPair) })
   const chartQuery = useQuery({
     queryKey: ['risk-chart', selectedPair, timeframe, countMultiplier],
     queryFn: () => getOrdersChart(selectedPair, timeframe, chartCandleCount(countMultiplier)),
     refetchInterval: 30000,
+    enabled: !setupQuery.isLoading,
   })
   const volatilityQuery = useQuery({
     queryKey: ['risk-volatility', selectedPair],
@@ -340,7 +343,7 @@ export function RiskPage() {
       </section>}
 
       <section className="panel page-panel">
-        <div className="panel-header compact"><div><p className="eyebrow">Risk map</p><h3>Price-based protection</h3></div><div className="chart-controls"><select aria-label="Risk pair" value={selectedPair} onChange={(event) => setPair(event.target.value)}>{(availablePairs.length ? availablePairs : ['EUR/USD', 'GBP/USD', 'USD/JPY']).map((item) => <option key={item} value={item}>{item}</option>)}</select><ChartDataControls timeframe={timeframe} countMultiplier={countMultiplier} onTimeframeChange={setTimeframe} onCountMultiplierChange={setCountMultiplier} /></div></div>
+        <div className="panel-header compact"><div><p className="eyebrow">Risk map</p><h3>Price-based protection</h3></div><div className="chart-controls"><select aria-label="Risk pair" value={selectedPair} onChange={(event) => setPair(event.target.value)}>{(availablePairs.length ? availablePairs : ['EUR/USD', 'GBP/USD', 'USD/JPY']).map((item) => <option key={item} value={item}>{item}</option>)}</select><ChartDataControls timeframe={timeframe} countMultiplier={countMultiplier} onTimeframeChange={setTimeframeOverride} onCountMultiplierChange={setCountMultiplier} /></div></div>
         <p className="risk-helper">Select a protection level, then click the chart. Prices and trade status below are refreshed from OANDA.</p>
         <div className="chart-controls risk-click-controls"><button type="button" className={selection === 'stopLoss' ? 'selected' : ''} onClick={() => setSelection('stopLoss')}>Set stop loss</button><button type="button" className={selection === 'takeProfit' ? 'selected' : ''} onClick={() => setSelection('takeProfit')}>Set take profit</button><button type="button" className={selection === 'averageEntry' ? 'selected' : ''} onClick={() => setSelection('averageEntry')}>Set average entry</button></div>
         {chartQuery.isLoading && <p>Loading OANDA chart…</p>}

@@ -2,8 +2,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useState } from 'react'
 import { ForexChart } from '../components/ForexChart'
 import { ChartDataControls } from '../components/ChartDataControls'
-import { chartCandleCount } from '../components/chartOptions'
-import { closeManualPosition, createManualClientOrderId, getAccountSummary, getAutoExecutionStatus, getBrokerPendingOrders, getBrokerPositions, getMarketQuote, getMarketSummary, getOrdersChart, getRiskSummary, modifyManualPosition, modifyPendingOrder, setAutoExecution, submitLimitOrder, submitMarketOrder, type BrokerPendingOrder, type BrokerTrade } from '../api/mockApi'
+import { chartCandleCount, chartTimeframeFromStrategy } from '../components/chartOptions'
+import { closeManualPosition, createManualClientOrderId, getAccountSummary, getAutoExecutionStatus, getBrokerPendingOrders, getBrokerPositions, getMarketQuote, getMarketSummary, getOrdersChart, getRiskSummary, getSetupStatus, modifyManualPosition, modifyPendingOrder, setAutoExecution, submitLimitOrder, submitMarketOrder, type BrokerPendingOrder, type BrokerTrade } from '../api/mockApi'
 import { convertTrailingStopPipsToDistance, validateTrailingStopInput } from '../utils/trailingStopLoss'
 import { useForexSocket } from '../hooks/useForexSocket'
 import { useUiStore } from '../store/useUiStore'
@@ -56,12 +56,17 @@ export function DashboardPage() {
     retry: false,
   })
   const riskQuery = useQuery({ queryKey: ['risk'], queryFn: getRiskSummary })
-  const [chartTimeframe, setChartTimeframe] = useState('H1')
+  const setupQuery = useQuery({ queryKey: ['setup-status'], queryFn: getSetupStatus })
+  const [chartTimeframeOverride, setChartTimeframeOverride] = useState<string | null>(null)
+  const chartPairKey = instrument.replace(/\//g, '_').toUpperCase()
+  const chartTimeframe = chartTimeframeOverride
+    ?? chartTimeframeFromStrategy(setupQuery.data?.pairTimeframes[chartPairKey], 'H1')
   const [chartCountMultiplier, setChartCountMultiplier] = useState(1)
   const chartQuery = useQuery({
     queryKey: ['dashboard-chart', instrument, chartTimeframe, chartCountMultiplier],
     queryFn: () => getOrdersChart(instrument, chartTimeframe, chartCandleCount(chartCountMultiplier)),
     refetchInterval: 60000,
+    enabled: !setupQuery.isLoading,
   })
   const liveAccount = useUiStore((state) => state.accountFeed)
   const liveMarket = useUiStore((state) => state.marketFeed)
@@ -401,7 +406,7 @@ export function DashboardPage() {
                 <p className="eyebrow">Trend</p>
                 <h3>Equity trend</h3>
               </div>
-              <ChartDataControls timeframe={chartTimeframe} countMultiplier={chartCountMultiplier} onTimeframeChange={setChartTimeframe} onCountMultiplierChange={setChartCountMultiplier} />
+              <ChartDataControls timeframe={chartTimeframe} countMultiplier={chartCountMultiplier} onTimeframeChange={setChartTimeframeOverride} onCountMultiplierChange={setChartCountMultiplier} />
             </div>
 
             {chartQuery.isLoading && <p className="chart-empty-state">Loading real chart data…</p>}
