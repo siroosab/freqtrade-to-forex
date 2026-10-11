@@ -49,8 +49,8 @@ class CrudeOilScalpStrategy(IStrategy):
     stoploss = -0.99
 
     rsi_length = IntParameter(2, 100, default=14, space="buy")
-    rsi_high = IntParameter(50, 95, default=80, space="sell")
-    rsi_low = IntParameter(5, 50, default=20, space="sell")
+    rsi_high = IntParameter(60, 95, default=80, space="sell")
+    rsi_low = IntParameter(5, 40, default=20, space="sell")
     sma_length = IntParameter(5, 200, default=70, space="buy")
 
     def __init__(self, config: dict | None = None) -> None:

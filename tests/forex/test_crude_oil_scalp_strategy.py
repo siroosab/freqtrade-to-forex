@@ -1,6 +1,10 @@
+from decimal import Decimal
+
 import pandas as pd
 
+from freqtrade.forex.models import OandaInstrument
 from freqtrade.forex.strategy_execution import load_strategy
+from freqtrade.forex.strategy_hyperopt import run_strategy_hyperopt
 
 
 def test_crude_oil_scalp_uses_pine_defaults_and_calculates_indicators() -> None:
@@ -15,6 +19,11 @@ def test_crude_oil_scalp_uses_pine_defaults_and_calculates_indicators() -> None:
     assert strategy.rsi_high.value == 80
     assert strategy.rsi_low.value == 20
     assert strategy.sma_length.value == 70
+    assert all(
+        getattr(strategy, name).optimize
+        for name in ("rsi_length", "rsi_high", "rsi_low", "sma_length")
+    )
+    assert strategy.rsi_low.high < strategy.rsi_high.low
     assert pd.isna(result["sma"].iloc[68])
     assert result["sma"].iloc[69] == sum(close[0:70]) / 70
     assert result["rsi"].iloc[-1] == 100.0
@@ -57,3 +66,39 @@ def test_crude_oil_scalp_exits_on_both_pine_reversal_alerts() -> None:
 
     assert result["exit_long"].tolist() == [False, False, True, False, False, False]
     assert result["exit_short"].tolist() == [False, False, False, False, False, True]
+
+
+def test_crude_oil_scalp_hyperopt_samples_all_declared_parameters() -> None:
+    close = [70.0 + (index % 7) * 0.2 for index in range(100)]
+    candles = pd.DataFrame(
+        {
+            "date": pd.date_range("2026-01-01", periods=100, freq="3min", tz="UTC"),
+            "open": close,
+            "high": [price + 0.2 for price in close],
+            "low": [price - 0.2 for price in close],
+            "close": close,
+            "volume": [0.0] * len(close),
+        }
+    )
+
+    candidates = run_strategy_hyperopt(
+        candles,
+        {},
+        OandaInstrument("WTI_USD", "WTI/USD", -2, 3, 0, 1),
+        pair="WTI/USD",
+        strategy_class="CrudeOilScalpStrategy",
+        timeframe="3m",
+        starting_balance=Decimal(10000),
+        risk_fraction=Decimal("0.01"),
+        spread=Decimal("0.01"),
+        max_attempts=2,
+        hyperopt_loss="ProfitDrawDownHyperOptLoss",
+    )
+
+    expected_parameters = {"rsi_length", "rsi_high", "rsi_low", "sma_length"}
+    assert len(candidates) == 2
+    assert all(set(candidate["parameters"]) == expected_parameters for candidate in candidates)
+    for candidate in candidates:
+        assert 5 <= candidate["parameters"]["rsi_low"] <= 40
+        assert 60 <= candidate["parameters"]["rsi_high"] <= 95
+        assert candidate["parameters"]["rsi_low"] < candidate["parameters"]["rsi_high"]
