@@ -121,10 +121,29 @@ def test_market_summary_endpoint_exists():
     assert "strategySignals" in payload
 
 
+def test_oanda_instrument_reads_broker_type():
+    instrument = OandaInstrument.from_payload(
+        {
+            "name": "XAU_USD",
+            "displayName": "Gold",
+            "type": "METAL",
+            "pipLocation": -1,
+            "displayPrecision": 2,
+            "tradeUnitsPrecision": 0,
+            "minimumTradeSize": "1",
+        }
+    )
+
+    assert instrument.instrument_type == "METAL"
+    assert instrument.display_name == "Gold"
+
+
 def test_market_quote_endpoint_reads_current_broker_price(monkeypatch):
     instrument_lookups = []
 
     class FakeInstrument:
+        display_name = "Euro/US Dollar"
+        instrument_type = "CURRENCY"
         display_precision = 5
         trade_units_precision = 0
         minimum_trade_size = Decimal("1")
@@ -197,6 +216,8 @@ def test_market_quote_endpoint_reads_current_broker_price(monkeypatch):
         "time": "2026-09-28T10:00:00Z",
         "tradeable": True,
         "environment": "practice",
+        "displayName": "Euro/US Dollar",
+        "instrumentType": "CURRENCY",
         "displayPrecision": 5,
         "tradeUnitsPrecision": 0,
         "minimumTradeSize": "1",

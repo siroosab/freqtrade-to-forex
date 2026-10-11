@@ -22,43 +22,22 @@ import { useUiStore } from '../store/useUiStore'
 
 const TIMEFRAMES = ['M1', 'M5', 'M15', 'M30', 'H1', 'H2', 'H4', 'H6', 'H8', 'H12', 'D1', 'W1', 'MN1']
 
-const CURRENCY_NAMES: Record<string, string> = {
-  AUD: 'دلار استرالیا',
-  CAD: 'دلار کانادا',
-  CHF: 'فرانک سوئیس',
-  CNH: 'یوان چین',
-  EUR: 'یورو',
-  GBP: 'پوند بریتانیا',
-  JPY: 'ین ژاپن',
-  NZD: 'دلار نیوزیلند',
-  USD: 'دلار آمریکا',
-}
-
-const COMMODITY_DESCRIPTIONS: Array<[string[], string]> = [
-  [['XAU', 'GOLD'], 'طلا؛ فلز گران‌بها'],
-  [['XAG', 'SILVER'], 'نقره؛ فلز گران‌بها'],
-  [['WTICO', 'WTI', 'USOIL', 'XTI'], 'نفت خام آمریکا (WTI)؛ انرژی'],
-  [['BRENT', 'BCO', 'UKOIL', 'XBR'], 'نفت برنت؛ انرژی'],
-  [['NGAS', 'NATGAS'], 'گاز طبیعی؛ انرژی'],
-  [['SUGAR', 'SUG'], 'شکر؛ کالای کشاورزی'],
-  [['COCOA'], 'کاکائو؛ کالای کشاورزی'],
-  [['COFFEE'], 'قهوه؛ کالای کشاورزی'],
-  [['CORN', 'MAIZE'], 'ذرت؛ کالای کشاورزی'],
-  [['WHEAT'], 'گندم؛ کالای کشاورزی'],
-  [['COTTON'], 'پنبه؛ کالای کشاورزی'],
-]
-
-function describePair(pair: string): string {
-  const normalizedPair = pair.replace(/[^a-z0-9]/gi, '').toUpperCase()
-  for (const [symbols, description] of COMMODITY_DESCRIPTIONS) {
-    if (symbols.some((symbol) => normalizedPair.startsWith(symbol))) return description
+function describePair(quote: {
+  pair: string
+  displayName?: string
+  instrumentType?: string | null
+} | undefined, pair: string, isPending: boolean): string {
+  if (!quote) {
+    return isPending
+      ? 'در حال دریافت مشخصات این جفت از کارگزار…'
+      : 'مشخصات این جفت از کارگزار در دسترس نیست.'
   }
-
-  const [base, quote] = pair.toUpperCase().split(/[/_-]/)
-  if (base && quote && CURRENCY_NAMES[base] && CURRENCY_NAMES[quote]) {
-    return `جفت‌ارز فارکس؛ ${CURRENCY_NAMES[base]} در برابر ${CURRENCY_NAMES[quote]}`
-  }
-  return 'نوع دارایی از نماد این جفت قابل تشخیص نیست.'
+  const displayName = quote.displayName?.trim() || quote.pair || pair
+  const instrumentType = quote.instrumentType?.toUpperCase()
+  if (instrumentType === 'CURRENCY') return `جفت‌ارز فارکس · ${displayName}`
+  if (instrumentType === 'METAL') return `فلز گران‌بها · ${displayName}`
+  if (instrumentType === 'CFD') return `قرارداد CFD · ${displayName}`
+  return `ابزار معاملاتی کارگزار · ${displayName}`
 }
 
 function initialDateRange(): { startDate: string; endDate: string } {
@@ -447,7 +426,9 @@ export function HyperoptPage() {
               <select value={pair} onChange={(event) => setPair(event.target.value)}>
                 {(pairs.length ? pairs : ['EUR/USD']).map((item) => <option key={item}>{item}</option>)}
               </select>
-              <small className="pair-description" aria-live="polite">{describePair(pair)}</small>
+              <small className="pair-description" aria-live="polite">
+                {describePair(quoteQuery.data, pair, quoteQuery.isPending)}
+              </small>
             </label>
             <label className="field-block">
               <span>Timeframe</span>

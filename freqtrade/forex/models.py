@@ -39,6 +39,7 @@ class OandaInstrument:
     margin_rate: Decimal | None = None
     minimum_trailing_stop_distance: Decimal | None = None
     maximum_trailing_stop_distance: Decimal | None = None
+    instrument_type: str | None = None
 
     def __post_init__(self) -> None:
         if self.name:
@@ -71,6 +72,7 @@ class OandaInstrument:
             display_precision=int(payload["displayPrecision"]),
             trade_units_precision=int(payload["tradeUnitsPrecision"]),
             minimum_trade_size=Decimal(payload["minimumTradeSize"]),
+            instrument_type=payload.get("type") or payload.get("instrumentType"),
             base_currency=base_currency,
             quote_currency=quote_currency,
             margin_rate=(

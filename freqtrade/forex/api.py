@@ -1833,6 +1833,15 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "time": price.time,
                 "tradeable": price.tradeable,
                 "environment": settings.environment.value,
+                "displayName": str(
+                    getattr(broker_instrument, "display_name", instrument)
+                    or instrument
+                ),
+                "instrumentType": getattr(
+                    broker_instrument,
+                    "instrument_type",
+                    getattr(broker_instrument, "type", None),
+                ),
                 "displayPrecision": broker_instrument.display_precision,
                 "tradeUnitsPrecision": broker_instrument.trade_units_precision,
                 "minimumTradeSize": str(broker_instrument.minimum_trade_size),
