@@ -157,6 +157,10 @@ def _evaluate_hyperopt_candidate(
         "validationNetPl": format(validation_result.net_pl, ".2f"),
         "validationDrawdown": format(validation_result.max_drawdown, ".2f"),
         "validationTrades": len(validation_result.trades),
+        "validationWinRate": format(validation_result.win_rate * Decimal("100"), ".2f"),
+        "validationProfitPercent": format(
+            validation_result.net_pl / context.starting_balance * Decimal("100"), ".2f"
+        ),
         "coverage": 2,
         "trainTrades": len(train_result.trades),
     }

@@ -766,6 +766,8 @@ def test_hyperopt_approval_flows_into_chart_strategy(
                 "validationNetPl": "0.4",
                 "validationDrawdown": "0.1",
                 "validationTrades": 1,
+                "validationWinRate": "75.00",
+                "validationProfitPercent": "0.25",
                 "stopLoss": candidate_stop_loss,
                 "trailingStopLoss": kwargs.get("trailing_stop_loss", False),
             }
@@ -824,6 +826,8 @@ def test_hyperopt_approval_flows_into_chart_strategy(
                 break
             time.sleep(0.01)
         assert status.get("status") == "completed", status
+        assert status["report"]["validation"]["winRate"] == "75.00"
+        assert status["report"]["validation"]["profitPercent"] == "0.25"
         assert status["report"]["costSettings"] == {
             "spread": "0.0002",
             "slippage": "0.00001",

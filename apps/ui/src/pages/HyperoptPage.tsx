@@ -39,6 +39,30 @@ function formatUtcDateTime(value: string): string {
   return `${new Date(value).toLocaleString(undefined, { timeZone: 'UTC' })} UTC`
 }
 
+function formatPercent(value: string | number | undefined, showPositiveSign = false): string {
+  const numericValue = Number(value)
+  if (value === undefined || !Number.isFinite(numericValue)) return '—'
+  return `${showPositiveSign && numericValue > 0 ? '+' : ''}${numericValue.toFixed(2)}%`
+}
+
+function metricTone(value: string | number | undefined, kind: 'return' | 'win-rate', trades?: number): string {
+  const numericValue = Number(value)
+  if (
+    value === undefined
+    || !Number.isFinite(numericValue)
+    || (kind === 'win-rate' && (!trades || trades <= 0))
+  ) return 'metric-neutral'
+  if (kind === 'win-rate') return numericValue >= 50 ? 'metric-positive' : 'metric-negative'
+  return numericValue > 0 ? 'metric-positive' : numericValue < 0 ? 'metric-negative' : 'metric-neutral'
+}
+
+function percentageOfInitialCapital(netPl?: string, startingBalance?: string): number | null {
+  const profit = Number(netPl)
+  const initialCapital = Number(startingBalance)
+  if (!Number.isFinite(profit) || !Number.isFinite(initialCapital) || initialCapital <= 0) return null
+  return profit / initialCapital * 100
+}
+
 function formatTrailingStopLoss(stopLoss: {
   mode: 'pips' | 'percent' | 'money'
   value: string
@@ -220,6 +244,7 @@ export function HyperoptPage() {
     ? backtestStopLossPipsOverride.value
     : reportStopLossPips ?? stopLossPips
   const backtest = backtestQuery.data?.result ?? backtestQuery.data
+  const backtestReturn = percentageOfInitialCapital(backtest?.netPl, backtest?.startingBalance)
   const running = statusQuery.data?.status === 'running'
   const autoHyperoptRunning = autoHyperoptQuery.data?.queue.status === 'running'
     || autoHyperoptQuery.data?.queue.status === 'queued'
@@ -614,6 +639,18 @@ export function HyperoptPage() {
               <div><span>Status</span><strong>{backtest.status}</strong></div>
               <div><span>Net P/L</span><strong>{backtest.netPl ?? '—'}</strong></div>
               <div><span>Trades</span><strong>{backtest.trades ?? '—'}</strong></div>
+              <div>
+                <span>Win rate</span>
+                <strong className={`metric-value ${metricTone(backtest.winRate, 'win-rate', backtest.trades)}`}>
+                  {formatPercent(backtest.winRate)}
+                </strong>
+              </div>
+              <div>
+                <span>Return on initial capital</span>
+                <strong className={`metric-value ${metricTone(backtestReturn ?? undefined, 'return')}`}>
+                  {formatPercent(backtestReturn ?? undefined, true)}
+                </strong>
+              </div>
               <div><span>Max drawdown</span><strong>{backtest.maxDrawdown ?? '—'}</strong></div>
               {backtest.execution && (
                 <div><span>Applied assumptions</span><strong>
@@ -797,6 +834,18 @@ export function HyperoptPage() {
               <div className="bullet-list">
                 <div><span>Data coverage</span><strong>{report.steps} candles · train {report.trainCandles} / validate {report.validationCandles}</strong></div>
                 <div><span>Validation result</span><strong>{report.validation.netPl} P/L · {report.validation.trades} trades · drawdown {report.validation.drawdown}</strong></div>
+                <div>
+                  <span>Win rate</span>
+                  <strong className={`metric-value ${metricTone(report.validation.winRate, 'win-rate', report.validation.trades)}`}>
+                    {formatPercent(report.validation.winRate)}
+                  </strong>
+                </div>
+                <div>
+                  <span>Return on initial capital</span>
+                  <strong className={`metric-value ${metricTone(report.validation.profitPercent, 'return')}`}>
+                    {formatPercent(report.validation.profitPercent, true)}
+                  </strong>
+                </div>
                 <div><span>Best objective</span><strong>{report.objective}</strong></div>
                 {report.costSettings && (
                   <div><span>Cost assumptions</span><strong>
@@ -823,7 +872,7 @@ export function HyperoptPage() {
               </div>
               <div className="strategy-table-wrap">
                 <table className="positions-table">
-                  <thead><tr><th>Rank</th><th>Objective</th><th>Validation P/L</th><th>Drawdown</th><th>Trades</th><th>Parameters</th></tr></thead>
+                  <thead><tr><th>Rank</th><th>Objective</th><th>Validation P/L</th><th>Win rate</th><th>Return / initial capital</th><th>Drawdown</th><th>Trades</th><th>Parameters</th></tr></thead>
                   <tbody>{report.candidates.slice(0, 3).map((candidate) => (
                     <tr
                       key={candidate.rank}
@@ -832,6 +881,12 @@ export function HyperoptPage() {
                       <td>{candidate.rank}</td>
                       <td>{candidate.objective}</td>
                       <td>{candidate.validationNetPl}</td>
+                      <td className={metricTone(candidate.validationWinRate, 'win-rate', candidate.validationTrades)}>
+                        {formatPercent(candidate.validationWinRate)}
+                      </td>
+                      <td className={metricTone(candidate.validationProfitPercent, 'return')}>
+                        {formatPercent(candidate.validationProfitPercent, true)}
+                      </td>
                       <td>{candidate.validationDrawdown}</td>
                       <td>{candidate.validationTrades}</td>
                       <td>

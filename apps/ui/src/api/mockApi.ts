@@ -182,6 +182,8 @@ export type HyperoptCandidateRow = {
   validationNetPl: string
   validationDrawdown: string
   validationTrades: number
+  validationWinRate?: string
+  validationProfitPercent?: string
 }
 
 export type HyperoptReport = {
@@ -227,7 +229,13 @@ export type HyperoptReport = {
   bestMinimalRoi?: Record<string, number>
   objective: string
   train: { netPl: string; drawdown: string; trades: number }
-  validation: { netPl: string; drawdown: string; trades: number }
+  validation: {
+    netPl: string
+    drawdown: string
+    trades: number
+    winRate?: string
+    profitPercent?: string
+  }
   candidates: HyperoptCandidateRow[]
   reportText: string
 }

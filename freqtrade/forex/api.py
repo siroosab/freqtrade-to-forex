@@ -4180,6 +4180,16 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     "netPl": str(best.get("validationNetPl", "0")),
                     "drawdown": str(best.get("validationDrawdown", "0")),
                     "trades": int(best.get("validationTrades", 0)),
+                    **(
+                        {"winRate": str(best["validationWinRate"])}
+                        if best.get("validationWinRate") is not None
+                        else {}
+                    ),
+                    **(
+                        {"profitPercent": str(best["validationProfitPercent"])}
+                        if best.get("validationProfitPercent") is not None
+                        else {}
+                    ),
                 },
                 "candidates": [
                     {"rank": rank, **candidate}

@@ -338,6 +338,8 @@ class StopDistanceStrategy(IStrategy):
     )
 
     for candidate in candidates:
+        assert candidate["validationWinRate"] == "0.00"
+        assert candidate["validationProfitPercent"] == "0.00"
         stop_loss = candidate["stopLoss"]
         assert candidate["trailingStopLoss"] is True
         assert stop_loss["mode"] == ("pips" if optimize_stop_distance else "percent")
