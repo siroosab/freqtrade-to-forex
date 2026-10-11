@@ -86,7 +86,7 @@ export function HyperoptPage() {
   const [dateRange, setDateRange] = useState(initialDateRange)
   const [attempts, setAttempts] = useState(100)
   const [workers, setWorkers] = useState<number | null>(null)
-  const [lossFunction, setLossFunction] = useState('ProfitDrawDownHyperOptLoss')
+  const [lossFunction, setLossFunction] = useState('ForexWinRateProfitHyperOptLoss')
   const [spreadOverride, setSpreadOverride] = useState<{ pair: string; value: string } | null>(null)
   const [slippage, setSlippage] = useState('0')
   const [financingRatePerDay, setFinancingRatePerDay] = useState('0')
@@ -818,6 +818,9 @@ export function HyperoptPage() {
               <select value={lossFunction} onChange={(event) => setLossFunction(event.target.value)}>
                 {(lossFunctionsQuery.data?.options ?? [lossFunction]).map((item) => <option key={item}>{item}</option>)}
               </select>
+              <small>
+                Validation score = 0.6 × win-rate% + 8 × return% − 1.5 × drawdown% − 0.5 per missing trade below 10.
+              </small>
             </label>
           </div>
           {quoteQuery.error && <p role="alert">Could not load the default broker spread: {quoteQuery.error.message}</p>}

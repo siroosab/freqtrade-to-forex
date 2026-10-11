@@ -33,6 +33,14 @@ class ForexMasterStrategy(IStrategy):
     adx_fast_ema_length = IntParameter(2, 20, default=6, space="buy")
     adx_slow_ema_length = IntParameter(3, 30, default=12, space="buy")
     exit_band_offset = DecimalParameter(0.0, 1.0, default=0.0, decimals=2, space="sell")
+    hyperopt_search_bounds = {
+        "band_length": (3, 250),
+        "band_multiplier": (0.3, 5.0),
+        "adx_length": (2, 200),
+        "adx_fast_ema_length": (2, 50),
+        "adx_slow_ema_length": (3, 100),
+        "exit_band_offset": (0.0, 2.0),
+    }
 
     def __init__(self, config: dict | None = None) -> None:
         super().__init__(config or {})

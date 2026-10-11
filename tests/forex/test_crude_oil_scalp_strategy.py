@@ -92,13 +92,16 @@ def test_crude_oil_scalp_hyperopt_samples_all_declared_parameters() -> None:
         risk_fraction=Decimal("0.01"),
         spread=Decimal("0.01"),
         max_attempts=2,
-        hyperopt_loss="ProfitDrawDownHyperOptLoss",
+        hyperopt_loss="ForexWinRateProfitHyperOptLoss",
     )
 
     expected_parameters = {"rsi_length", "rsi_high", "rsi_low", "sma_length"}
     assert len(candidates) == 2
     assert all(set(candidate["parameters"]) == expected_parameters for candidate in candidates)
     for candidate in candidates:
-        assert 5 <= candidate["parameters"]["rsi_low"] <= 40
-        assert 60 <= candidate["parameters"]["rsi_high"] <= 95
+        assert 1 <= candidate["parameters"]["rsi_low"] <= 49
+        assert 51 <= candidate["parameters"]["rsi_high"] <= 99
         assert candidate["parameters"]["rsi_low"] < candidate["parameters"]["rsi_high"]
+        assert 2 <= candidate["parameters"]["rsi_length"] <= 200
+        assert 3 <= candidate["parameters"]["sma_length"] <= 500
+        assert "validationWinRate" in candidate

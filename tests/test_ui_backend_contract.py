@@ -826,6 +826,7 @@ def test_hyperopt_approval_flows_into_chart_strategy(
                 break
             time.sleep(0.01)
         assert status.get("status") == "completed", status
+        assert status["report"]["hyperoptLoss"] == "ForexWinRateProfitHyperOptLoss"
         assert status["report"]["validation"]["winRate"] == "75.00"
         assert status["report"]["validation"]["profitPercent"] == "0.25"
         assert status["report"]["costSettings"] == {

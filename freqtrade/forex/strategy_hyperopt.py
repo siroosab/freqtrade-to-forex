@@ -41,8 +41,9 @@ HYPEROPT_LOSS_FUNCTIONS: tuple[str, ...] = (
     "MaxDrawDownPerPairHyperOptLoss",
     "ProfitDrawDownHyperOptLoss",
     "MultiMetricHyperOptLoss",
+    "ForexWinRateProfitHyperOptLoss",
 )
-DEFAULT_HYPEROPT_LOSS = "ProfitDrawDownHyperOptLoss"
+DEFAULT_HYPEROPT_LOSS = "ForexWinRateProfitHyperOptLoss"
 _REFERENCE_ROI_VOLATILITY_PER_5M = 0.0002
 _MIN_ROI_PROFIT_RATE = 0.00001
 _MAX_ROI_PROFIT_INCREMENT = 0.05
@@ -421,20 +422,101 @@ def compute_hyperopt_objective(result: BacktestResult, loss_name: str) -> Decima
         return -drawdown_rate
     if loss_name == "MultiMetricHyperOptLoss":
         return net_pl - drawdown + (result.win_rate * Decimal(100))
+    if loss_name == "ForexWinRateProfitHyperOptLoss":
+        if not result.trades:
+            return Decimal("-Infinity")
+        if result.starting_balance <= 0:
+            raise ValueError("starting balance must be positive for Forex Hyperopt scoring")
+        profit_percent = net_pl / result.starting_balance * Decimal(100)
+        drawdown_percent = drawdown_rate * Decimal(100)
+        trade_count_penalty = Decimal(max(0, 10 - len(result.trades))) / Decimal(2)
+        return (
+            result.win_rate * Decimal(100) * Decimal("0.6")
+            + profit_percent * Decimal(8)
+            - drawdown_percent * Decimal("1.5")
+            - trade_count_penalty
+        )
     return net_pl - drawdown - result.total_costs  # ProfitDrawDownHyperOptLoss
 
 
-def _sample_parameter_value(parameter: BaseParameter, rng: random.Random) -> object:
+def _sample_parameter_value(
+    parameter: BaseParameter,
+    rng: random.Random,
+    bounds: tuple[int | float, int | float] | None = None,
+) -> object:
     if hasattr(parameter, "low") and hasattr(parameter, "high"):
-        low, high = parameter.low, parameter.high
+        low, high = bounds if bounds is not None else (parameter.low, parameter.high)
+        if low > high:
+            raise ValueError(f"Invalid Hyperopt bounds: {low} > {high}")
         if isinstance(low, int) and isinstance(high, int):
             return rng.randint(low, high)
         decimals = int(getattr(parameter, "decimals", 6))
         return round(rng.uniform(float(low), float(high)), decimals)
+    if bounds is not None:
+        raise ValueError("Custom Hyperopt bounds are only supported for numeric parameters")
     categories = getattr(parameter, "opt_range", None)
     if categories:
         return rng.choice(list(categories))
     raise ValueError(f"Unsupported optimization range for parameter {parameter.name}")
+
+
+_ORDERED_PARAMETER_PAIRS = (
+    ("ema_fast_period", "ema_slow_period"),
+    ("adx_fast_ema_length", "adx_slow_ema_length"),
+    ("rsi_entry_low", "rsi_entry_high"),
+    ("rsi_low", "rsi_high"),
+)
+
+
+def _sample_strategy_parameters(
+    parameters: dict[str, BaseParameter],
+    rng: random.Random,
+    search_bounds: dict[str, tuple[int | float, int | float]] | None = None,
+) -> dict[str, object]:
+    search_bounds = search_bounds or {}
+    sampled: dict[str, object] = {}
+    paired_names: set[str] = set()
+    for lower_name, upper_name in _ORDERED_PARAMETER_PAIRS:
+        lower_parameter = parameters.get(lower_name)
+        upper_parameter = parameters.get(upper_name)
+        if lower_parameter is None or upper_parameter is None:
+            continue
+        if not all(
+            hasattr(parameter, "low") and hasattr(parameter, "high")
+            for parameter in (lower_parameter, upper_parameter)
+        ):
+            raise ValueError(
+                f"Ordered Hyperopt parameters must be numeric: {lower_name}, {upper_name}"
+            )
+        lower_bounds = search_bounds.get(
+            lower_name,
+            (lower_parameter.low, lower_parameter.high),
+        )
+        upper_bounds = search_bounds.get(
+            upper_name,
+            (upper_parameter.low, upper_parameter.high),
+        )
+        if not all(isinstance(value, int) for value in (*lower_bounds, *upper_bounds)):
+            raise ValueError(f"Ordered Hyperopt bounds must be integers: {lower_name}, {upper_name}")
+        lower_limit, lower_high = lower_bounds
+        upper_low, upper_high = upper_bounds
+        lower_maximum = min(lower_high, upper_high - 1)
+        if lower_limit > lower_maximum:
+            raise ValueError(f"Hyperopt parameter ranges cannot satisfy {lower_name} < {upper_name}")
+        lower_value = rng.randint(lower_limit, lower_maximum)
+        upper_limit = max(upper_low, lower_value + 1)
+        upper_value = rng.randint(upper_limit, upper_high)
+        sampled[lower_name] = lower_value
+        sampled[upper_name] = upper_value
+        paired_names.update((lower_name, upper_name))
+    sampled.update(
+        {
+            name: _sample_parameter_value(parameter, rng, search_bounds.get(name))
+            for name, parameter in parameters.items()
+            if name not in paired_names
+        }
+    )
+    return sampled
 
 
 def _create_candidate_evaluator(
@@ -555,6 +637,15 @@ def run_strategy_hyperopt(
         for name, value in class_attributes.items()
         if isinstance(value, BaseParameter) and value.optimize
     }
+    search_bounds = getattr(strategy, "hyperopt_search_bounds", {})
+    if not isinstance(search_bounds, dict):
+        raise ValueError("strategy hyperopt_search_bounds must be a mapping")
+    unknown_search_bounds = set(search_bounds) - set(parameters)
+    if unknown_search_bounds:
+        raise ValueError(
+            "Hyperopt bounds reference parameters that are not optimized: "
+            + ", ".join(sorted(unknown_search_bounds))
+        )
     original_minimal_roi = getattr(strategy, "minimal_roi", {})
     if not isinstance(original_minimal_roi, dict):
         raise ValueError("strategy minimal_roi must be a mapping of minutes to returns")
@@ -606,9 +697,7 @@ def run_strategy_hyperopt(
             if optimize_stop_distance
             else stop_pips
         )
-        values = {
-            name: _sample_parameter_value(parameter, rng) for name, parameter in parameters.items()
-        }
+        values = _sample_strategy_parameters(parameters, rng, search_bounds)
         roi_parameters = _sample_roi_parameters(rng, timeframe, roi_volatility_per_5m)
         minimal_roi = _generate_roi_table(roi_parameters)
         tasks.append((attempt, values, roi_parameters, minimal_roi, candidate_stop_pips))

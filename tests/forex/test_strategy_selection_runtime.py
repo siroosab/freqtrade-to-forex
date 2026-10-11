@@ -1,8 +1,11 @@
+import random
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
 
+from freqtrade.forex.cli import build_parser
 from freqtrade.forex.models import OandaInstrument
 from freqtrade.forex.runner import DryRunPortfolioWorker, DryRunWorker, WorkerConfig
 from freqtrade.forex.strategy_catalog import validate_strategy_upload
@@ -11,7 +14,13 @@ from freqtrade.forex.strategy_execution import (
     load_strategy,
     strategy_informative_timeframes,
 )
-from freqtrade.forex.strategy_hyperopt import run_strategy_hyperopt
+from freqtrade.forex.strategy_hyperopt import (
+    DEFAULT_HYPEROPT_LOSS,
+    HYPEROPT_LOSS_FUNCTIONS,
+    _sample_strategy_parameters,
+    compute_hyperopt_objective,
+    run_strategy_hyperopt,
+)
 from freqtrade.forex.strategy_loop import Signal, StrategyStepResult
 
 
@@ -19,6 +28,79 @@ def test_strategy_upload_rejects_duplicate_classes_within_file() -> None:
     source = "from freqtrade.strategy import IStrategy\nclass Duplicate(IStrategy): pass\nclass Duplicate(IStrategy): pass\n"
     with pytest.raises(ValueError, match="unique within the file"):
         validate_strategy_upload("Duplicate.py", source)
+
+
+def test_forex_hyperopt_loss_balances_win_rate_profit_and_drawdown() -> None:
+    profitable = SimpleNamespace(
+        net_pl=Decimal("250"),
+        max_drawdown=Decimal("200"),
+        max_drawdown_rate=Decimal("0.02"),
+        win_rate=Decimal("0.8"),
+        total_costs=Decimal("0"),
+        starting_balance=Decimal("10000"),
+        trades=tuple(range(10)),
+    )
+    high_win_rate_without_profit = SimpleNamespace(
+        net_pl=Decimal("0"),
+        max_drawdown=Decimal("0"),
+        max_drawdown_rate=Decimal("0"),
+        win_rate=Decimal("1"),
+        total_costs=Decimal("0"),
+        starting_balance=Decimal("10000"),
+        trades=tuple(range(10)),
+    )
+
+    score = compute_hyperopt_objective(profitable, "ForexWinRateProfitHyperOptLoss")
+
+    assert score == Decimal("65.000")
+    assert score > compute_hyperopt_objective(
+        high_win_rate_without_profit,
+        "ForexWinRateProfitHyperOptLoss",
+    )
+    assert DEFAULT_HYPEROPT_LOSS == "ForexWinRateProfitHyperOptLoss"
+    assert DEFAULT_HYPEROPT_LOSS in HYPEROPT_LOSS_FUNCTIONS
+    args = build_parser().parse_args(["hyperopt", "--pair", "EUR/USD"])
+    assert args.hyperopt_loss == DEFAULT_HYPEROPT_LOSS
+
+
+def test_three_forex_strategies_search_beyond_their_legacy_parameter_bounds() -> None:
+    strategy_parameters = (
+        ("GoldScalpingStrategy", "15m", "XAU/USD", "ema_fast_period", 99),
+        ("CrudeOilScalpStrategy", "3m", "WTI/USD", "rsi_length", 100),
+        ("ForexMasterStrategy", "15m", "EUR/USD", "adx_fast_ema_length", 20),
+    )
+    for strategy_class, timeframe, pair, parameter_name, old_high in strategy_parameters:
+        strategy = load_strategy(strategy_class, timeframe, pair)
+        parameters = {
+            name: getattr(strategy, name)
+            for name in vars(type(strategy))
+            if hasattr(getattr(strategy, name, None), "low")
+            and getattr(getattr(strategy, name), "optimize", False)
+        }
+        search_bounds = strategy.hyperopt_search_bounds
+        assert search_bounds[parameter_name][1] > old_high
+        assert parameters[parameter_name].high <= old_high
+        sampled_candidates = [
+            _sample_strategy_parameters(
+                parameters,
+                random.Random(seed),
+                search_bounds,
+            )
+            for seed in range(100)
+        ]
+        out_of_original_bounds = next(
+            candidate
+            for candidate in sampled_candidates
+            if candidate[parameter_name] > parameters[parameter_name].high
+        )
+        assert out_of_original_bounds[parameter_name] > parameters[parameter_name].high
+        reloaded = load_strategy(
+            strategy_class,
+            timeframe,
+            pair,
+            parameter_values=out_of_original_bounds,
+        )
+        assert getattr(reloaded, parameter_name).value == out_of_original_bounds[parameter_name]
 
 
 def test_missing_strategy_error_lists_discovered_class_names() -> None:

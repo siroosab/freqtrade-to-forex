@@ -34,12 +34,13 @@ def test_strategy_hyperopt_evaluates_candidates_in_process_workers() -> None:
         risk_fraction=Decimal("0.01"),
         spread=Decimal("0.0001"),
         max_attempts=2,
-        hyperopt_loss="ProfitDrawDownHyperOptLoss",
+        hyperopt_loss="ForexWinRateProfitHyperOptLoss",
         workers=2,
     )
 
     assert len(candidates) == 2
     assert all(candidate["coverage"] == 2 for candidate in candidates)
+    assert all("validationWinRate" in candidate for candidate in candidates)
 
 
 def test_forex_master_matches_pine_crossover_signals() -> None:
@@ -145,6 +146,11 @@ def test_forex_master_exposes_indicator_parameters_for_hyperopt() -> None:
             "exit_band_offset",
         )
     )
+    assert strategy.band_length.high == 50
+    assert strategy.hyperopt_search_bounds["band_length"] == (3, 250)
+    assert strategy.hyperopt_search_bounds["adx_length"] == (2, 200)
+    assert strategy.hyperopt_search_bounds["adx_fast_ema_length"] == (2, 50)
+    assert strategy.hyperopt_search_bounds["adx_slow_ema_length"] == (3, 100)
 
 
 def test_forex_master_calculates_population_standard_deviation_bands() -> None:

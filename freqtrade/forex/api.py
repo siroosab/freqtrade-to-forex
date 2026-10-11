@@ -253,7 +253,7 @@ def format_hyperopt_report(report: dict) -> str:
         "",
         coverage_line,
         f"  Strategy: {report.get('strategy', 'ForexMasterStrategy')}",
-        f"  Loss function: {report.get('hyperoptLoss', 'ProfitDrawDownHyperOptLoss')}",
+        f"  Loss function: {report.get('hyperoptLoss', DEFAULT_HYPEROPT_LOSS)}",
         f"  Best parameters: {parameter_text(best_parameters)}",
         f"  Best minimal ROI: {parameter_text(best_minimal_roi)}",
         f"  ROI search parameters: {parameter_text(report.get('roiParameters') or {})}",

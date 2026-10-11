@@ -52,6 +52,12 @@ class CrudeOilScalpStrategy(IStrategy):
     rsi_high = IntParameter(60, 95, default=80, space="sell")
     rsi_low = IntParameter(5, 40, default=20, space="sell")
     sma_length = IntParameter(5, 200, default=70, space="buy")
+    hyperopt_search_bounds = {
+        "rsi_length": (2, 200),
+        "rsi_high": (51, 99),
+        "rsi_low": (1, 49),
+        "sma_length": (3, 500),
+    }
 
     def __init__(self, config: dict | None = None) -> None:
         super().__init__(config or {})

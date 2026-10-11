@@ -31,6 +31,16 @@ class GoldScalpingStrategy(IStrategy):
     atr_period = IntParameter(5, 30, default=14, space="sell")
     atr_stop_multiplier = DecimalParameter(0.5, 3.0, default=1.0, decimals=1, space="sell")
     take_profit_distance = DecimalParameter(0.5, 10.0, default=2.0, decimals=1, space="sell")
+    hyperopt_search_bounds = {
+        "ema_fast_period": (5, 200),
+        "ema_slow_period": (30, 800),
+        "rsi_period": (2, 60),
+        "rsi_entry_low": (10, 49),
+        "rsi_entry_high": (51, 90),
+        "atr_period": (2, 100),
+        "atr_stop_multiplier": (0.2, 8.0),
+        "take_profit_distance": (0.2, 40.0),
+    }
 
     def __init__(self, config: dict | None = None) -> None:
         super().__init__(config or {})

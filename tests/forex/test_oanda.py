@@ -1167,7 +1167,7 @@ def test_forex_research_cli_parses_strategy_options(tmp_path: Path) -> None:
     assert args.command == "hyperopt"
     assert args.epochs == 12
     assert args.refresh_data is True
-    assert args.hyperopt_loss == "ProfitDrawDownHyperOptLoss"
+    assert args.hyperopt_loss == "ForexWinRateProfitHyperOptLoss"
     assert args.results_dir == str(tmp_path)
     assert args.strategy == "ForexEmaStrategy"
     assert args.stop_pips == Decimal("10")

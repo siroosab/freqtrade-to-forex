@@ -289,7 +289,7 @@ def test_gold_scalping_hyperopt_samples_all_declared_parameters() -> None:
         risk_fraction=Decimal("0.01"),
         spread=Decimal("0.1"),
         max_attempts=2,
-        hyperopt_loss="ProfitDrawDownHyperOptLoss",
+        hyperopt_loss="ForexWinRateProfitHyperOptLoss",
     )
 
     expected_parameters = {
@@ -308,3 +308,8 @@ def test_gold_scalping_hyperopt_samples_all_declared_parameters() -> None:
         sampled = candidate["parameters"]
         assert sampled["ema_fast_period"] < sampled["ema_slow_period"]
         assert sampled["rsi_entry_low"] < sampled["rsi_entry_high"]
+        assert 5 <= sampled["ema_fast_period"] <= 200
+        assert 30 <= sampled["ema_slow_period"] <= 800
+        assert 2 <= sampled["rsi_period"] <= 60
+        assert 2 <= sampled["atr_period"] <= 100
+        assert "validationWinRate" in candidate
