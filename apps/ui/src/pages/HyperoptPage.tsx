@@ -22,6 +22,45 @@ import { useUiStore } from '../store/useUiStore'
 
 const TIMEFRAMES = ['M1', 'M5', 'M15', 'M30', 'H1', 'H2', 'H4', 'H6', 'H8', 'H12', 'D1', 'W1', 'MN1']
 
+const CURRENCY_NAMES: Record<string, string> = {
+  AUD: 'دلار استرالیا',
+  CAD: 'دلار کانادا',
+  CHF: 'فرانک سوئیس',
+  CNH: 'یوان چین',
+  EUR: 'یورو',
+  GBP: 'پوند بریتانیا',
+  JPY: 'ین ژاپن',
+  NZD: 'دلار نیوزیلند',
+  USD: 'دلار آمریکا',
+}
+
+const COMMODITY_DESCRIPTIONS: Array<[string[], string]> = [
+  [['XAU', 'GOLD'], 'طلا؛ فلز گران‌بها'],
+  [['XAG', 'SILVER'], 'نقره؛ فلز گران‌بها'],
+  [['WTICO', 'WTI', 'USOIL', 'XTI'], 'نفت خام آمریکا (WTI)؛ انرژی'],
+  [['BRENT', 'BCO', 'UKOIL', 'XBR'], 'نفت برنت؛ انرژی'],
+  [['NGAS', 'NATGAS'], 'گاز طبیعی؛ انرژی'],
+  [['SUGAR', 'SUG'], 'شکر؛ کالای کشاورزی'],
+  [['COCOA'], 'کاکائو؛ کالای کشاورزی'],
+  [['COFFEE'], 'قهوه؛ کالای کشاورزی'],
+  [['CORN', 'MAIZE'], 'ذرت؛ کالای کشاورزی'],
+  [['WHEAT'], 'گندم؛ کالای کشاورزی'],
+  [['COTTON'], 'پنبه؛ کالای کشاورزی'],
+]
+
+function describePair(pair: string): string {
+  const normalizedPair = pair.replace(/[^a-z0-9]/gi, '').toUpperCase()
+  for (const [symbols, description] of COMMODITY_DESCRIPTIONS) {
+    if (symbols.some((symbol) => normalizedPair.startsWith(symbol))) return description
+  }
+
+  const [base, quote] = pair.toUpperCase().split(/[/_-]/)
+  if (base && quote && CURRENCY_NAMES[base] && CURRENCY_NAMES[quote]) {
+    return `جفت‌ارز فارکس؛ ${CURRENCY_NAMES[base]} در برابر ${CURRENCY_NAMES[quote]}`
+  }
+  return 'نوع دارایی از نماد این جفت قابل تشخیص نیست.'
+}
+
 function initialDateRange(): { startDate: string; endDate: string } {
   const end = new Date()
   const start = new Date(end)
@@ -408,6 +447,7 @@ export function HyperoptPage() {
               <select value={pair} onChange={(event) => setPair(event.target.value)}>
                 {(pairs.length ? pairs : ['EUR/USD']).map((item) => <option key={item}>{item}</option>)}
               </select>
+              <small className="pair-description" aria-live="polite">{describePair(pair)}</small>
             </label>
             <label className="field-block">
               <span>Timeframe</span>
