@@ -12,6 +12,7 @@ type ChartSignal = {
   roiPercent?: number
 }
 type ChartTrade = { time?: string; createdAt?: string; side: 'BUY' | 'SELL'; price?: number; pnl?: string; source?: string; markerType?: 'entry' | 'exit' }
+export type StrategyChartIndicator = { panel: 'overlay' | 'lower'; values: Array<number | null> }
 
 export type ForexChartData = {
   pair: string
@@ -21,7 +22,7 @@ export type ForexChartData = {
   candles: ChartCandle[]
   signals: ChartSignal[]
   trades: ChartTrade[]
-  indicators: { ema: number[] }
+  indicators: { ema: number[]; strategy?: Record<string, StrategyChartIndicator> }
 }
 
 class ChartIndicatorSet {
@@ -36,13 +37,46 @@ class ChartIndicatorSet {
   }
 }
 
-export function ForexChart({ data, onPriceSelect }: { data: ForexChartData; onPriceSelect?: (price: number) => void }) {
+const STRATEGY_INDICATOR_COLORS = ['#22d3ee', '#f472b6', '#a3e635', '#fb923c', '#818cf8', '#2dd4bf', '#e879f9']
+
+function indicatorPath(
+  values: Array<number | null>,
+  startIndex: number,
+  scaleX: (index: number) => number,
+  scaleY: (value: number) => number,
+) {
+  let path = ''
+  let segmentOpen = false
+  values.forEach((value, offset) => {
+    if (value === null || !Number.isFinite(value)) {
+      segmentOpen = false
+      return
+    }
+    path += `${segmentOpen ? 'L' : 'M'}${scaleX(startIndex + offset)},${scaleY(value)} `
+    segmentOpen = true
+  })
+  return path
+}
+
+export function ForexChart({
+  data,
+  onPriceSelect,
+  selectedIndicators = [],
+  large = false,
+  analysisMode = false,
+}: {
+  data: ForexChartData
+  onPriceSelect?: (price: number) => void
+  selectedIndicators?: string[]
+  large?: boolean
+  analysisMode?: boolean
+}) {
   const width = 960
-  const height = 340
+  const height = large ? 520 : 340
   const padding = 28
   const plotRight = width - 78
   const plotWidth = plotRight - padding
-  const [visible, setVisible] = useState({ candles: true, close: false, ema20: true, ema50: true, ema100: true, buy: false, sell: false, signals: false, roiTargets: false, trades: false })
+  const [visible, setVisible] = useState({ candles: true, close: false, ema20: true, ema50: true, ema100: true, buy: analysisMode, sell: analysisMode, signals: analysisMode, roiTargets: false, trades: analysisMode })
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null)
   const [zoomLevel, setZoomLevel] = useState(0)
   const [panOffset, setPanOffset] = useState(0)
@@ -69,6 +103,11 @@ export function ForexChart({ data, onPriceSelect }: { data: ForexChartData; onPr
     const ema20 = data.indicators.ema.length === closes.length ? data.indicators.ema : ChartIndicatorSet.ema(closes, 20)
     const ema50 = ChartIndicatorSet.ema(closes, 50)
     const ema100 = ChartIndicatorSet.ema(closes, 100)
+    const selectedSeries = selectedIndicators
+      .map((name) => ({ name, ...data.indicators.strategy?.[name] }))
+      .filter((indicator): indicator is { name: string; panel: 'overlay' | 'lower'; values: Array<number | null> } => Boolean(indicator.panel && indicator.values))
+    const overlaySeries = selectedSeries.filter((indicator) => indicator.panel === 'overlay')
+    const lowerSeries = selectedSeries.filter((indicator) => indicator.panel === 'lower')
     const scaleX = (index: number) => padding + ((index - visibleStartIndex) / Math.max(visibleEndIndex - visibleStartIndex, 1)) * plotWidth
     const startTime = Date.parse(visibleCandles[0]?.time ?? '')
     const endTime = Date.parse(visibleCandles[visibleCandles.length - 1]?.time ?? '')
@@ -80,7 +119,7 @@ export function ForexChart({ data, onPriceSelect }: { data: ForexChartData; onPr
       const time = Date.parse(trade.time ?? trade.createdAt ?? '')
       return time >= startTime && time <= endTime
     })
-    const allPrices = [...values, ...ema20.slice(visibleStartIndex, visibleEndIndex + 1), ...ema50.slice(visibleStartIndex, visibleEndIndex + 1), ...ema100.slice(visibleStartIndex, visibleEndIndex + 1), ...visibleSignals.flatMap((signal) => [signal.price, signal.roiTargetPrice].filter((price): price is number => typeof price === 'number' && Number.isFinite(price))), ...visibleTrades.map((trade) => trade.price).filter((price): price is number => typeof price === 'number')]
+    const allPrices = [...values, ...ema20.slice(visibleStartIndex, visibleEndIndex + 1), ...ema50.slice(visibleStartIndex, visibleEndIndex + 1), ...ema100.slice(visibleStartIndex, visibleEndIndex + 1), ...overlaySeries.flatMap((indicator) => indicator.values.slice(visibleStartIndex, visibleEndIndex + 1).filter((value): value is number => value !== null && Number.isFinite(value))), ...visibleSignals.flatMap((signal) => [signal.price, signal.roiTargetPrice].filter((price): price is number => typeof price === 'number' && Number.isFinite(price))), ...visibleTrades.map((trade) => trade.price).filter((price): price is number => typeof price === 'number')]
     const min = Math.min(...allPrices)
     const max = Math.max(...allPrices)
     const scaleY = (value: number) => height - padding - ((value - min) / Math.max(max - min, 0.00001)) * (height - padding * 2)
@@ -124,8 +163,19 @@ export function ForexChart({ data, onPriceSelect }: { data: ForexChartData; onPr
       return { ...trade, x: scaleX(index), y: scaleY(trade.price ?? data.candles[index].close) }
     }).filter(Boolean) as Array<ChartTrade & { x: number; y: number }>
     const candleWidth = Math.max(3, Math.min(16, plotWidth / Math.max(visibleCount, 1) * 0.74))
-    return { line, ema20, ema50, ema100, signalMarkers, roiMarkers, tradeMarkers, scaleX, scaleY, priceAtY, percentageTicks, min, max, candleWidth }
-  }, [data, plotWidth, visibleCount, visibleEndIndex, visibleReferencePrice, visibleStartIndex])
+    const lowerPanels = lowerSeries.flatMap((indicator, panelIndex) => {
+      const values = indicator.values.slice(visibleStartIndex, visibleEndIndex + 1)
+      const finite = values.filter((value): value is number => value !== null && Number.isFinite(value))
+      if (!finite.length) return []
+      const panelMin = Math.min(...finite)
+      const panelMax = Math.max(...finite)
+      const panelPadding = Math.max((panelMax - panelMin) * 0.12, Math.abs(panelMax) * 0.00001, 0.000001)
+      const scalePanelY = (value: number) => 104 - ((value - (panelMin - panelPadding)) / ((panelMax + panelPadding) - (panelMin - panelPadding))) * 80
+      const path = indicatorPath(values, visibleStartIndex, scaleX, scalePanelY)
+      return [{ name: indicator.name, color: STRATEGY_INDICATOR_COLORS[panelIndex % STRATEGY_INDICATOR_COLORS.length], path, scalePanelY }]
+    })
+    return { line, ema20, ema50, ema100, signalMarkers, roiMarkers, tradeMarkers, scaleX, scaleY, priceAtY, percentageTicks, min, max, candleWidth, overlaySeries, lowerPanels }
+  }, [data, height, plotWidth, selectedIndicators, visibleCount, visibleEndIndex, visibleReferencePrice, visibleStartIndex])
 
   const hoveredCandle = hoveredIndex === null ? null : data.candles[hoveredIndex]
   const hoveredSignal = hoveredCandle ? data.signals.find((signal) => signal.time === hoveredCandle.time) : undefined
@@ -154,6 +204,11 @@ export function ForexChart({ data, onPriceSelect }: { data: ForexChartData; onPr
     const y = Math.max(padding, Math.min(height - padding, position.y))
     setReference({ key: dataKey, price: chart.priceAtY(y) })
   }
+  const updateHoveredCandle = (event: React.PointerEvent<SVGSVGElement>) => {
+    const chartX = pointerPosition(event.currentTarget, event.clientX, event.clientY).x
+    const index = visibleStartIndex + Math.round(((chartX - padding) / plotWidth) * Math.max(visibleEndIndex - visibleStartIndex, 1))
+    setHoveredIndex(Math.max(visibleStartIndex, Math.min(visibleEndIndex, index)))
+  }
 
   return (
     <div className="forex-chart-shell">
@@ -169,7 +224,7 @@ export function ForexChart({ data, onPriceSelect }: { data: ForexChartData; onPr
         </div>
       </div>
       <div className="forex-chart-stage">
-        <svg className={isPanning ? 'forex-chart is-panning' : 'forex-chart'} viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${data.pair} price chart with percentage scale. Drag horizontally to pan through candles.`} onPointerDown={(event) => {
+        <svg className={`forex-chart${isPanning ? ' is-panning' : ''}${large ? ' is-large' : ''}`} viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${data.pair} price chart with percentage scale. Drag horizontally to pan through candles.`} onPointerDown={(event) => {
           if (event.button !== 0 || isReferenceDragging.current) return
           suppressClick.current = false
           const position = pointerPosition(event.currentTarget, event.clientX, event.clientY)
@@ -231,6 +286,7 @@ export function ForexChart({ data, onPriceSelect }: { data: ForexChartData; onPr
           {visible.ema20 && <polyline points={chart.line(chart.ema20.slice(visibleStartIndex, visibleEndIndex + 1), visibleStartIndex)} fill="none" stroke="#fbbf24" strokeWidth="1.5" strokeDasharray="5 4" />}
           {visible.ema50 && <polyline points={chart.line(chart.ema50.slice(visibleStartIndex, visibleEndIndex + 1), visibleStartIndex)} fill="none" stroke="#c084fc" strokeWidth="1.5" strokeDasharray="5 4" />}
           {visible.ema100 && <polyline points={chart.line(chart.ema100.slice(visibleStartIndex, visibleEndIndex + 1), visibleStartIndex)} fill="none" stroke="#f97316" strokeWidth="1.5" strokeDasharray="5 4" />}
+          {chart.overlaySeries.map((indicator, index) => <path key={indicator.name} d={indicatorPath(indicator.values.slice(visibleStartIndex, visibleEndIndex + 1), visibleStartIndex, chart.scaleX, chart.scaleY)} fill="none" stroke={STRATEGY_INDICATOR_COLORS[index % STRATEGY_INDICATOR_COLORS.length]} strokeWidth="1.8"><title>{indicator.name}</title></path>)}
           {visible.signals && visible.roiTargets && chart.roiMarkers.map((signal, index) => visible[signal.side === 'BUY' ? 'buy' : 'sell'] && <g key={`${signal.time}-${signal.side}-roi-${index}`}><line x1={signal.x} x2={signal.x} y1={signal.y} y2={signal.roiY} stroke="#fbbf24" strokeWidth="1.5" strokeDasharray="3 3" opacity="0.8" /><polygon points={`${signal.x},${signal.roiY - 6} ${signal.x + 6},${signal.roiY} ${signal.x},${signal.roiY + 6} ${signal.x - 6},${signal.roiY}`} fill="#0f172a" stroke="#fbbf24" strokeWidth="2"><title>Projected ROI target +{signal.roiPercent?.toFixed(2)}%; not an actual or executed exit</title></polygon><text x={signal.x + 9} y={signal.roiY - 5} fill="#fcd34d" fontSize="10">ROI +{signal.roiPercent?.toFixed(2)}% · projected</text></g>)}
           {visible.signals && chart.signalMarkers.map((signal) => visible[signal.side === 'BUY' ? 'buy' : 'sell'] && <g key={`${signal.time}-${signal.side}`}><circle cx={signal.x} cy={signal.y} r="7" fill="none" stroke={signal.side === 'BUY' ? '#a7f3d0' : '#fecdd3'} strokeWidth="1" opacity="0.75" /><circle cx={signal.x} cy={signal.y} r="4" fill={signal.side === 'BUY' ? '#34d399' : '#fb7185'} /><text x={signal.x + 9} y={signal.y - 8} fill={signal.side === 'BUY' ? '#86efac' : '#fda4af'} fontSize="11">Signal {signal.side}</text></g>)}
           {visible.trades && chart.tradeMarkers.map((trade, index) => {
@@ -272,6 +328,24 @@ export function ForexChart({ data, onPriceSelect }: { data: ForexChartData; onPr
         </svg>
         {hoveredCandle && <div className="chart-tooltip"><strong>{new Date(hoveredCandle.time).toLocaleString()}</strong><span>O {hoveredCandle.open.toFixed(5)} · H {hoveredCandle.high.toFixed(5)}</span><span>L {hoveredCandle.low.toFixed(5)} · C {hoveredCandle.close.toFixed(5)}</span><span>Change from zero {((hoveredCandle.close / visibleReferencePrice - 1) * 100) > 0 ? '+' : ''}{((hoveredCandle.close / visibleReferencePrice - 1) * 100).toFixed(2)}%</span>{hoveredSignal && <span className={hoveredSignal.side === 'BUY' ? 'tooltip-buy' : 'tooltip-sell'}>Strategy {hoveredSignal.side} · {hoveredSignal.sourceTimeframe}</span>}</div>}
       </div>
+      {chart.lowerPanels.map((panel) => (
+        <div className="strategy-indicator-panel" key={panel.name}>
+          <div className="strategy-indicator-heading"><strong style={{ color: panel.color }}>{panel.name}</strong><span>Strategy indicator</span></div>
+          <svg
+            className="strategy-indicator-chart"
+            viewBox={`0 0 ${width} 120`}
+            role="img"
+            aria-label={`${panel.name} indicator panel`}
+            onPointerMove={updateHoveredCandle}
+            onPointerLeave={() => setHoveredIndex(null)}
+          >
+            <line x1={padding} x2={plotRight} y1="64" y2="64" className="chart-zero-line" />
+            <path d={panel.path} fill="none" stroke={panel.color} strokeWidth="1.8" />
+            {hoveredIndex !== null && <line x1={chart.scaleX(hoveredIndex)} x2={chart.scaleX(hoveredIndex)} y1="12" y2="108" stroke="#cbd5e1" strokeOpacity="0.35" strokeDasharray="3 3" />}
+            <text x={plotRight + 10} y="18" className="indicator-panel-value">{data.indicators.strategy?.[panel.name]?.values[visibleEndIndex]?.toPrecision(6) ?? '—'}</text>
+          </svg>
+        </div>
+      ))}
       <div className="chart-legend"><button type="button" className={visible.candles ? 'legend-toggle active' : 'legend-toggle'} onClick={() => toggle('candles')}><i className="legend-candle" />Candles</button><button type="button" className={visible.close ? 'legend-toggle active' : 'legend-toggle'} onClick={() => toggle('close')}><i className="legend-line price" />Close</button><button type="button" className={visible.ema20 ? 'legend-toggle active' : 'legend-toggle'} onClick={() => toggle('ema20')}><i className="legend-line ema" />EMA 20</button><button type="button" className={visible.ema50 ? 'legend-toggle active' : 'legend-toggle'} onClick={() => toggle('ema50')}><i className="legend-line ema50" />EMA 50</button><button type="button" className={visible.ema100 ? 'legend-toggle active' : 'legend-toggle'} onClick={() => toggle('ema100')}><i className="legend-line ema100" />EMA 100</button><button type="button" className={visible.trades ? 'legend-toggle active' : 'legend-toggle'} onClick={() => toggle('trades')}><i className="legend-dot trade" />Trades</button><button type="button" className={visible.signals ? 'legend-toggle active' : 'legend-toggle'} onClick={() => toggle('signals')}><i className="legend-dot buy" />Signals</button><button type="button" className={visible.roiTargets ? 'legend-toggle active' : 'legend-toggle'} onClick={() => toggle('roiTargets')}><i className="legend-dot roi-target" />ROI targets · projected only</button><button type="button" className={visible.buy ? 'legend-toggle active' : 'legend-toggle'} onClick={() => toggle('buy')}><i className="legend-dot buy" />Buy</button><button type="button" className={visible.sell ? 'legend-toggle active' : 'legend-toggle'} onClick={() => toggle('sell')}><i className="legend-dot sell" />Sell</button></div>
     </div>
   )

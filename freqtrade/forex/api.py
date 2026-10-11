@@ -2376,6 +2376,81 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 signals: list[dict] = []
                 previous = "flat"
                 strategy_signals = strategy_adapter.signal_series(frame)
+                indicator_frame = strategy_adapter.indicator_frame(frame)
+                source_times = pd.to_datetime(indicator_frame["date"], utc=True)
+                chart_times = pd.to_datetime(view_times, utc=True)
+                source_positions = source_times.searchsorted(chart_times, side="right") - 1
+                strategy_indicators: dict[str, dict[str, object]] = {}
+                excluded_indicator_columns = {
+                    "date",
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                    "volume",
+                    "enter_long",
+                    "enter_short",
+                    "exit_long",
+                    "exit_short",
+                }
+                oscillator_names = (
+                    "rsi",
+                    "adx",
+                    "di_",
+                    "macd",
+                    "cci",
+                    "stoch",
+                    "mfi",
+                    "atr",
+                    "roc",
+                    "williams",
+                    "momentum",
+                    "oscillator",
+                    "std_dev",
+                )
+                close_values = pd.to_numeric(
+                    indicator_frame["close"], errors="coerce"
+                ).to_numpy(dtype=float)
+                for column in indicator_frame.columns:
+                    name = str(column)
+                    if (
+                        name.lower() in excluded_indicator_columns
+                        or name.lower().startswith(("enter_", "exit_"))
+                    ):
+                        continue
+                    numeric_values = pd.to_numeric(
+                        indicator_frame[name], errors="coerce"
+                    ).to_numpy(dtype=float)
+                    finite_values = numeric_values[pd.notna(numeric_values)]
+                    if not len(finite_values):
+                        continue
+                    panel = "lower"
+                    if not any(token in name.lower() for token in oscillator_names):
+                        comparable = (
+                            pd.notna(numeric_values)
+                            & pd.notna(close_values)
+                            & (close_values != 0)
+                        )
+                        if comparable.any():
+                            relative_distance = (
+                                abs(numeric_values[comparable] - close_values[comparable])
+                                / abs(close_values[comparable])
+                            )
+                            if float(pd.Series(relative_distance).median()) <= 0.25:
+                                panel = "overlay"
+                    chart_values = [
+                        (
+                            float(numeric_values[position])
+                            if 0 <= position < len(numeric_values)
+                            and pd.notna(numeric_values[position])
+                            else None
+                        )
+                        for position in source_positions
+                    ]
+                    strategy_indicators[name] = {
+                        "panel": panel,
+                        "values": chart_values,
+                    }
                 for index, strategy_signal in enumerate(strategy_signals):
                     signal = strategy_signal.value
                     if signal in {"long", "short"} and signal != previous:
@@ -2473,7 +2548,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     ],
                     "signals": signals,
                     "trades": [trade for trade in chart_trades if trade["pair"] == normalized_pair],
-                    "indicators": {"ema": []},
+                    "indicators": {"ema": [], "strategy": strategy_indicators},
                 }
                 if len(chart_cache) >= chart_cache_capacity:
                     chart_cache.pop(next(iter(chart_cache)))

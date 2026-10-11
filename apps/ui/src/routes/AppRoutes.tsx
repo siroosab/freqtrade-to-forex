@@ -8,6 +8,7 @@ import { AutoHyperoptPage } from '../pages/AutoHyperoptPage'
 import { DashboardPage } from '../pages/DashboardPage'
 import { MarketPage } from '../pages/MarketPage'
 import { OrdersPage } from '../pages/OrdersPage'
+import { IndicatorsPage } from '../pages/IndicatorsPage'
 import { RiskPage } from '../pages/RiskPage'
 import { SettingsPage } from '../pages/SettingsPage'
 import { StrategyCenterPage } from '../pages/StrategyCenterPage'
@@ -86,6 +87,14 @@ export function AppRoutes() {
           element={
             <ProtectedRoute allowedRoles={['operator', 'admin']}>
               <OrdersPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/indicators"
+          element={
+            <ProtectedRoute allowedRoles={['operator', 'admin']}>
+              <IndicatorsPage />
             </ProtectedRoute>
           }
         />

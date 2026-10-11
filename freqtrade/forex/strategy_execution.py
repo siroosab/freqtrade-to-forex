@@ -323,6 +323,10 @@ class FreqtradeStrategyAdapter:
             for long_signal, short_signal in zip(long_signals, short_signals, strict=True)
         ]
 
+    def indicator_frame(self, candles: pd.DataFrame) -> pd.DataFrame:
+        """Return the populated strategy frame for charting its indicator series."""
+        return self._populate(candles)
+
     def exit_signal(self, candles: pd.DataFrame, direction: Signal) -> bool:
         if hasattr(self.strategy, "signal"):
             return False

@@ -6,6 +6,7 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
+import pandas as pd
 from fastapi.testclient import TestClient
 
 from freqtrade.forex.api import (
@@ -773,6 +774,16 @@ def test_hyperopt_approval_flows_into_chart_strategy(
         def signal_series(self, candles):
             return [self.signal(candles.iloc[: index + 1]) for index in range(len(candles))]
 
+        def indicator_frame(self, candles):
+            frame = candles.copy()
+            close = pd.to_numeric(frame["close"], errors="coerce")
+            frame["basis"] = close
+            frame["upper"] = close + 0.001
+            frame["lower"] = close - 0.001
+            frame["adx_fast"] = 20.0
+            frame["adx_slow"] = 25.0
+            return frame
+
     def fake_hyperopt(*args, **kwargs):
         hyperopt_options.update(kwargs)
         return [
@@ -1032,6 +1043,14 @@ def test_hyperopt_approval_flows_into_chart_strategy(
     assert chart.status_code == 200, chart.text
     assert chart.json()["approvedStrategy"] == "ForexMasterStrategy"
     assert chart.json()["approvedTimeframe"] == "M15"
+    strategy_indicators = chart.json()["indicators"]["strategy"]
+    assert {"basis", "upper", "lower", "adx_fast", "adx_slow"} <= set(strategy_indicators)
+    assert strategy_indicators["basis"]["panel"] == "overlay"
+    assert strategy_indicators["adx_fast"]["panel"] == "lower"
+    assert all(
+        len(indicator["values"]) == len(chart.json()["candles"])
+        for indicator in strategy_indicators.values()
+    )
     chart_signals = chart.json()["signals"]
     assert [signal["side"] for signal in chart_signals] == ["BUY", "SELL"]
     assert [signal["roiPercent"] for signal in chart_signals] == [1.0, 1.0]
