@@ -1843,6 +1843,11 @@
   border-radius: 12px;
   background: linear-gradient(180deg, rgba(15, 23, 42, 0.9), rgba(2, 6, 23, 0.72));
   touch-action: none;
+  cursor: grab;
+}
+
+.forex-chart.is-panning {
+  cursor: grabbing;
 }
 
 .chart-zero-line {

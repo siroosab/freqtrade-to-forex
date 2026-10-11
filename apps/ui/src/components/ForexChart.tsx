@@ -43,18 +43,23 @@ export function ForexChart({ data, onPriceSelect }: { data: ForexChartData; onPr
   const [visible, setVisible] = useState({ candles: true, close: false, ema20: true, ema50: true, ema100: true, buy: false, sell: false, signals: false, roiTargets: false, trades: false })
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null)
   const [zoomLevel, setZoomLevel] = useState(0)
+  const [panOffset, setPanOffset] = useState(0)
+  const [isPanning, setIsPanning] = useState(false)
   const dataKey = `${data.pair}:${data.timeframe}`
   const [reference, setReference] = useState(() => ({
     key: dataKey,
     price: data.candles[Math.floor(data.candles.length / 2)]?.close ?? data.candles[0]?.close ?? 1,
   }))
   const isReferenceDragging = useRef(false)
+  const panStart = useRef<{ pointerId: number; x: number; offset: number; moved: boolean } | null>(null)
+  const suppressClick = useRef(false)
   const visibleReferencePrice = reference.key === dataKey
     ? reference.price
     : data.candles[Math.floor(data.candles.length / 2)]?.close ?? data.candles[0]?.close ?? 1
   const visibleCount = Math.max(1, Math.ceil(data.candles.length / (1.5 ** zoomLevel)))
-  const visibleStartIndex = Math.max(0, data.candles.length - visibleCount)
-  const visibleEndIndex = Math.max(visibleStartIndex, data.candles.length - 1)
+  const maxPanOffset = Math.max(0, data.candles.length - visibleCount)
+  const visibleStartIndex = Math.max(0, data.candles.length - visibleCount - Math.min(panOffset, maxPanOffset))
+  const visibleEndIndex = Math.max(visibleStartIndex, Math.min(data.candles.length - 1, visibleStartIndex + visibleCount - 1))
   const chart = useMemo(() => {
     const closes = data.candles.map((candle) => candle.close)
     const visibleCandles = data.candles.slice(visibleStartIndex, visibleEndIndex + 1)
@@ -125,7 +130,15 @@ export function ForexChart({ data, onPriceSelect }: { data: ForexChartData; onPr
   const toggle = (key: keyof typeof visible) => setVisible((current) => ({ ...current, [key]: !current[key] }))
   const zoom = (direction: -1 | 1) => {
     setHoveredIndex(null)
-    setZoomLevel((current) => Math.max(0, Math.min(4, current + direction)))
+    const nextZoomLevel = Math.max(0, Math.min(4, zoomLevel + direction))
+    const nextVisibleCount = Math.max(1, Math.ceil(data.candles.length / (1.5 ** nextZoomLevel)))
+    setZoomLevel(nextZoomLevel)
+    setPanOffset((current) => Math.min(current, Math.max(0, data.candles.length - nextVisibleCount)))
+  }
+  const resetZoom = () => {
+    setZoomLevel(0)
+    setPanOffset(0)
+    setHoveredIndex(null)
   }
   const pointerPosition = (svg: SVGSVGElement, clientX: number, clientY: number) => {
     const point = svg.createSVGPoint()
@@ -150,19 +163,55 @@ export function ForexChart({ data, onPriceSelect }: { data: ForexChartData; onPr
         <div className="chart-zoom-controls" aria-label="Chart zoom controls">
           <button type="button" aria-label="Zoom out" title="Zoom out" onClick={() => zoom(-1)} disabled={zoomLevel === 0}>-</button>
           <button type="button" aria-label="Zoom in" title="Zoom in" onClick={() => zoom(1)} disabled={zoomLevel === 4 || data.candles.length <= 1}>+</button>
-          <button type="button" className="chart-zoom-reset" onClick={() => { setZoomLevel(0); setHoveredIndex(null) }} disabled={zoomLevel === 0}>Reset zoom</button>
+          <button type="button" className="chart-zoom-reset" onClick={resetZoom} disabled={zoomLevel === 0 && visibleStartIndex === 0}>Reset zoom</button>
         </div>
       </div>
       <div className="forex-chart-stage">
-        <svg className="forex-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${data.pair} price chart with percentage scale`} onClick={() => { if (!isReferenceDragging.current && hoveredCandle) onPriceSelect?.(hoveredCandle.close) }} onPointerMove={(event) => {
+        <svg className={isPanning ? 'forex-chart is-panning' : 'forex-chart'} viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`${data.pair} price chart with percentage scale. Drag horizontally to pan through candles.`} onPointerDown={(event) => {
+          if (event.button !== 0 || isReferenceDragging.current) return
+          suppressClick.current = false
+          const position = pointerPosition(event.currentTarget, event.clientX, event.clientY)
+          panStart.current = { pointerId: event.pointerId, x: position.x, offset: Math.min(panOffset, maxPanOffset), moved: false }
+          event.currentTarget.setPointerCapture(event.pointerId)
+        }} onPointerMove={(event) => {
           if (isReferenceDragging.current) {
             moveReferenceToPointer(event)
             return
           }
           const chartX = pointerPosition(event.currentTarget, event.clientX, event.clientY).x
+          const currentPan = panStart.current
+          if (currentPan?.pointerId === event.pointerId) {
+            const delta = chartX - currentPan.x
+            if (Math.abs(delta) >= 3) {
+              currentPan.moved = true
+              setIsPanning(true)
+              setHoveredIndex(null)
+            }
+            if (currentPan.moved) {
+              const offset = currentPan.offset + Math.round((delta / plotWidth) * visibleCount)
+              setPanOffset(Math.max(0, Math.min(maxPanOffset, offset)))
+              return
+            }
+          }
           const index = visibleStartIndex + Math.round(((chartX - padding) / plotWidth) * Math.max(visibleEndIndex - visibleStartIndex, 1))
           setHoveredIndex(Math.max(visibleStartIndex, Math.min(visibleEndIndex, index)))
-        }} onPointerLeave={() => { if (!isReferenceDragging.current) setHoveredIndex(null) }}>
+        }} onPointerUp={(event) => {
+          if (panStart.current?.pointerId !== event.pointerId) return
+          suppressClick.current = panStart.current.moved
+          panStart.current = null
+          setIsPanning(false)
+          if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
+        }} onPointerCancel={(event) => {
+          if (panStart.current?.pointerId !== event.pointerId) return
+          panStart.current = null
+          setIsPanning(false)
+        }} onClick={() => {
+          if (suppressClick.current) {
+            suppressClick.current = false
+            return
+          }
+          if (!isReferenceDragging.current && hoveredCandle) onPriceSelect?.(hoveredCandle.close)
+        }} onPointerLeave={() => { if (!isReferenceDragging.current && !panStart.current) setHoveredIndex(null) }}>
           {visible.candles && data.candles.slice(visibleStartIndex, visibleEndIndex + 1).map((candle, offset) => {
             const index = visibleStartIndex + offset
             const x = chart.scaleX(index)
