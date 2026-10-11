@@ -3,13 +3,44 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from numbers import Integral
 from typing import Protocol
 
 import pandas as pd
+import talib.abstract as ta
 
 
 class ForexFeature(Protocol):
     def __call__(self, dataframe: pd.DataFrame) -> pd.DataFrame: ...
+
+
+def add_chained_ema_indicators(
+    dataframe: pd.DataFrame,
+    ema_count: int,
+    timeperiod: int,
+) -> pd.DataFrame:
+    """Add chained EMA columns and per-candle counts above and below ``ema_x_2``."""
+    if not isinstance(ema_count, Integral) or isinstance(ema_count, bool) or ema_count < 1:
+        raise ValueError("ema_count must be a positive integer")
+    if not isinstance(timeperiod, Integral) or isinstance(timeperiod, bool) or timeperiod < 1:
+        raise ValueError("timeperiod must be a positive integer")
+
+    ema_columns = ["ema_x_2"]
+    dataframe[ema_columns[0]] = ta.EMA(dataframe["close"], timeperiod=2)
+
+    for index in range(1, int(ema_count)):
+        column = f"ema_x_{index + 2}"
+        dataframe[column] = ta.EMA(
+            dataframe[ema_columns[-1]],
+            timeperiod=int(timeperiod),
+        )
+        ema_columns.append(column)
+
+    baseline = dataframe["ema_x_2"]
+    subsequent_emas = dataframe.loc[:, ema_columns[1:]]
+    dataframe["count_hi"] = subsequent_emas.gt(baseline, axis=0).sum(axis=1).astype("int64")
+    dataframe["count_low"] = subsequent_emas.lt(baseline, axis=0).sum(axis=1).astype("int64")
+    return dataframe
 
 
 class ForexFeaturePipeline:

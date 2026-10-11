@@ -177,6 +177,7 @@ def test_forex_master_calculates_population_standard_deviation_bands() -> None:
     assert result["upper"].iloc[-1] == 3.0
     assert result["lower"].iloc[-1] == 2.0
     assert result["adx_fast"].iloc[-1] == result["adx_slow"].iloc[-1]
+    assert {"ema_x_2", "ema_x_3", "ema_x_4", "count_hi", "count_low"} <= set(result.columns)
 
 
 def test_forex_master_exit_signal_crosses_opposite_band() -> None:

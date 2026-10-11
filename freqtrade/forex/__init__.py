@@ -29,6 +29,7 @@ from freqtrade.forex.execution import (
 )
 from freqtrade.forex.exit_rules import AtrStop, FixedStop, TakeProfit, TimeExit, TrailingStop
 from freqtrade.forex.features import (
+    add_chained_ema_indicators,
     ForexFeature,
     ForexFeaturePipeline,
 )
@@ -210,6 +211,7 @@ __all__ = [
     "TimeExit",
     "ForexFeature",
     "ForexFeaturePipeline",
+    "add_chained_ema_indicators",
     "OandaHealthCheck",
     "OandaHealthReport",
     "ForexHyperopt",
