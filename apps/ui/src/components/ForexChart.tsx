@@ -81,6 +81,8 @@ export function ForexChart({
   const [zoomLevel, setZoomLevel] = useState(0)
   const [panOffset, setPanOffset] = useState(0)
   const [isPanning, setIsPanning] = useState(false)
+  const [panelHeights, setPanelHeights] = useState<Record<string, number>>({})
+  const [collapsedPanels, setCollapsedPanels] = useState<Record<string, boolean>>({})
   const dataKey = `${data.pair}:${data.timeframe}`
   const [reference, setReference] = useState(() => ({
     key: dataKey,
@@ -88,6 +90,7 @@ export function ForexChart({
   }))
   const isReferenceDragging = useRef(false)
   const panStart = useRef<{ pointerId: number; x: number; offset: number; moved: boolean } | null>(null)
+  const panelResizeStart = useRef<{ name: string; pointerId: number; y: number; height: number } | null>(null)
   const suppressClick = useRef(false)
   const visibleReferencePrice = reference.key === dataKey
     ? reference.price
@@ -167,18 +170,40 @@ export function ForexChart({
       const values = indicator.values.slice(visibleStartIndex, visibleEndIndex + 1)
       const finite = values.filter((value): value is number => value !== null && Number.isFinite(value))
       if (!finite.length) return []
-      const panelMin = Math.min(...finite)
-      const panelMax = Math.max(...finite)
-      const panelPadding = Math.max((panelMax - panelMin) * 0.12, Math.abs(panelMax) * 0.00001, 0.000001)
-      const scalePanelY = (value: number) => 104 - ((value - (panelMin - panelPadding)) / ((panelMax + panelPadding) - (panelMin - panelPadding))) * 80
+      const isRsi = /^rsi(?:_|$)/i.test(indicator.name)
+      const dataMin = Math.min(...finite)
+      const dataMax = Math.max(...finite)
+      const panelPadding = Math.max((dataMax - dataMin) * 0.12, Math.abs(dataMax) * 0.00001, 0.000001)
+      const panelMin = isRsi ? 0 : dataMin - panelPadding
+      const panelMax = isRsi ? 100 : dataMax + panelPadding
+      const scalePanelY = (value: number) => 104 - ((value - panelMin) / Math.max(panelMax - panelMin, 0.000001)) * 80
       const path = indicatorPath(values, visibleStartIndex, scaleX, scalePanelY)
-      return [{ name: indicator.name, color: STRATEGY_INDICATOR_COLORS[panelIndex % STRATEGY_INDICATOR_COLORS.length], path, scalePanelY }]
+      const selectedIndex = selectedIndicators.indexOf(indicator.name)
+      return [{
+        name: indicator.name,
+        color: STRATEGY_INDICATOR_COLORS[(selectedIndex < 0 ? panelIndex : selectedIndex) % STRATEGY_INDICATOR_COLORS.length],
+        path,
+        scalePanelY,
+        isRsi,
+      }]
     })
     return { line, ema20, ema50, ema100, signalMarkers, roiMarkers, tradeMarkers, scaleX, scaleY, priceAtY, percentageTicks, min, max, candleWidth, overlaySeries, lowerPanels }
   }, [data, height, plotWidth, selectedIndicators, visibleCount, visibleEndIndex, visibleReferencePrice, visibleStartIndex])
 
   const hoveredCandle = hoveredIndex === null ? null : data.candles[hoveredIndex]
   const hoveredSignal = hoveredCandle ? data.signals.find((signal) => signal.time === hoveredCandle.time) : undefined
+  const hoveredIndicatorValues = hoveredIndex === null
+    ? []
+    : selectedIndicators.flatMap((name) => {
+      const value = data.indicators.strategy?.[name]?.values[hoveredIndex]
+      const colorIndex = selectedIndicators.indexOf(name)
+      return [{ name, value, color: STRATEGY_INDICATOR_COLORS[colorIndex % STRATEGY_INDICATOR_COLORS.length] }]
+    })
+  const formatValue = (value: number | null | undefined) => (
+    value === null || value === undefined || !Number.isFinite(value)
+      ? '—'
+      : new Intl.NumberFormat(undefined, { maximumSignificantDigits: 7 }).format(value)
+  )
   const toggle = (key: keyof typeof visible) => setVisible((current) => ({ ...current, [key]: !current[key] }))
   const zoom = (direction: -1 | 1) => {
     setHoveredIndex(null)
@@ -286,7 +311,10 @@ export function ForexChart({
           {visible.ema20 && <polyline points={chart.line(chart.ema20.slice(visibleStartIndex, visibleEndIndex + 1), visibleStartIndex)} fill="none" stroke="#fbbf24" strokeWidth="1.5" strokeDasharray="5 4" />}
           {visible.ema50 && <polyline points={chart.line(chart.ema50.slice(visibleStartIndex, visibleEndIndex + 1), visibleStartIndex)} fill="none" stroke="#c084fc" strokeWidth="1.5" strokeDasharray="5 4" />}
           {visible.ema100 && <polyline points={chart.line(chart.ema100.slice(visibleStartIndex, visibleEndIndex + 1), visibleStartIndex)} fill="none" stroke="#f97316" strokeWidth="1.5" strokeDasharray="5 4" />}
-          {chart.overlaySeries.map((indicator, index) => <path key={indicator.name} d={indicatorPath(indicator.values.slice(visibleStartIndex, visibleEndIndex + 1), visibleStartIndex, chart.scaleX, chart.scaleY)} fill="none" stroke={STRATEGY_INDICATOR_COLORS[index % STRATEGY_INDICATOR_COLORS.length]} strokeWidth="1.8"><title>{indicator.name}</title></path>)}
+          {chart.overlaySeries.map((indicator, index) => {
+            const selectedIndex = selectedIndicators.indexOf(indicator.name)
+            return <path key={indicator.name} d={indicatorPath(indicator.values.slice(visibleStartIndex, visibleEndIndex + 1), visibleStartIndex, chart.scaleX, chart.scaleY)} fill="none" stroke={STRATEGY_INDICATOR_COLORS[(selectedIndex < 0 ? index : selectedIndex) % STRATEGY_INDICATOR_COLORS.length]} strokeWidth="1.8"><title>{indicator.name}</title></path>
+          })}
           {visible.signals && visible.roiTargets && chart.roiMarkers.map((signal, index) => visible[signal.side === 'BUY' ? 'buy' : 'sell'] && <g key={`${signal.time}-${signal.side}-roi-${index}`}><line x1={signal.x} x2={signal.x} y1={signal.y} y2={signal.roiY} stroke="#fbbf24" strokeWidth="1.5" strokeDasharray="3 3" opacity="0.8" /><polygon points={`${signal.x},${signal.roiY - 6} ${signal.x + 6},${signal.roiY} ${signal.x},${signal.roiY + 6} ${signal.x - 6},${signal.roiY}`} fill="#0f172a" stroke="#fbbf24" strokeWidth="2"><title>Projected ROI target +{signal.roiPercent?.toFixed(2)}%; not an actual or executed exit</title></polygon><text x={signal.x + 9} y={signal.roiY - 5} fill="#fcd34d" fontSize="10">ROI +{signal.roiPercent?.toFixed(2)}% · projected</text></g>)}
           {visible.signals && chart.signalMarkers.map((signal) => visible[signal.side === 'BUY' ? 'buy' : 'sell'] && <g key={`${signal.time}-${signal.side}`}><circle cx={signal.x} cy={signal.y} r="7" fill="none" stroke={signal.side === 'BUY' ? '#a7f3d0' : '#fecdd3'} strokeWidth="1" opacity="0.75" /><circle cx={signal.x} cy={signal.y} r="4" fill={signal.side === 'BUY' ? '#34d399' : '#fb7185'} /><text x={signal.x + 9} y={signal.y - 8} fill={signal.side === 'BUY' ? '#86efac' : '#fda4af'} fontSize="11">Signal {signal.side}</text></g>)}
           {visible.trades && chart.tradeMarkers.map((trade, index) => {
@@ -326,26 +354,103 @@ export function ForexChart({
           {chart.percentageTicks.map((tick, index) => <g key={index} className="chart-percent-tick"><line x1={plotRight - 4} x2={plotRight + 3} y1={tick.y} y2={tick.y} /><text x={plotRight + 9} y={tick.y + 3}>{tick.percent > 0 ? '+' : ''}{tick.percent.toFixed(2)}%</text></g>)}
           {hoveredIndex !== null && <line x1={chart.scaleX(hoveredIndex)} x2={chart.scaleX(hoveredIndex)} y1={padding} y2={height - padding} stroke="#cbd5e1" strokeOpacity="0.25" strokeDasharray="3 3" />}
         </svg>
-        {hoveredCandle && <div className="chart-tooltip"><strong>{new Date(hoveredCandle.time).toLocaleString()}</strong><span>O {hoveredCandle.open.toFixed(5)} · H {hoveredCandle.high.toFixed(5)}</span><span>L {hoveredCandle.low.toFixed(5)} · C {hoveredCandle.close.toFixed(5)}</span><span>Change from zero {((hoveredCandle.close / visibleReferencePrice - 1) * 100) > 0 ? '+' : ''}{((hoveredCandle.close / visibleReferencePrice - 1) * 100).toFixed(2)}%</span>{hoveredSignal && <span className={hoveredSignal.side === 'BUY' ? 'tooltip-buy' : 'tooltip-sell'}>Strategy {hoveredSignal.side} · {hoveredSignal.sourceTimeframe}</span>}</div>}
+        {hoveredIndex !== null && hoveredCandle && (
+          <div className="chart-tooltip">
+            <strong>{new Date(hoveredCandle.time).toLocaleString()}</strong>
+            <span>O {formatValue(hoveredCandle.open)} · H {formatValue(hoveredCandle.high)}</span>
+            <span>L {formatValue(hoveredCandle.low)} · C {formatValue(hoveredCandle.close)}</span>
+            {visible.ema20 && <span><i className="tooltip-color" style={{ background: '#fbbf24' }} />EMA 20 {formatValue(chart.ema20[hoveredIndex])}</span>}
+            {visible.ema50 && <span><i className="tooltip-color" style={{ background: '#c084fc' }} />EMA 50 {formatValue(chart.ema50[hoveredIndex])}</span>}
+            {visible.ema100 && <span><i className="tooltip-color" style={{ background: '#f97316' }} />EMA 100 {formatValue(chart.ema100[hoveredIndex])}</span>}
+            {hoveredIndicatorValues.map((indicator) => (
+              <span key={indicator.name}><i className="tooltip-color" style={{ background: indicator.color }} />{indicator.name} {formatValue(indicator.value)}</span>
+            ))}
+            {hoveredSignal && <span className={hoveredSignal.side === 'BUY' ? 'tooltip-buy' : 'tooltip-sell'}>Strategy {hoveredSignal.side} · {hoveredSignal.sourceTimeframe}</span>}
+          </div>
+        )}
       </div>
-      {chart.lowerPanels.map((panel) => (
-        <div className="strategy-indicator-panel" key={panel.name}>
-          <div className="strategy-indicator-heading"><strong style={{ color: panel.color }}>{panel.name}</strong><span>Strategy indicator</span></div>
-          <svg
-            className="strategy-indicator-chart"
-            viewBox={`0 0 ${width} 120`}
-            role="img"
-            aria-label={`${panel.name} indicator panel`}
-            onPointerMove={updateHoveredCandle}
-            onPointerLeave={() => setHoveredIndex(null)}
-          >
-            <line x1={padding} x2={plotRight} y1="64" y2="64" className="chart-zero-line" />
-            <path d={panel.path} fill="none" stroke={panel.color} strokeWidth="1.8" />
-            {hoveredIndex !== null && <line x1={chart.scaleX(hoveredIndex)} x2={chart.scaleX(hoveredIndex)} y1="12" y2="108" stroke="#cbd5e1" strokeOpacity="0.35" strokeDasharray="3 3" />}
-            <text x={plotRight + 10} y="18" className="indicator-panel-value">{data.indicators.strategy?.[panel.name]?.values[visibleEndIndex]?.toPrecision(6) ?? '—'}</text>
-          </svg>
-        </div>
-      ))}
+      {chart.lowerPanels.map((panel) => {
+        const panelHeight = panelHeights[panel.name] ?? 120
+        const isCollapsed = Boolean(collapsedPanels[panel.name])
+        const hoveredValue = hoveredIndex === null
+          ? data.indicators.strategy?.[panel.name]?.values[visibleEndIndex]
+          : data.indicators.strategy?.[panel.name]?.values[hoveredIndex]
+        return (
+          <section className={`strategy-indicator-panel${isCollapsed ? ' is-collapsed' : ''}`} key={panel.name}>
+            <div className="strategy-indicator-heading">
+              <strong style={{ color: panel.color }}>{panel.name}</strong>
+              <span className="indicator-panel-current" style={{ color: panel.color }}>{formatValue(hoveredValue)}</span>
+              <button
+                type="button"
+                aria-expanded={!isCollapsed}
+                aria-label={`${isCollapsed ? 'Expand' : 'Collapse'} ${panel.name} panel`}
+                onClick={() => setCollapsedPanels((current) => ({ ...current, [panel.name]: !current[panel.name] }))}
+              >
+                {isCollapsed ? 'Expand' : 'Collapse'}
+              </button>
+            </div>
+            {!isCollapsed && (
+              <>
+                <svg
+                  className="strategy-indicator-chart"
+                  style={{ height: `${panelHeight}px` }}
+                  viewBox={`0 0 ${width} 120`}
+                  role="img"
+                  aria-label={`${panel.name} indicator panel`}
+                  onPointerMove={updateHoveredCandle}
+                  onPointerLeave={() => setHoveredIndex(null)}
+                >
+                  {panel.isRsi ? (
+                    <>
+                      <line x1={padding} x2={plotRight} y1={panel.scalePanelY(70)} y2={panel.scalePanelY(70)} className="indicator-guide-line" />
+                      <line x1={padding} x2={plotRight} y1={panel.scalePanelY(30)} y2={panel.scalePanelY(30)} className="indicator-guide-line" />
+                      <text x={plotRight + 10} y={panel.scalePanelY(70) - 3} className="indicator-panel-value">70</text>
+                      <text x={plotRight + 10} y={panel.scalePanelY(30) - 3} className="indicator-panel-value">30</text>
+                    </>
+                  ) : (
+                    <line x1={padding} x2={plotRight} y1="64" y2="64" className="chart-zero-line" />
+                  )}
+                  <path d={panel.path} fill="none" stroke={panel.color} strokeWidth="1.8" />
+                  {hoveredIndex !== null && <line x1={chart.scaleX(hoveredIndex)} x2={chart.scaleX(hoveredIndex)} y1="12" y2="108" className="indicator-crosshair" />}
+                </svg>
+                <div
+                  className="indicator-panel-resize"
+                  role="separator"
+                  aria-label={`Resize ${panel.name} panel`}
+                  aria-orientation="horizontal"
+                  aria-valuemin={80}
+                  aria-valuemax={260}
+                  aria-valuenow={panelHeight}
+                  tabIndex={0}
+                  onPointerDown={(event) => {
+                    event.preventDefault()
+                    panelResizeStart.current = { name: panel.name, pointerId: event.pointerId, y: event.clientY, height: panelHeight }
+                    event.currentTarget.setPointerCapture(event.pointerId)
+                  }}
+                  onPointerMove={(event) => {
+                    const start = panelResizeStart.current
+                    if (!start || start.pointerId !== event.pointerId) return
+                    const nextHeight = Math.max(80, Math.min(260, start.height + event.clientY - start.y))
+                    setPanelHeights((current) => ({ ...current, [start.name]: nextHeight }))
+                  }}
+                  onPointerUp={(event) => {
+                    if (panelResizeStart.current?.pointerId !== event.pointerId) return
+                    panelResizeStart.current = null
+                    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId)
+                  }}
+                  onPointerCancel={() => { panelResizeStart.current = null }}
+                  onKeyDown={(event) => {
+                    if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
+                    event.preventDefault()
+                    const change = event.key === 'ArrowUp' ? 10 : -10
+                    setPanelHeights((current) => ({ ...current, [panel.name]: Math.max(80, Math.min(260, panelHeight + change)) }))
+                  }}
+                />
+              </>
+            )}
+          </section>
+        )
+      })}
       <div className="chart-legend"><button type="button" className={visible.candles ? 'legend-toggle active' : 'legend-toggle'} onClick={() => toggle('candles')}><i className="legend-candle" />Candles</button><button type="button" className={visible.close ? 'legend-toggle active' : 'legend-toggle'} onClick={() => toggle('close')}><i className="legend-line price" />Close</button><button type="button" className={visible.ema20 ? 'legend-toggle active' : 'legend-toggle'} onClick={() => toggle('ema20')}><i className="legend-line ema" />EMA 20</button><button type="button" className={visible.ema50 ? 'legend-toggle active' : 'legend-toggle'} onClick={() => toggle('ema50')}><i className="legend-line ema50" />EMA 50</button><button type="button" className={visible.ema100 ? 'legend-toggle active' : 'legend-toggle'} onClick={() => toggle('ema100')}><i className="legend-line ema100" />EMA 100</button><button type="button" className={visible.trades ? 'legend-toggle active' : 'legend-toggle'} onClick={() => toggle('trades')}><i className="legend-dot trade" />Trades</button><button type="button" className={visible.signals ? 'legend-toggle active' : 'legend-toggle'} onClick={() => toggle('signals')}><i className="legend-dot buy" />Signals</button><button type="button" className={visible.roiTargets ? 'legend-toggle active' : 'legend-toggle'} onClick={() => toggle('roiTargets')}><i className="legend-dot roi-target" />ROI targets · projected only</button><button type="button" className={visible.buy ? 'legend-toggle active' : 'legend-toggle'} onClick={() => toggle('buy')}><i className="legend-dot buy" />Buy</button><button type="button" className={visible.sell ? 'legend-toggle active' : 'legend-toggle'} onClick={() => toggle('sell')}><i className="legend-dot sell" />Sell</button></div>
     </div>
   )

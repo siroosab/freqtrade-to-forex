@@ -66,9 +66,9 @@ export function IndicatorsPage() {
     <div className="indicators-page">
       <header className="topbar">
         <div>
-          <p className="eyebrow">تحلیل تکنیکال</p>
-          <h2>اندیکاتور</h2>
-          <p className="orders-source-note">اندیکاتورها مستقیماً از استراتژی تأییدشدهٔ هر جفت‌ارز محاسبه می‌شوند.</p>
+          <p className="eyebrow">Technical analysis</p>
+          <h2>Indicators</h2>
+          <p className="orders-source-note">Indicators are calculated directly from the approved strategy for each pair.</p>
         </div>
       </header>
 
@@ -76,15 +76,15 @@ export function IndicatorsPage() {
         <div className="panel-header compact">
           <div>
             <p className="eyebrow">Market context</p>
-            <h3>نمودار قیمت و اندیکاتورها</h3>
+            <h3>Price chart and indicators</h3>
             {chartQuery.data && (
               <p className="indicator-strategy-context">
-                {chartQuery.data.pair} · {chartQuery.data.approvedStrategy} · تایم‌فریم استراتژی {chartQuery.data.approvedTimeframe}
+                {chartQuery.data.pair} · {chartQuery.data.approvedStrategy} · Strategy timeframe {chartQuery.data.approvedTimeframe}
               </p>
             )}
           </div>
           <div className="chart-controls">
-            <select aria-label="جفت‌ارز نمودار" value={pair} onChange={(event) => setSelectedPair(event.target.value)}>
+            <select aria-label="Chart pair" value={pair} onChange={(event) => setSelectedPair(event.target.value)}>
               {(availablePairs.length ? availablePairs : ['EUR/USD', 'GBP/USD', 'USD/JPY']).map((item) => <option key={item} value={item}>{item}</option>)}
             </select>
             <ChartDataControls
@@ -96,32 +96,32 @@ export function IndicatorsPage() {
           </div>
         </div>
 
-        {chartQuery.isLoading && <p>در حال دریافت کندل‌ها و محاسبهٔ اندیکاتورهای استراتژی…</p>}
+        {chartQuery.isLoading && <p>Loading candles and calculating strategy indicators…</p>}
         {chartQuery.isError && (
-          <p role="alert">{chartQuery.error instanceof Error ? chartQuery.error.message : 'دادهٔ نمودار و اندیکاتورها در دسترس نیست.'}</p>
+          <p role="alert">{chartQuery.error instanceof Error ? chartQuery.error.message : 'Chart and indicator data is unavailable.'}</p>
         )}
         {chartQuery.data && Object.keys(indicatorData).length === 0 && (
-          <p className="indicator-empty-note">این استراتژی اندیکاتور عددی قابل‌نمایشی برنگرداند.</p>
+          <p className="indicator-empty-note">This strategy did not return any numeric indicators to display.</p>
         )}
         {chartQuery.data && Object.keys(indicatorData).length > 0 && (
           <div className="indicator-picker">
             <div className="indicator-picker-heading">
               <div>
-                <strong>اندیکاتورهای استراتژی</strong>
-                <span>برای افزودن یا حذف از نمودار انتخاب کنید.</span>
+                <strong>Strategy indicators</strong>
+                <span>Select indicators to add or remove them from the chart.</span>
               </div>
               <button type="button" className="secondary-button" onClick={() => setSelectedIndicators([])} disabled={!selectedIndicators.length}>
-                پاک‌کردن انتخاب‌ها
+                Clear selection
               </button>
             </div>
             <div className="indicator-picker-groups">
               {[
-                { title: 'روی نمودار قیمت', items: overlayIndicators },
-                { title: 'پنل‌های پایین نمودار', items: lowerIndicators },
+                { title: 'Price overlays', items: overlayIndicators },
+                { title: 'Lower panels', items: lowerIndicators },
               ].map((group) => (
                 <fieldset className="indicator-picker-group" key={group.title}>
                   <legend>{group.title}</legend>
-                  {group.items.length === 0 && <span className="indicator-empty-note">موردی موجود نیست</span>}
+                  {group.items.length === 0 && <span className="indicator-empty-note">None available</span>}
                   {group.items.map(([name, indicator]) => {
                     const latest = indicator.values.at(-1)
                     const selected = selectedIndicators.includes(name)
@@ -131,7 +131,7 @@ export function IndicatorsPage() {
                         className={`indicator-chip${selected ? ' selected' : ''}`}
                         key={name}
                         onClick={() => toggleIndicator(name)}
-                        title={`آخرین مقدار: ${formatIndicatorValue(latest)}`}
+                        title={`Latest value: ${formatIndicatorValue(latest)}`}
                         type="button"
                       >
                         <span>{name}</span>
@@ -150,9 +150,9 @@ export function IndicatorsPage() {
       <section className="panel indicator-analysis-panel">
         <div>
           <p className="eyebrow">Strategy analysis</p>
-          <h3>خلاصهٔ اندیکاتورهای فعال</h3>
+          <h3>Selected indicator summary</h3>
         </div>
-        {!selectedIndicators.length && <p className="indicator-empty-note">برای نمایش خلاصه، یک یا چند اندیکاتور را از فهرست بالا انتخاب کنید.</p>}
+        {!selectedIndicators.length && <p className="indicator-empty-note">Select one or more indicators above to view their summary.</p>}
         {!!selectedIndicators.length && (
           <div className="indicator-summary-grid">
             {selectedIndicators.map((name) => {
@@ -166,7 +166,7 @@ export function IndicatorsPage() {
                 <article className="indicator-summary-card" key={name}>
                   <span>{name}</span>
                   <strong>{formatIndicatorValue(latest)}</strong>
-                  <small>{change === null ? 'تغییر: —' : `تغییر آخرین کندل: ${change > 0 ? '+' : ''}${formatIndicatorValue(change)}`}</small>
+                  <small>{change === null ? 'Change: —' : `Last candle change: ${change > 0 ? '+' : ''}${formatIndicatorValue(change)}`}</small>
                 </article>
               )
             })}
@@ -174,7 +174,7 @@ export function IndicatorsPage() {
         )}
         {chartQuery.data && (
           <p className="indicator-analysis-note">
-            محاسبه بر اساس نسخهٔ تأییدشدهٔ استراتژی {chartQuery.data.approvedStrategy} انجام می‌شود؛ مقادیر پنل‌ها با حرکت و بزرگ‌نمایی نمودار همگام هستند.
+            Values use the approved {chartQuery.data.approvedStrategy} strategy revision. Indicator panels stay synchronized with chart navigation and zoom.
           </p>
         )}
       </section>

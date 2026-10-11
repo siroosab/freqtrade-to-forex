@@ -1856,19 +1856,34 @@
   border: 1px solid rgba(148, 163, 184, 0.12);
   border-radius: 10px;
   background: rgba(2, 6, 23, 0.58);
+  overflow: hidden;
 }
 
 .strategy-indicator-heading {
   display: flex;
-  justify-content: space-between;
+  align-items: center;
   gap: 12px;
   padding: 8px 12px 0;
   color: #94a3b8;
   font-size: 0.75rem;
 }
 
+.strategy-indicator-heading > span:first-of-type {
+  margin-left: auto;
+}
+
 .strategy-indicator-heading strong {
   font-size: 0.82rem;
+}
+
+.strategy-indicator-heading button {
+  padding: 3px 7px;
+  color: #cbd5e1;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 5px;
+  background: rgba(15, 23, 42, 0.7);
+  font-size: 0.68rem;
+  cursor: pointer;
 }
 
 .strategy-indicator-chart {
@@ -1879,9 +1894,47 @@
   touch-action: pan-y;
 }
 
+.indicator-panel-current {
+  min-width: 68px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.indicator-guide-line {
+  stroke: rgba(251, 191, 36, 0.42);
+  stroke-width: 1;
+  stroke-dasharray: 4 4;
+}
+
+.indicator-crosshair {
+  stroke: #f8fafc;
+  stroke-width: 1;
+  stroke-opacity: 0.65;
+  stroke-dasharray: 3 3;
+  pointer-events: none;
+}
+
 .indicator-panel-value {
   fill: #cbd5e1;
   font-size: 10px;
+}
+
+.indicator-panel-resize {
+  height: 8px;
+  margin: 0 10px 3px;
+  border-top: 1px solid rgba(148, 163, 184, 0.12);
+  cursor: ns-resize;
+  touch-action: none;
+}
+
+.indicator-panel-resize:hover,
+.indicator-panel-resize:focus-visible {
+  border-color: rgba(56, 189, 248, 0.7);
+  outline: none;
+}
+
+.strategy-indicator-panel.is-collapsed {
+  padding-bottom: 8px;
 }
 
 .indicators-chart-panel {
@@ -2093,6 +2146,23 @@
   border-radius: 8px;
   pointer-events: none;
   box-shadow: 0 12px 30px rgba(2, 6, 23, 0.3);
+  max-width: min(360px, calc(100% - 36px));
+  max-height: min(260px, calc(100% - 36px));
+  overflow: auto;
+  z-index: 2;
+}
+
+.chart-tooltip span {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tooltip-color {
+  display: inline-block;
+  width: 10px;
+  height: 2px;
+  flex: 0 0 10px;
 }
 
 .chart-tooltip strong {
