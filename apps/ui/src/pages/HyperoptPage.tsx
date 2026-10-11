@@ -58,9 +58,9 @@ export function HyperoptPage() {
   const [timeframe, setTimeframe] = useState('M15')
   const [strategyClass, setStrategyClass] = useState('')
   const [historyValue, setHistoryValue] = useState(500)
-  const [historyMode, setHistoryMode] = useState<'candles' | 'days' | 'date_range'>('candles')
+  const [historyMode, setHistoryMode] = useState<'candles' | 'days' | 'date_range'>('date_range')
   const [dateRange, setDateRange] = useState(initialDateRange)
-  const [attempts, setAttempts] = useState(30)
+  const [attempts, setAttempts] = useState(100)
   const [workers, setWorkers] = useState<number | null>(null)
   const [lossFunction, setLossFunction] = useState('ProfitDrawDownHyperOptLoss')
   const [spreadOverride, setSpreadOverride] = useState<{ pair: string; value: string } | null>(null)
@@ -68,8 +68,8 @@ export function HyperoptPage() {
   const [financingRatePerDay, setFinancingRatePerDay] = useState('0')
   const [commissionRatePercent, setCommissionRatePercent] = useState('0')
   const [stopLossMode, setStopLossMode] = useState<'pips' | 'percent' | 'money'>('pips')
-  const [stopDistanceMode, setStopDistanceMode] = useState<'static' | 'automatic'>('static')
-  const [trailingStopLoss, setTrailingStopLoss] = useState(false)
+  const [stopDistanceMode, setStopDistanceMode] = useState<'static' | 'automatic'>('automatic')
+  const [trailingStopLoss, setTrailingStopLoss] = useState(true)
   const [stopLossPips, setStopLossPips] = useState('0.5')
   const [backtestStopLossPipsOverride, setBacktestStopLossPipsOverride] = useState<{
     scope: string
@@ -77,7 +77,7 @@ export function HyperoptPage() {
   } | null>(null)
   const [stopLossPercent, setStopLossPercent] = useState('0.5')
   const [stopLossMoney, setStopLossMoney] = useState('50')
-  const [positionSizeMode, setPositionSizeMode] = useState<'risk' | 'units' | 'account_amount'>('risk')
+  const [positionSizeMode, setPositionSizeMode] = useState<'risk' | 'units' | 'account_amount'>('account_amount')
   const [unitSize, setUnitSize] = useState('1000')
   const [accountAmount, setAccountAmount] = useState('1000')
   const [backtestJobId, setBacktestJobId] = useState<string | null>(null)
@@ -375,7 +375,7 @@ export function HyperoptPage() {
       <section className="content-grid">
         <div className="panel">
           <div className="panel-header compact">
-            <div><p className="eyebrow">Scope</p><h3>Choose research inputs</h3></div>
+            <div><p className="eyebrow">🧭 Scope</p><h3>Choose research inputs</h3></div>
           </div>
           <div className="settings-grid">
             <label className="field-block">
@@ -647,7 +647,7 @@ export function HyperoptPage() {
 
         <div className="panel research-panel">
           <div className="panel-header compact">
-            <div><p className="eyebrow">02 · Manual Hyperopt</p><h3>Optimize strategy parameters</h3></div>
+            <div><p className="eyebrow">02 · Manual Hyperopt</p><h3>🧠 Optimize strategy parameters</h3></div>
             <div className="summary-grid">
               <button className="primary-action" type="button" onClick={runOptimization} disabled={!scopeEnabled || !historyValueValid || !costSettingsValid || !positionSizeValid || !hyperoptStopLossValid || quoteQuery.isPending || quoteQuery.isError || setupQuery.isPending || setupQuery.isError || researchBusy || !strategies.length}>
                 {running || hyperoptMutation.isPending ? 'Optimizing…' : 'Run hyperopt'}
