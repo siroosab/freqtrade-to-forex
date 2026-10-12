@@ -459,7 +459,9 @@ export function AutoHyperoptPage() {
                       </span>
                       <span className="auto-hyperopt-pair-settings">
                         <strong>{item.settings?.attempts ?? '—'} attempts</strong>
-                        <small>{item.settings?.stopDistanceMode ?? 'static'} stop distance</small>
+                        <small>
+                          {item.settings?.stopDistanceMode ?? 'static'} stop · ROI {item.settings?.optimizeRoi === false ? 'off' : 'on'} · exit signals {item.settings?.useExitSignal === false ? 'off' : 'on'}
+                        </small>
                       </span>
                       <span className="auto-hyperopt-last-result">
                         <strong className={`auto-hyperopt-result ${resultTone}`}>
@@ -488,7 +490,7 @@ export function AutoHyperoptPage() {
                   ?? `Next run: ${nextRunLabel(schedule)}`}
               </h3>
               <p>
-                Saved Hyperopt options (including attempts and stop-distance mode) are reused from each approved revision.
+                Saved Hyperopt options (including ROI and strategy-exit choices) are reused from each approved revision.
                 The broker spread is refreshed at run time; if no quote is available, the approved spread is retained.
               </p>
             </div>

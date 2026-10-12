@@ -662,6 +662,8 @@ def test_hyperopt_approval_flows_into_chart_strategy(
     from types import SimpleNamespace
 
     database_path = tmp_path / "hyperopt-approval.sqlite"
+    optimize_roi = history_mode == "days"
+    use_exit_signal = optimize_roi
     candle_requests = []
     hyperopt_options = {}
 
@@ -789,8 +791,10 @@ def test_hyperopt_approval_flows_into_chart_strategy(
         return [
             {
                 "parameters": {"band_length": 20},
-                "minimal_roi": {"0": 0.01},
+                "minimal_roi": {"0": 0.01} if kwargs.get("optimize_roi", True) else {},
                 "roi_parameters": {},
+                "optimizeRoi": kwargs.get("optimize_roi", True),
+                "useExitSignal": kwargs.get("use_exit_signal", True),
                 "objective": "1.0",
                 "trainNetPl": "0.5",
                 "trainDrawdown": "0.1",
@@ -844,6 +848,14 @@ def test_hyperopt_approval_flows_into_chart_strategy(
                 "stopLossMode": "percent",
                 "stopLossValue": "1.25",
                 "trailingStopLoss": trailing_stop_loss_enabled,
+                **(
+                    {}
+                    if optimize_roi and use_exit_signal
+                    else {
+                        "optimizeRoi": optimize_roi,
+                        "useExitSignal": use_exit_signal,
+                    }
+                ),
             },
         )
         assert started.status_code == 200, started.text
@@ -878,6 +890,8 @@ def test_hyperopt_approval_flows_into_chart_strategy(
         }
         assert status["report"]["stopLoss"] == expected_stop_loss
         assert status["report"]["trailingStopLoss"] is trailing_stop_loss_enabled
+        assert status["report"]["optimizeRoi"] is optimize_roi
+        assert status["report"]["useExitSignal"] is use_exit_signal
         assert all(
             candidate["stopLoss"] == expected_stop_loss
             for candidate in status["report"]["candidates"]
@@ -904,12 +918,16 @@ def test_hyperopt_approval_flows_into_chart_strategy(
                 "requireOptimization": True,
             },
         )
+        schedule_weekdays = [
+            (datetime.now().astimezone().weekday() + 1) % 7,
+            (datetime.now().astimezone().weekday() + 3) % 7,
+        ]
         schedule_response = scoped_client.post(
             "/api/v1/auto-hyperopt",
             headers=headers,
             json={
                 "enabled": True,
-                "weekdays": [0, 3],
+                "weekdays": schedule_weekdays,
                 "time": "12:00",
                 "workers": 1,
                 "pairs": [
@@ -970,6 +988,8 @@ def test_hyperopt_approval_flows_into_chart_strategy(
             assert completed_queue["hyperoptStartedAt"]
             automatic_status = scoped_client.get(status_url).json()
             assert automatic_status["report"]["attemptsRequested"] == 1
+            assert automatic_status["report"]["optimizeRoi"] is optimize_roi
+            assert automatic_status["report"]["useExitSignal"] is use_exit_signal
             automatic_main_requests = [
                 request
                 for request in candle_requests[automatic_request_start:]
@@ -988,7 +1008,11 @@ def test_hyperopt_approval_flows_into_chart_strategy(
     assert approved.json()["approvedRevision"]["hyperopt"]["parameters"] == {
         "band_length": 20,
     }
-    assert approved.json()["approvedRevision"]["hyperopt"]["minimal_roi"] == {"0": 0.01}
+    assert approved.json()["approvedRevision"]["hyperopt"]["minimal_roi"] == (
+        {"0": 0.01} if optimize_roi else {}
+    )
+    assert approved.json()["approvedRevision"]["hyperopt"]["optimizeRoi"] is optimize_roi
+    assert approved.json()["approvedRevision"]["hyperopt"]["useExitSignal"] is use_exit_signal
     assert approved.json()["approvedRevision"]["hyperopt"]["stopLoss"] == expected_stop_loss
     assert (
         approved.json()["approvedRevision"]["hyperopt"]["trailingStopLoss"]
@@ -997,11 +1021,13 @@ def test_hyperopt_approval_flows_into_chart_strategy(
     approved_settings = approved.json()["approvedRevision"]["hyperopt"]["runSettings"]
     assert approved_settings["attempts"] == 1
     assert approved_settings["stopDistanceMode"] == stop_distance_mode
+    assert approved_settings["optimizeRoi"] is optimize_roi
+    assert approved_settings["useExitSignal"] is use_exit_signal
     assert approved_settings["spread"] == "0.0002"
     assert schedule_response.status_code == 200, schedule_response.text
     saved_schedule = schedule_response.json()
     assert saved_schedule["enabled"] is True
-    assert saved_schedule["weekdays"] == [0, 3]
+    assert saved_schedule["weekdays"] == schedule_weekdays
     assert saved_schedule["time"] == "12:00"
     assert saved_schedule["workers"] == 1
     assert saved_schedule["availableWorkers"] >= 1
@@ -1014,6 +1040,8 @@ def test_hyperopt_approval_flows_into_chart_strategy(
     ]
     assert saved_schedule["availablePairs"][0]["settings"]["attempts"] == 1
     assert saved_schedule["availablePairs"][0]["settings"]["stopDistanceMode"] == stop_distance_mode
+    assert saved_schedule["availablePairs"][0]["settings"]["optimizeRoi"] is optimize_roi
+    assert saved_schedule["availablePairs"][0]["settings"]["useExitSignal"] is use_exit_signal
     assert saved_schedule["scheduler"]["serverNow"]
     assert saved_schedule["scheduler"]["serverTimezone"]
     assert saved_schedule["scheduler"]["nextRunAt"]
@@ -1035,6 +1063,8 @@ def test_hyperopt_approval_flows_into_chart_strategy(
     assert hyperopt_options["stop_loss_mode"] == "percent"
     assert hyperopt_options["stop_loss_value"] == Decimal("1.25")
     assert hyperopt_options["trailing_stop_loss"] is trailing_stop_loss_enabled
+    assert hyperopt_options["optimize_roi"] is optimize_roi
+    assert hyperopt_options["use_exit_signal"] is use_exit_signal
     assert hyperopt_options["workers"] == 1
     assert all(
         "stopLoss" not in candidate["parameters"]
@@ -1053,9 +1083,13 @@ def test_hyperopt_approval_flows_into_chart_strategy(
     )
     chart_signals = chart.json()["signals"]
     assert [signal["side"] for signal in chart_signals] == ["BUY", "SELL"]
-    assert [signal["roiPercent"] for signal in chart_signals] == [1.0, 1.0]
-    assert abs(chart_signals[0]["roiTargetPrice"] - 1.111) < 1e-12
-    assert abs(chart_signals[1]["roiTargetPrice"] - (1.10001 * 0.99)) < 1e-12
+    if optimize_roi:
+        assert [signal["roiPercent"] for signal in chart_signals] == [1.0, 1.0]
+        assert abs(chart_signals[0]["roiTargetPrice"] - 1.111) < 1e-12
+        assert abs(chart_signals[1]["roiTargetPrice"] - (1.10001 * 0.99)) < 1e-12
+    else:
+        assert all("roiPercent" not in signal for signal in chart_signals)
+        assert all("roiTargetPrice" not in signal for signal in chart_signals)
     assert candle_requests[0]["count"] == requested_candles
     approved_settings = approved.json()["approvedRevision"]["hyperopt"]["runSettings"]
     assert approved_settings["historyMode"] == history_mode
@@ -1085,6 +1119,11 @@ def test_hyperopt_rejects_invalid_cost_settings(tmp_path):
             headers=headers,
             json={"trailingStopLoss": "true"},
         )
+        invalid_roi_toggle = scoped_client.post(
+            "/api/v1/hyperopt/start",
+            headers=headers,
+            json={"optimizeRoi": "false"},
+        )
         invalid_workers = scoped_client.post(
             "/api/v1/hyperopt/start",
             headers=headers,
@@ -1099,6 +1138,8 @@ def test_hyperopt_rejects_invalid_cost_settings(tmp_path):
     assert "stop loss must be finite and positive" in invalid_stop_loss.json()["detail"]
     assert invalid_trailing_stop.status_code == 400
     assert "trailingStopLoss must be a boolean" in invalid_trailing_stop.json()["detail"]
+    assert invalid_roi_toggle.status_code == 400
+    assert "optimizeRoi and useExitSignal must be booleans" in invalid_roi_toggle.json()["detail"]
     assert invalid_workers.status_code == 400
     assert "workers must be an integer" in invalid_workers.json()["detail"]
 
@@ -1631,6 +1672,9 @@ def test_backtest_run_uses_requested_candles(monkeypatch, tmp_path):
                         "strategyClass": "ForexMasterStrategy",
                         "hyperopt": {
                             "trailingStopLoss": True,
+                            "minimal_roi": {"0": 0.0005},
+                            "optimizeRoi": False,
+                            "useExitSignal": False,
                             "stopLoss": {
                                 "mode": "pips",
                                 "value": "7.25",
@@ -1664,6 +1708,9 @@ def test_backtest_run_uses_requested_candles(monkeypatch, tmp_path):
     assert approved_trailing_payload["execution"]["stopLossOptimized"] is True
     assert approved_trailing_payload["execution"]["trailingStopLoss"] is True
     assert approved_trailing_payload["execution"]["configSource"] == "approved-hyperopt"
+    assert approved_trailing_payload["minimalRoi"] == {}
+    assert approved_trailing_payload["execution"]["useRoi"] is False
+    assert approved_trailing_payload["execution"]["useExitSignal"] is False
 
     disabled_config = json.loads(approved_config_path.read_text(encoding="utf-8"))
     disabled_config["pair_approved_revisions"]["EUR_USD"]["hyperopt"]["trailingStopLoss"] = False

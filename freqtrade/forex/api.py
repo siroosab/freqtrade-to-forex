@@ -258,6 +258,14 @@ def format_hyperopt_report(report: dict) -> str:
         f"  Best minimal ROI: {parameter_text(best_minimal_roi)}",
         f"  ROI search parameters: {parameter_text(report.get('roiParameters') or {})}",
         (
+            "  ROI optimization: "
+            f"{'enabled' if report.get('optimizeRoi', True) else 'disabled'}"
+        ),
+        (
+            "  Strategy exit signals: "
+            f"{'enabled' if report.get('useExitSignal', True) else 'disabled'}"
+        ),
+        (
             "  Cost settings: "
             f"spread={report['costSettings']['spread']}, "
             f"slippage={report['costSettings']['slippage']}, "
@@ -2327,7 +2335,11 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 hyperopt = hyperopt if isinstance(hyperopt, dict) else {}
                 approved_roi_ratio: Decimal | None = None
                 approved_minimal_roi = hyperopt.get("minimal_roi")
-                if isinstance(approved_minimal_roi, dict) and "0" in approved_minimal_roi:
+                if (
+                    hyperopt.get("optimizeRoi") is not False
+                    and isinstance(approved_minimal_roi, dict)
+                    and "0" in approved_minimal_roi
+                ):
                     try:
                         parsed_roi_ratio = Decimal(str(approved_minimal_roi["0"]))
                     except (InvalidOperation, TypeError, ValueError) as exc:
@@ -2351,6 +2363,16 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     minimal_roi=(
                         hyperopt.get("minimal_roi")
                         if isinstance(hyperopt.get("minimal_roi"), dict)
+                        else None
+                    ),
+                    use_roi=(
+                        hyperopt.get("optimizeRoi")
+                        if isinstance(hyperopt.get("optimizeRoi"), bool)
+                        else None
+                    ),
+                    use_exit_signal=(
+                        hyperopt.get("useExitSignal")
+                        if isinstance(hyperopt.get("useExitSignal"), bool)
                         else None
                     ),
                 )
@@ -4098,6 +4120,8 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         stop_loss_mode: str,
         stop_loss_value: Decimal,
         optimize_stop_distance: bool,
+        optimize_roi: bool,
+        use_exit_signal: bool,
         trailing_stop_loss: bool,
         position_size_mode: str,
         position_size: Decimal,
@@ -4132,6 +4156,8 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 stop_loss_mode=stop_loss_mode,
                 stop_loss_value=stop_loss_value,
                 optimize_stop_distance=optimize_stop_distance,
+                optimize_roi=optimize_roi,
+                use_exit_signal=use_exit_signal,
                 trailing_stop_loss=trailing_stop_loss,
                 max_attempts=attempts,
                 hyperopt_loss=hyperopt_loss,
@@ -4182,6 +4208,8 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "historyValue": history_value,
                 "attempts": attempts,
                 "stopDistanceMode": str(job.get("stopDistanceMode", "static")),
+                "optimizeRoi": optimize_roi,
+                "useExitSignal": use_exit_signal,
                 "runSettings": dict(job.get("runSettings") or {}),
                 "parameters": best.get("parameters", {}),
                 "minimal_roi": best.get("minimal_roi"),
@@ -4212,6 +4240,8 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "attemptsRequested": attempts,
                 "hyperoptLoss": hyperopt_loss,
                 "stopDistanceMode": str(job.get("stopDistanceMode", "static")),
+                "optimizeRoi": optimize_roi,
+                "useExitSignal": use_exit_signal,
                 "runSettings": dict(job.get("runSettings") or {}),
                 "stopLoss": best_stop_loss,
                 "trailingStopLoss": trailing_stop_loss,
@@ -4404,6 +4434,12 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     "settings": {
                         "attempts": approved_settings.get(
                             "attempts", approved_hyperopt.get("attempts")
+                        ),
+                        "optimizeRoi": approved_settings.get(
+                            "optimizeRoi", approved_hyperopt.get("optimizeRoi", True)
+                        ),
+                        "useExitSignal": approved_settings.get(
+                            "useExitSignal", approved_hyperopt.get("useExitSignal", True)
                         ),
                         "stopDistanceMode": approved_settings.get(
                             "stopDistanceMode",
@@ -4640,6 +4676,12 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                         "hyperoptLoss",
                         latest_report.get("hyperoptLoss", DEFAULT_HYPEROPT_LOSS),
                     )
+                ),
+                "optimizeRoi": run_settings.get(
+                    "optimizeRoi", approved_hyperopt.get("optimizeRoi", True)
+                ),
+                "useExitSignal": run_settings.get(
+                    "useExitSignal", approved_hyperopt.get("useExitSignal", True)
                 ),
                 "stopDistanceMode": str(
                     run_settings.get(
@@ -5124,6 +5166,13 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             raise HTTPException(
                 status_code=400, detail="trailingStopLoss must be a boolean"
             )
+        optimize_roi = payload.get("optimizeRoi", True)
+        use_exit_signal = payload.get("useExitSignal", True)
+        if not isinstance(optimize_roi, bool) or not isinstance(use_exit_signal, bool):
+            raise HTTPException(
+                status_code=400,
+                detail="optimizeRoi and useExitSignal must be booleans",
+            )
         try:
             position_size = Decimal(str(payload.get("positionSize", "1000")))
             stop_distance_mode = str(payload.get("stopDistanceMode", "static")).lower()
@@ -5184,12 +5233,12 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         ]
         if (
             not parameters
-            and not strategy.minimal_roi
+            and not optimize_roi
             and stop_distance_mode != "automatic"
         ):
             raise HTTPException(
                 status_code=400,
-                detail=f"{strategy_class} has no optimizable parameters or minimal ROI",
+                detail=f"{strategy_class} has no optimizable parameters, ROI, or stop distance",
             )
         settings = OandaSettings.from_environment()
         if settings.execution_mode not in {"dry_run", "backtest", "practice"}:
@@ -5319,6 +5368,8 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             "stopLossMode": stop_loss_mode,
             "stopLossValue": str(stop_loss_value),
             "trailingStopLoss": trailing_stop_loss,
+            "optimizeRoi": optimize_roi,
+            "useExitSignal": use_exit_signal,
             "hyperoptLoss": hyperopt_loss,
             "spread": str(spread),
             "slippage": str(slippage),
@@ -5343,6 +5394,8 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             "attemptsTotal": attempts,
             "workers": workers,
             "stopDistanceMode": stop_distance_mode,
+            "optimizeRoi": optimize_roi,
+            "useExitSignal": use_exit_signal,
             "runSettings": run_settings,
             "startedAt": datetime.now(timezone.utc).isoformat(),
             "stopEvent": threading.Event(),
@@ -5368,6 +5421,8 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 stop_loss_mode=stop_loss_mode,
                 stop_loss_value=stop_loss_value,
                 optimize_stop_distance=stop_distance_mode == "automatic",
+                optimize_roi=optimize_roi,
+                use_exit_signal=use_exit_signal,
                 trailing_stop_loss=trailing_stop_loss,
                 position_size_mode=position_size_mode,
                 position_size=position_size,
@@ -5526,6 +5581,8 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "runSettings": dict(report.get("runSettings") or {}),
                 "parameters": dict(report.get("bestParameters") or {}),
                 "minimal_roi": dict(report.get("bestMinimalRoi") or {}),
+                "optimizeRoi": report.get("optimizeRoi", True),
+                "useExitSignal": report.get("useExitSignal", True),
                 "stopLoss": dict(report.get("stopLoss") or {}),
                 "trailingStopLoss": report.get("trailingStopLoss") is True,
                 "objective": str(report.get("objective", "")),
@@ -5571,6 +5628,8 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "hyperopt": {
                     "parameters": dict(pending.get("parameters") or {}),
                     "minimal_roi": dict(pending.get("minimal_roi") or {}),
+                    "optimizeRoi": pending.get("optimizeRoi", True),
+                    "useExitSignal": pending.get("useExitSignal", True),
                     "stopLoss": dict(pending.get("stopLoss") or {}),
                     "trailingStopLoss": pending.get("trailingStopLoss") is True,
                     "historyMode": pending.get("historyMode", "candles"),
@@ -5898,6 +5957,18 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     )
                     else None
                 ),
+                use_roi=(
+                    approved_hyperopt.get("optimizeRoi")
+                    if isinstance(approved_hyperopt, dict)
+                    and isinstance(approved_hyperopt.get("optimizeRoi"), bool)
+                    else None
+                ),
+                use_exit_signal=(
+                    approved_hyperopt.get("useExitSignal")
+                    if isinstance(approved_hyperopt, dict)
+                    and isinstance(approved_hyperopt.get("useExitSignal"), bool)
+                    else None
+                ),
             )
             informative_timeframes = strategy_informative_timeframes(
                 strategy_instance, normalized_pair
@@ -6154,6 +6225,10 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                         ),
                         "stopLossOptimized": stop_loss_optimized,
                         "trailingStopLoss": trailing_stop_loss,
+                        "useRoi": bool(getattr(strategy_instance, "minimal_roi", {})),
+                        "useExitSignal": bool(
+                            getattr(strategy_instance, "use_exit_signal", True)
+                        ),
                         "spread": str(spread),
                         "slippage": str(slippage),
                         "financingRatePerDayPercent": str(financing_rate_per_day * Decimal("100")),

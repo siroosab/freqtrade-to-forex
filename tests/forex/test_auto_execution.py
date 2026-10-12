@@ -482,9 +482,11 @@ async def test_approved_trailing_stop_flag_controls_oanda_order_protection(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("roi_enabled", [True, False])
 async def test_approved_minimal_roi_closes_profitable_automated_trade(
     tmp_path,
     monkeypatch,
+    roi_enabled,
 ) -> None:
     _strategy_directory(tmp_path, monkeypatch)
     client = FakeOandaClient(_candles("long"))
@@ -502,13 +504,86 @@ async def test_approved_minimal_roi_closes_profitable_automated_trade(
     executor.risk_configs["EUR/USD"]["takeProfit"] = None
     executor.setup["pair_approved_revisions"]["EUR_USD"]["hyperopt"] = {
         "minimal_roi": {"0": 0.0005},
+        "optimizeRoi": roi_enabled,
     }
 
     results = await executor.run_cycle()
 
-    assert client.closed_trade_ids == ["trade-roi"]
+    assert client.closed_trade_ids == (["trade-roi"] if roi_enabled else [])
     assert client.orders == []
-    assert results[0]["status"] == "closed"
+    if roi_enabled:
+        assert results[0]["status"] == "closed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exit_signal_enabled", [True, False])
+async def test_approved_exit_signal_setting_overrides_strategy_default(
+    tmp_path,
+    monkeypatch,
+    exit_signal_enabled,
+) -> None:
+    _strategy_directory(tmp_path, monkeypatch)
+    client = FakeOandaClient(_candles("long"))
+    client.open_trades = [
+        {
+            "id": "trade-exit-signal",
+            "instrument": "EUR_USD",
+            "currentUnits": "1000",
+            "price": "1.0990",
+            "openTime": "2026-10-03T17:45:00Z",
+            "tradeClientExtensions": {"tag": "auto"},
+        }
+    ]
+    executor = _executor(client)
+    executor.risk_configs["EUR/USD"]["takeProfit"] = None
+    executor.setup["pair_approved_revisions"]["EUR_USD"]["hyperopt"] = {
+        "useExitSignal": exit_signal_enabled,
+        "optimizeRoi": False,
+    }
+    monkeypatch.setattr(
+        "freqtrade.forex.auto_execution.FreqtradeStrategyAdapter.exit_signal",
+        lambda self, candles, side: True,
+    )
+
+    await executor.run_cycle()
+
+    assert client.closed_trade_ids == (
+        ["trade-exit-signal"] if exit_signal_enabled else []
+    )
+
+
+@pytest.mark.asyncio
+async def test_disabled_exit_signals_do_not_close_automated_trade_on_reversal(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _strategy_directory(tmp_path, monkeypatch)
+    client = FakeOandaClient(_candles("short"))
+    client.open_trades = [
+        {
+            "id": "trade-reversal",
+            "instrument": "EUR_USD",
+            "currentUnits": "1000",
+            "price": "1.0990",
+            "openTime": "2026-10-03T17:45:00Z",
+            "tradeClientExtensions": {"tag": "auto"},
+        }
+    ]
+    executor = _executor(client)
+    executor.risk_configs["EUR/USD"]["takeProfit"] = None
+    executor.setup["pair_approved_revisions"]["EUR_USD"]["hyperopt"] = {
+        "useExitSignal": False,
+        "optimizeRoi": False,
+    }
+    monkeypatch.setattr(
+        "freqtrade.forex.auto_execution.FreqtradeStrategyAdapter.exit_signal",
+        lambda self, candles, side: False,
+    )
+
+    await executor.run_cycle()
+
+    assert client.closed_trade_ids == []
+    assert client.orders == []
 
 
 @pytest.mark.asyncio

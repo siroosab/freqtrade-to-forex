@@ -122,6 +122,19 @@ def test_strategy_loader_applies_pair_timeframe_and_checks_informatives() -> Non
         load_strategy("ForexEmaStrategy", "1d", "EUR/USD")
 
 
+def test_approved_strategy_exit_options_override_strategy_defaults() -> None:
+    approved = load_strategy(
+        "ForexMasterStrategy",
+        "15m",
+        "EUR/USD",
+        minimal_roi={"0": 0.01},
+        use_roi=False,
+        use_exit_signal=False,
+    )
+    assert approved.minimal_roi == {}
+    assert approved.use_exit_signal is False
+
+
 def test_live_ema_uses_forming_four_hour_close_without_changing_history() -> None:
     strategy = load_strategy("ForexEmaStrategy", "5m", "EUR/USD")
     base_dates = pd.date_range("2026-01-01", periods=2000, freq="5min", tz="UTC")
@@ -350,12 +363,14 @@ def test_builtin_ema_strategy_exposes_optimizer_parameters() -> None:
         (False, "percent", Decimal("1.25")),
     ],
 )
+@pytest.mark.parametrize("roi_enabled", [True, False])
 def test_hyperopt_reports_the_trailing_stop_distance(
     tmp_path,
     monkeypatch,
     optimize_stop_distance,
     stop_loss_mode,
     stop_loss_value,
+    roi_enabled,
 ) -> None:
     strategy_directory = tmp_path / "strategies"
     strategy_directory.mkdir()
@@ -415,6 +430,8 @@ class StopDistanceStrategy(IStrategy):
         stop_loss_mode=stop_loss_mode,
         stop_loss_value=stop_loss_value,
         trailing_stop_loss=True,
+        optimize_roi=roi_enabled,
+        use_exit_signal=roi_enabled,
         max_attempts=2,
         hyperopt_loss="ProfitDrawDownHyperOptLoss",
     )
@@ -422,6 +439,13 @@ class StopDistanceStrategy(IStrategy):
     for candidate in candidates:
         assert candidate["validationWinRate"] == "0.00"
         assert candidate["validationProfitPercent"] == "0.00"
+        assert candidate["optimizeRoi"] is roi_enabled
+        assert candidate["useExitSignal"] is roi_enabled
+        if roi_enabled:
+            assert candidate["minimal_roi"]
+        else:
+            assert candidate["minimal_roi"] == {}
+            assert candidate["roi_parameters"] == {}
         stop_loss = candidate["stopLoss"]
         assert candidate["trailingStopLoss"] is True
         assert stop_loss["mode"] == ("pips" if optimize_stop_distance else "percent")

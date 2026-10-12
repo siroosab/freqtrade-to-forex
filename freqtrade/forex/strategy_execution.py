@@ -75,6 +75,8 @@ def load_strategy(
     parameter_values: dict[str, object] | None = None,
     config_overrides: dict[str, object] | None = None,
     minimal_roi: dict[str, object] | None = None,
+    use_roi: bool | None = None,
+    use_exit_signal: bool | None = None,
 ) -> IStrategy:
     selected = next((item for item in discover_strategy_files() if item.name == strategy_name), None)
     if selected is None:
@@ -129,6 +131,10 @@ def load_strategy(
             setattr(strategy, name, value)
     if minimal_roi is not None:
         strategy.minimal_roi = _validated_minimal_roi(minimal_roi)
+    if use_roi is False:
+        strategy.minimal_roi = {}
+    if use_exit_signal is not None:
+        strategy.use_exit_signal = use_exit_signal
     strategy_informative_timeframes(strategy, pair)
     return strategy
 
@@ -202,7 +208,7 @@ class FreqtradeStrategyAdapter:
 
     @property
     def use_exit_signal(self) -> bool:
-        return self.strategy.use_exit_signal
+        return bool(getattr(self.strategy, "use_exit_signal", True))
 
     def update_informative_candles(
         self,

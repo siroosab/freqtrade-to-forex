@@ -174,6 +174,16 @@ class OandaAutoStrategyExecutor:
             pair,
             parameter_values=parameter_values if isinstance(parameter_values, dict) else None,
             minimal_roi=minimal_roi if isinstance(minimal_roi, dict) else None,
+            use_roi=(
+                parameters.get("optimizeRoi")
+                if isinstance(parameters.get("optimizeRoi"), bool)
+                else None
+            ),
+            use_exit_signal=(
+                parameters.get("useExitSignal")
+                if isinstance(parameters.get("useExitSignal"), bool)
+                else None
+            ),
         )
         informative_candles: dict[str, pd.DataFrame] = {}
         for informative_timeframe in strategy_informative_timeframes(strategy, pair):
@@ -425,13 +435,18 @@ class OandaAutoStrategyExecutor:
         automated_side = _trade_side(automated_trades[0])
         should_exit = (
             not ignore_strategy_exits
+            and adapter.use_exit_signal
             and adapter.exit_signal(
                 candles,
                 Signal.LONG if automated_side == "long" else Signal.SHORT,
             )
         )
-        opposite = (signal is Signal.SHORT and automated_side == "long") or (
-            signal is Signal.LONG and automated_side == "short"
+        opposite = (
+            adapter.use_exit_signal
+            and (
+                (signal is Signal.SHORT and automated_side == "long")
+                or (signal is Signal.LONG and automated_side == "short")
+            )
         )
         roi_exit = (
             _roi_exit_due(automated_trades[0], adapter.minimal_roi, price, automated_side)

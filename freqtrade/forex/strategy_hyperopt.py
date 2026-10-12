@@ -60,6 +60,8 @@ class _HyperoptWorkerContext:
     starting_balance: Decimal
     risk_fraction: Decimal
     optimize_stop_distance: bool
+    optimize_roi: bool
+    use_exit_signal: bool
     stop_loss_mode: str
     stop_loss_value: Decimal
     trailing_stop_loss: bool
@@ -123,6 +125,8 @@ def _evaluate_hyperopt_candidate(
             candidate_stop_pips if context.optimize_stop_distance else context.stop_loss_value
         ),
         trailing_stop_loss=context.trailing_stop_loss,
+        optimize_roi=context.optimize_roi,
+        use_exit_signal=context.use_exit_signal,
         spread=context.spread,
         slippage=context.slippage,
         financing_rate_per_day=context.financing_rate_per_day,
@@ -142,6 +146,8 @@ def _evaluate_hyperopt_candidate(
     return attempt, {
         "parameters": values,
         "trailingStopLoss": context.trailing_stop_loss,
+        "optimizeRoi": context.optimize_roi,
+        "useExitSignal": context.use_exit_signal,
         "stopLoss": {
             "mode": "pips" if context.optimize_stop_distance else context.stop_loss_mode,
             "value": str(
@@ -535,6 +541,8 @@ def _create_candidate_evaluator(
     stop_loss_mode: str,
     stop_loss_value: Decimal,
     trailing_stop_loss: bool,
+    optimize_roi: bool,
+    use_exit_signal: bool,
     spread: Decimal,
     slippage: Decimal,
     financing_rate_per_day: Decimal,
@@ -548,7 +556,13 @@ def _create_candidate_evaluator(
         *,
         indicator_context: pd.DataFrame | None = None,
     ) -> BacktestResult:
-        candidate_strategy = load_strategy(strategy_class, timeframe, pair)
+        candidate_strategy = load_strategy(
+            strategy_class,
+            timeframe,
+            pair,
+            use_roi=optimize_roi,
+            use_exit_signal=use_exit_signal,
+        )
         for name, value in candidate_values.items():
             parameter = deepcopy(parameters[name])
             parameter.value = value
@@ -601,6 +615,8 @@ def run_strategy_hyperopt(
     stop_loss_mode: str = "pips",
     stop_loss_value: Decimal = Decimal("0.5"),
     optimize_stop_distance: bool = False,
+    optimize_roi: bool = True,
+    use_exit_signal: bool = True,
     trailing_stop_loss: bool = False,
     slippage: Decimal = Decimal(0),
     financing_rate_per_day: Decimal = Decimal(0),
@@ -616,7 +632,7 @@ def run_strategy_hyperopt(
     should_stop: Callable[[], bool] | None = None,
     workers: int = 1,
 ) -> list[dict[str, object]]:
-    """Optimize strategy parameters and ROI on held-out candles."""
+    """Optimize strategy parameters and selected ROI/exit behavior on held-out candles."""
     if len(candles) < 40:
         raise ValueError("strategy hyperopt requires at least 40 candles")
     available_workers = hyperopt_worker_limit()
@@ -628,6 +644,8 @@ def run_strategy_hyperopt(
         raise ValueError(
             f"workers must be an integer between 1 and the {available_workers} available CPUs"
         )
+    if not isinstance(optimize_roi, bool) or not isinstance(use_exit_signal, bool):
+        raise ValueError("optimize_roi and use_exit_signal must be booleans")
     strategy = load_strategy(strategy_class, timeframe, pair)
     class_attributes: dict[str, object] = {}
     for strategy_type in reversed(type(strategy).__mro__):
@@ -670,6 +688,8 @@ def run_strategy_hyperopt(
         starting_balance=starting_balance,
         risk_fraction=risk_fraction,
         optimize_stop_distance=optimize_stop_distance,
+        optimize_roi=optimize_roi,
+        use_exit_signal=use_exit_signal,
         stop_loss_mode=stop_loss_mode,
         stop_loss_value=stop_loss_value,
         trailing_stop_loss=trailing_stop_loss,
@@ -698,8 +718,12 @@ def run_strategy_hyperopt(
             else stop_pips
         )
         values = _sample_strategy_parameters(parameters, rng, search_bounds)
-        roi_parameters = _sample_roi_parameters(rng, timeframe, roi_volatility_per_5m)
-        minimal_roi = _generate_roi_table(roi_parameters)
+        roi_parameters = (
+            _sample_roi_parameters(rng, timeframe, roi_volatility_per_5m)
+            if optimize_roi
+            else {}
+        )
+        minimal_roi = _generate_roi_table(roi_parameters) if optimize_roi else {}
         tasks.append((attempt, values, roi_parameters, minimal_roi, candidate_stop_pips))
 
     rows = _evaluate_hyperopt_tasks(

@@ -156,6 +156,8 @@ export type StrategyReview = {
       minimal_roi?: Record<string, number>
       bestMinimalRoi?: Record<string, number>
       trailingStopLoss?: boolean
+      optimizeRoi?: boolean
+      useExitSignal?: boolean
       stopLoss?: {
         mode: 'pips' | 'percent' | 'money'
         value: string
@@ -169,6 +171,8 @@ export type StrategyReview = {
 export type HyperoptCandidateRow = {
   rank: number
   trailingStopLoss?: boolean
+  optimizeRoi?: boolean
+  useExitSignal?: boolean
   parameters: Record<string, string | number | boolean>
   minimal_roi?: Record<string, number>
   stopLoss?: {
@@ -211,6 +215,8 @@ export type HyperoptReport = {
     optimized: boolean
   }
   trailingStopLoss?: boolean
+  optimizeRoi?: boolean
+  useExitSignal?: boolean
   positionSizing?: {
     mode: 'risk' | 'units' | 'account_amount'
     value: string | null
@@ -281,6 +287,8 @@ export type AutoHyperoptSchedule = {
     approvedAt?: string | null
     settings?: {
       attempts?: number | null
+      optimizeRoi?: boolean
+      useExitSignal?: boolean
       stopDistanceMode?: string
     }
     selected: boolean
@@ -367,6 +375,8 @@ export type BacktestRunResult = {
     stopLossUnit: string
     stopLossOptimized: boolean
     trailingStopLoss: boolean
+    useRoi: boolean
+    useExitSignal: boolean
     configSource: 'approved-hyperopt' | 'default'
   }
   tradeDetails?: Array<Record<string, string | number | null | boolean>>
@@ -433,7 +443,7 @@ async function throwApiError(response: Response, message: string): Promise<never
   throw new Error(`${message}: ${detail}`)
 }
 
-export async function startHyperopt(payload: { pair: string; timeframe: string; strategyClass: string; steps: number; attempts: number; workers: number; historyMode?: 'candles' | 'days' | 'date_range'; historyValue?: number; startDate?: string; endDate?: string; hyperoptLoss?: string; spread?: string; slippage?: string; financingRatePerDayPercent?: string; commissionRatePercent?: string; positionSizeMode?: 'risk' | 'units' | 'account_amount'; positionSize?: string; stopDistanceMode?: 'static' | 'automatic'; stopLossMode?: 'pips' | 'percent' | 'money'; stopLossValue?: string; trailingStopLoss?: boolean }): Promise<{ pair: string; status: string; attemptsTotal: number; workers: number }> {
+export async function startHyperopt(payload: { pair: string; timeframe: string; strategyClass: string; steps: number; attempts: number; workers: number; historyMode?: 'candles' | 'days' | 'date_range'; historyValue?: number; startDate?: string; endDate?: string; hyperoptLoss?: string; spread?: string; slippage?: string; financingRatePerDayPercent?: string; commissionRatePercent?: string; positionSizeMode?: 'risk' | 'units' | 'account_amount'; positionSize?: string; stopDistanceMode?: 'static' | 'automatic'; stopLossMode?: 'pips' | 'percent' | 'money'; stopLossValue?: string; trailingStopLoss?: boolean; optimizeRoi?: boolean; useExitSignal?: boolean }): Promise<{ pair: string; status: string; attemptsTotal: number; workers: number }> {
   const response = await fetch(buildApiUrl('/api/v1/hyperopt/start'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

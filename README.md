@@ -326,6 +326,33 @@ daemon-reload و enable/disable را مدیریت کند. این کنترل‌ه
 journalctl --user -u freqtrade-forex -f
 ```
 
+این فرمان فقط لاگ‌ها را می‌خواند و سرویس را start یا restart نمی‌کند. اگر UI
+باز نمی‌شود، اول وضعیت خود unit و پاسخ API محلی را بررسی کنید:
+
+```bash
+systemctl --user status freqtrade-forex --no-pager
+systemctl --user show freqtrade-forex -p MainPID -p ActiveState -p ControlGroup
+pgrep -af 'uvicorn freqtrade.forex.api:app'
+curl -sS -o /dev/null -w 'HTTP %{http_code}\n' --max-time 10 http://127.0.0.1:8090/
+```
+
+اگر `ActiveState=inactive` و `MainPID=0` است ولی `curl` پاسخ می‌گیرد، API از
+یک اجرای دیگر (مثلاً Uvicorn اجراشده در نشست SSH) سرو می‌شود، نه از این unit.
+به‌خصوص اگر پردازهٔ Uvicorn به `bash`/نشست SSH تعلق دارد، آن را اجرای systemd
+فرض نکنید. پیش از متوقف‌کردن آن، وضعیت اجرای زنده و Hyperopt را بررسی کنید؛
+توقف API می‌تواند workerهای داخل همان فرایند را نیز متوقف کند. اجرای دستی را
+فقط از همان ترمینالی که شروع شده، پس از اطمینان از امن‌بودن توقف، با `Ctrl+C`
+تمام کنید؛ سپس unit را start کنید:
+
+```bash
+systemctl --user start freqtrade-forex
+systemctl --user status freqtrade-forex --no-pager
+```
+
+`Restart=on-failure` در unit، توقف عادی با `SIGTERM` یا دستور `systemctl stop`
+را restart نمی‌کند؛ این رفتار عمدی است. برای بررسی خطاهای سرویس، لاگ را جداگانه
+در ترمینال دیگری دنبال کنید.
+
 برای اجرای سرویس بعد از logout و reboot، یک‌بار lingering را فعال کنید:
 
 ```bash
@@ -386,6 +413,14 @@ python -m freqtrade.forex show-timeframes --pair EUR/USD
 ذخیره می‌شوند؛ پس از تأیید، همراه همان جفت‌ارز، strategy و تایم‌فریم ثبت و در
 سیگنال‌ها و بک‌تست بعدی اعمال می‌شوند. Hyperopt زمان‌بندی‌شده
 نیز از همین مسیر استفاده می‌کند؛ گزارش تأییدنشده به‌تنهایی تنظیم زنده را عوض نمی‌کند.
+در `02 · Manual Hyperopt` دو تیک `Include ROI in optimization` و
+`Use strategy exit signals` با پیش‌فرض روشن وجود دارد. انتخاب‌ها در گزارش و
+revision تأییدشده ثبت می‌شوند. پس از تأیید، بک‌تست `Research · 01` و اجرای زنده
+هر دو از همین انتخاب‌ها پیروی می‌کنند و بر `minimal_roi` و
+`use_exit_signal` تعریف‌شده در خود strategy اولویت دارند؛ خاموش‌کردن ROI، خروج
+ROI را غیرفعال می‌کند و خاموش‌کردن سیگنال خروج، خروج‌های صریح و معکوس‌شدن سیگنال
+را در بک‌تست و ترید خودکار متوقف می‌کند. Hyperopt زمان‌بندی‌شده نیز انتخاب‌های
+همان revision را برای اجرای بعدی حفظ می‌کند.
 در بخش `02 · Manual Hyperopt` صفحهٔ `/hyperopt`، گزینهٔ `Trailing stop loss`
 به‌طور پیش‌فرض خاموش است. با فعال‌کردن آن، Hyperopt همان trailing stop را در
 ارزیابی candidateها شبیه‌سازی می‌کند و وضعیت روشن/خاموش را همراه نتیجهٔ همان

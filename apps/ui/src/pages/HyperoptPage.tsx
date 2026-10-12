@@ -112,6 +112,8 @@ export function HyperoptPage() {
   const [stopLossMode, setStopLossMode] = useState<'pips' | 'percent' | 'money'>('pips')
   const [stopDistanceMode, setStopDistanceMode] = useState<'static' | 'automatic'>('automatic')
   const [trailingStopLoss, setTrailingStopLoss] = useState(true)
+  const [optimizeRoi, setOptimizeRoi] = useState(true)
+  const [useExitSignal, setUseExitSignal] = useState(true)
   const [stopLossPips, setStopLossPips] = useState('0.5')
   const [backtestStopLossPipsOverride, setBacktestStopLossPipsOverride] = useState<{
     scope: string
@@ -360,6 +362,8 @@ export function HyperoptPage() {
       positionSize: selectedPositionSize,
       stopDistanceMode,
       trailingStopLoss,
+      optimizeRoi,
+      useExitSignal,
       stopLossMode: stopDistanceMode === 'automatic' ? 'pips' : stopLossMode,
       stopLossValue: stopDistanceMode === 'automatic' ? stopLossPips : stopLossValue,
     })
@@ -692,6 +696,15 @@ export function HyperoptPage() {
                   </strong>
                 </div>
               )}
+              {backtest.execution && (
+                <div>
+                  <span>Approved exit behavior</span>
+                  <strong>
+                    ROI {backtest.execution.useRoi ? 'enabled' : 'disabled'} · strategy exit signals {backtest.execution.useExitSignal ? 'enabled' : 'disabled'}
+                    {backtest.execution.configSource === 'approved-hyperopt' ? ' · approved Hyperopt' : ''}
+                  </strong>
+                </div>
+              )}
               {backtest.warning && <div><span>Data note</span><strong>{backtest.warning}</strong></div>}
             </div>
           )}
@@ -777,6 +790,30 @@ export function HyperoptPage() {
               />
               <small>
                 When enabled, Hyperopt evaluates a trailing stop using the selected stop distance. Approved trades use OANDA's native trailing-stop order; when disabled, the fixed stop loss remains in effect.
+              </small>
+            </label>
+            <label className="field-block">
+              <span>Include ROI in optimization</span>
+              <input
+                className="trailing-stop-checkbox"
+                type="checkbox"
+                checked={optimizeRoi}
+                onChange={(event) => setOptimizeRoi(event.target.checked)}
+              />
+              <small>
+                When enabled, Hyperopt searches ROI targets and includes the approved ROI schedule in Backtest and live trading. Disabled means ROI exits are off, regardless of the strategy default.
+              </small>
+            </label>
+            <label className="field-block">
+              <span>Use strategy exit signals</span>
+              <input
+                className="trailing-stop-checkbox"
+                type="checkbox"
+                checked={useExitSignal}
+                onChange={(event) => setUseExitSignal(event.target.checked)}
+              />
+              <small>
+                When enabled, signal-based and explicit strategy exits are evaluated. The approved setting overrides the strategy default in Backtest and live trading.
               </small>
             </label>
             {stopDistanceMode === 'static' ? (
@@ -892,7 +929,12 @@ export function HyperoptPage() {
                   </strong></div>
                 )}
                 <div><span>Best parameters</span><strong>{Object.entries(report.bestParameters).map(([key, value]) => `${key}: ${value}`).join(' · ') || 'No tunable parameters'}</strong></div>
-                {report.bestMinimalRoi && <div><span>Minimal ROI</span><strong>{Object.entries(report.bestMinimalRoi).map(([key, value]) => `${key}m: ${value}`).join(' · ')}</strong></div>}
+                <div><span>Optimization behavior</span><strong>
+                  ROI {report.optimizeRoi === false ? 'disabled' : 'included'}
+                  {' · strategy exit signals '}
+                  {report.useExitSignal === false ? 'disabled' : 'enabled'}
+                </strong></div>
+                {report.bestMinimalRoi && Object.keys(report.bestMinimalRoi).length > 0 && <div><span>Minimal ROI</span><strong>{Object.entries(report.bestMinimalRoi).map(([key, value]) => `${key}m: ${value}`).join(' · ')}</strong></div>}
               </div>
               <div className="strategy-table-wrap">
                 <table className="positions-table">
@@ -944,6 +986,8 @@ export function HyperoptPage() {
               {' '}· trailing stop: {reviewQuery.data.approvedRevision.hyperopt?.trailingStopLoss === true
                 ? `enabled (${formatTrailingStopLoss(reviewQuery.data.approvedRevision.hyperopt.stopLoss)})`
                 : 'disabled'}
+              {' '}· ROI: {reviewQuery.data.approvedRevision.hyperopt?.optimizeRoi === false ? 'disabled' : 'enabled'}
+              {' '}· strategy exit signals: {reviewQuery.data.approvedRevision.hyperopt?.useExitSignal === false ? 'disabled' : 'enabled'}
             </p>
           )}
           <div className="summary-grid">
