@@ -28,45 +28,75 @@ class ForexEmaCrossStrategy(IStrategy):
     process_only_new_candles = True
     use_exit_signal = True
 
-    fast_ema_index = CategoricalParameter(
+    entry_fast_ema_index = CategoricalParameter(
         list(range(2, 8)),
         default=3,
         space="buy",
     )
-    slow_ema_index = CategoricalParameter(
+    entry_slow_ema_index = CategoricalParameter(
         list(range(8, 22)),
         default=19,
         space="buy",
     )
-    ema_timeperiod = CategoricalParameter(
+    entry_ema_timeperiod = CategoricalParameter(
         list(range(7, 22)),
         default=14,
         space="buy",
     )
+    exit_fast_ema_index = CategoricalParameter(
+        list(range(2, 5)),
+        default=3,
+        space="sell",
+    )
+    exit_slow_ema_index = CategoricalParameter(
+        list(range(5, 8)),
+        default=6,
+        space="sell",
+    )
+    exit_ema_timeperiod = CategoricalParameter(
+        list(range(2, 7)),
+        default=4,
+        space="sell",
+    )
 
     def __init__(self, config: dict | None = None) -> None:
         super().__init__(config or {})
-        for parameter_name in ("fast_ema_index", "slow_ema_index", "ema_timeperiod"):
+        for parameter_name in (
+            "entry_fast_ema_index",
+            "entry_slow_ema_index",
+            "entry_ema_timeperiod",
+            "exit_fast_ema_index",
+            "exit_slow_ema_index",
+            "exit_ema_timeperiod",
+        ):
             setattr(self, parameter_name, deepcopy(getattr(type(self), parameter_name)))
 
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
-        return add_chained_ema_indicators(
+        add_chained_ema_indicators(
             dataframe,
             ema_count=20,
-            timeperiod=int(self.ema_timeperiod.value),
+            timeperiod=int(self.entry_ema_timeperiod.value),
         )
+        exit_indicators = add_chained_ema_indicators(
+            dataframe[["close"]].copy(),
+            ema_count=20,
+            timeperiod=int(self.exit_ema_timeperiod.value),
+        )
+        for index in range(2, 22):
+            dataframe[f"exit_ema_x_{index}"] = exit_indicators[f"ema_x_{index}"]
+        return dataframe
 
     def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
-        fast_ema = dataframe[f"ema_x_{self.fast_ema_index.value}"]
-        slow_ema = dataframe[f"ema_x_{self.slow_ema_index.value}"]
+        fast_ema = dataframe[f"ema_x_{self.entry_fast_ema_index.value}"]
+        slow_ema = dataframe[f"ema_x_{self.entry_slow_ema_index.value}"]
 
         dataframe["enter_long"] = qtpylib.crossed_above(fast_ema, slow_ema).fillna(False)
         dataframe["enter_short"] = qtpylib.crossed_below(fast_ema, slow_ema).fillna(False)
         return dataframe
 
     def populate_exit_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
-        fast_ema = dataframe[f"ema_x_{self.fast_ema_index.value}"]
-        slow_ema = dataframe[f"ema_x_{self.slow_ema_index.value}"]
+        fast_ema = dataframe[f"exit_ema_x_{self.exit_fast_ema_index.value}"]
+        slow_ema = dataframe[f"exit_ema_x_{self.exit_slow_ema_index.value}"]
 
         dataframe["exit_long"] = qtpylib.crossed_below(fast_ema, slow_ema).fillna(False)
         dataframe["exit_short"] = qtpylib.crossed_above(fast_ema, slow_ema).fillna(False)
