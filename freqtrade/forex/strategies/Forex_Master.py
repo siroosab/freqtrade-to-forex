@@ -4,8 +4,6 @@ from copy import deepcopy
 
 import pandas as pd
 from pandas import DataFrame
-
-from freqtrade.forex.features import add_chained_ema_indicators
 from freqtrade.strategy import DecimalParameter, IntParameter, IStrategy
 
 
@@ -59,7 +57,6 @@ class ForexMasterStrategy(IStrategy):
         high = pd.to_numeric(dataframe["high"], errors="coerce")
         low = pd.to_numeric(dataframe["low"], errors="coerce")
         close = pd.to_numeric(dataframe["close"], errors="coerce")
-        add_chained_ema_indicators(dataframe, ema_count=20, timeperiod=14)
         band_length = int(self.band_length.value)
 
         basis = close.rolling(band_length, min_periods=band_length).mean()
