@@ -29,12 +29,12 @@ class ForexEmaCrossStrategy(IStrategy):
     use_exit_signal = True
 
     fast_ema_index = CategoricalParameter(
-        list(range(3, 20)),
+        list(range(2, 8)),
         default=3,
         space="buy",
     )
     slow_ema_index = CategoricalParameter(
-        list(range(4, 22)),
+        list(range(8, 22)),
         default=19,
         space="buy",
     )

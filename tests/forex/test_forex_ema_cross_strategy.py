@@ -35,14 +35,15 @@ def test_ema_cross_uses_selected_ema_indices_for_entry_and_exit() -> None:
 def test_ema_cross_exposes_limited_categorical_parameters_and_chained_emas() -> None:
     strategy = load_strategy("ForexEmaCrossStrategy", "15m", "EUR/USD")
 
-    assert strategy.fast_ema_index.opt_range == list(range(3, 20))
-    assert strategy.slow_ema_index.opt_range == list(range(4, 22))
+    assert strategy.fast_ema_index.opt_range == list(range(2, 8))
+    assert strategy.slow_ema_index.opt_range == list(range(8, 22))
     assert strategy.ema_timeperiod.opt_range == list(range(7, 22))
     assert strategy.ema_timeperiod.value == 14
 
     dataframe = pd.DataFrame({"close": [float(index) for index in range(100)]})
     result = strategy.populate_indicators(dataframe, {"pair": "EUR/USD"})
 
-    assert "ema_x_3" in result
-    assert "ema_x_19" in result
+    assert "ema_x_2" in result
+    assert "ema_x_7" in result
+    assert "ema_x_8" in result
     assert "ema_x_21" in result
