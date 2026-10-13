@@ -29,32 +29,32 @@ class ForexEmaCrossStrategy(IStrategy):
     use_exit_signal = True
 
     entry_fast_ema_index = CategoricalParameter(
-        list(range(2, 8)),
+        list(range(5, 10)),
         default=3,
         space="buy",
     )
     entry_slow_ema_index = CategoricalParameter(
-        list(range(8, 22)),
+        list(range(12, 22)),
         default=19,
         space="buy",
     )
-    entry_ema_timeperiod = CategoricalParameter(
-        list(range(7, 22)),
+    entry_ema_timeperiod = CategoricalParameter(  #ema_timeperiod
+        list(range(7, 9)),
         default=14,
         space="buy",
     )
     exit_fast_ema_index = CategoricalParameter(
-        list(range(2, 5)),
+        list(range(3, 7)),
         default=3,
         space="sell",
     )
     exit_slow_ema_index = CategoricalParameter(
-        list(range(5, 8)),
+        list(range(7, 14)),
         default=6,
         space="sell",
     )
-    exit_ema_timeperiod = CategoricalParameter(
-        list(range(2, 7)),
+    exit_ema_timeperiod = CategoricalParameter(  #ema_timeperiod
+        list(range(5, 7)),
         default=4,
         space="sell",
     )
