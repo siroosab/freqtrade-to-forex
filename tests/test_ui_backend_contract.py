@@ -769,6 +769,10 @@ def test_hyperopt_approval_flows_into_chart_strategy(
         def __init__(self, strategy, pair, informative_candles=None):
             pass
 
+        @property
+        def use_exit_signal(self):
+            return use_exit_signal
+
         def signal(self, candles):
             signal = "long" if len(candles) == 1 else "short" if len(candles) == 2 else "flat"
             return type("Signal", (), {"value": signal})()
@@ -784,6 +788,11 @@ def test_hyperopt_approval_flows_into_chart_strategy(
             frame["lower"] = close - 0.001
             frame["adx_fast"] = 20.0
             frame["adx_slow"] = 25.0
+            frame["exit_long"] = False
+            frame["exit_short"] = False
+            if len(frame) > 3:
+                frame.iloc[2, frame.columns.get_loc("exit_long")] = True
+                frame.iloc[3, frame.columns.get_loc("exit_short")] = True
             return frame
 
     def fake_hyperopt(*args, **kwargs):
@@ -1082,14 +1091,27 @@ def test_hyperopt_approval_flows_into_chart_strategy(
         for indicator in strategy_indicators.values()
     )
     chart_signals = chart.json()["signals"]
-    assert [signal["side"] for signal in chart_signals] == ["BUY", "SELL"]
+    chart_entries = [
+        signal for signal in chart_signals if signal["signalType"].startswith("entry_")
+    ]
+    assert [signal["side"] for signal in chart_entries] == ["BUY", "SELL"]
+    assert [signal["signalType"] for signal in chart_entries] == [
+        "entry_long",
+        "entry_short",
+    ]
+    expected_exit_types = ["exit_long", "exit_short"] if use_exit_signal else []
+    assert [
+        signal["signalType"]
+        for signal in chart_signals
+        if signal["signalType"].startswith("exit_")
+    ] == expected_exit_types
     if optimize_roi:
-        assert [signal["roiPercent"] for signal in chart_signals] == [1.0, 1.0]
-        assert abs(chart_signals[0]["roiTargetPrice"] - 1.111) < 1e-12
-        assert abs(chart_signals[1]["roiTargetPrice"] - (1.10001 * 0.99)) < 1e-12
+        assert [signal["roiPercent"] for signal in chart_entries] == [1.0, 1.0]
+        assert abs(chart_entries[0]["roiTargetPrice"] - 1.111) < 1e-12
+        assert abs(chart_entries[1]["roiTargetPrice"] - (1.10001 * 0.99)) < 1e-12
     else:
-        assert all("roiPercent" not in signal for signal in chart_signals)
-        assert all("roiTargetPrice" not in signal for signal in chart_signals)
+        assert all("roiPercent" not in signal for signal in chart_entries)
+        assert all("roiTargetPrice" not in signal for signal in chart_entries)
     assert candle_requests[0]["count"] == requested_candles
     approved_settings = approved.json()["approvedRevision"]["hyperopt"]["runSettings"]
     assert approved_settings["historyMode"] == history_mode

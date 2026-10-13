@@ -92,6 +92,7 @@ export function IndicatorsPage() {
               countMultiplier={countMultiplier}
               onTimeframeChange={setTimeframeOverride}
               onCountMultiplierChange={setCountMultiplier}
+              extendedCandleOptions
             />
           </div>
         </div>
@@ -104,47 +105,53 @@ export function IndicatorsPage() {
           <p className="indicator-empty-note">This strategy did not return any numeric indicators to display.</p>
         )}
         {chartQuery.data && Object.keys(indicatorData).length > 0 && (
-          <div className="indicator-picker">
-            <div className="indicator-picker-heading">
-              <div>
+          <details className="indicator-picker">
+            <summary className="indicator-picker-summary">
+              <span>
                 <strong>Strategy indicators</strong>
                 <span>Select indicators to add or remove them from the chart.</span>
+              </span>
+              <span className="indicator-picker-count">{selectedIndicators.length} selected</span>
+            </summary>
+            <div className="indicator-picker-content">
+              <div className="indicator-picker-actions">
+                <span>Choose overlays and lower panels to customize this strategy view.</span>
+                <button type="button" className="secondary-button" onClick={() => setSelectedIndicators([])} disabled={!selectedIndicators.length}>
+                  Clear selection
+                </button>
               </div>
-              <button type="button" className="secondary-button" onClick={() => setSelectedIndicators([])} disabled={!selectedIndicators.length}>
-                Clear selection
-              </button>
+              <div className="indicator-picker-groups">
+                {[
+                  { title: 'Price overlays', items: overlayIndicators },
+                  { title: 'Lower panels', items: lowerIndicators },
+                ].map((group) => (
+                  <fieldset className="indicator-picker-group" key={group.title}>
+                    <legend>{group.title}</legend>
+                    {group.items.length === 0 && <span className="indicator-empty-note">None available</span>}
+                    {group.items.map(([name, indicator]) => {
+                      const latest = indicator.values.at(-1)
+                      const selected = selectedIndicators.includes(name)
+                      return (
+                        <button
+                          aria-pressed={selected}
+                          className={`indicator-chip${selected ? ' selected' : ''}`}
+                          key={name}
+                          onClick={() => toggleIndicator(name)}
+                          title={`Latest value: ${formatIndicatorValue(latest)}`}
+                          type="button"
+                        >
+                          <span>{name}</span>
+                          <strong>{formatIndicatorValue(latest)}</strong>
+                        </button>
+                      )
+                    })}
+                  </fieldset>
+                ))}
+              </div>
             </div>
-            <div className="indicator-picker-groups">
-              {[
-                { title: 'Price overlays', items: overlayIndicators },
-                { title: 'Lower panels', items: lowerIndicators },
-              ].map((group) => (
-                <fieldset className="indicator-picker-group" key={group.title}>
-                  <legend>{group.title}</legend>
-                  {group.items.length === 0 && <span className="indicator-empty-note">None available</span>}
-                  {group.items.map(([name, indicator]) => {
-                    const latest = indicator.values.at(-1)
-                    const selected = selectedIndicators.includes(name)
-                    return (
-                      <button
-                        aria-pressed={selected}
-                        className={`indicator-chip${selected ? ' selected' : ''}`}
-                        key={name}
-                        onClick={() => toggleIndicator(name)}
-                        title={`Latest value: ${formatIndicatorValue(latest)}`}
-                        type="button"
-                      >
-                        <span>{name}</span>
-                        <strong>{formatIndicatorValue(latest)}</strong>
-                      </button>
-                    )
-                  })}
-                </fieldset>
-              ))}
-            </div>
-          </div>
+          </details>
         )}
-        {chartQuery.data && <ForexChart data={chartQuery.data} selectedIndicators={selectedIndicators} large analysisMode />}
+        {chartQuery.data && <ForexChart data={chartQuery.data} selectedIndicators={selectedIndicators} large />}
       </section>
 
       <section className="panel indicator-analysis-panel">

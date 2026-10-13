@@ -10,6 +10,11 @@ export const CHART_CANDLE_OPTIONS = [
   { multiplier: 2, count: 200 },
   { multiplier: 3, count: 350 },
   { multiplier: 4, count: 900 },
+  { multiplier: 5, count: 1250 },
+  { multiplier: 6, count: 1500 },
+  { multiplier: 7, count: 1750 },
+  { multiplier: 8, count: 2000 },
+  { multiplier: 9, count: 2250 },
 ] as const
 
 export function chartCandleCount(multiplier: number) {

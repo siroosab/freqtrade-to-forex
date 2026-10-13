@@ -3,13 +3,13 @@ import { useMemo, useRef, useState } from 'react'
 const MAX_ZOOM_LEVEL = 8
 
 type ChartCandle = { time: string; open: number; high: number; low: number; close: number }
+type ChartSignalType = 'entry_long' | 'entry_short' | 'exit_long' | 'exit_short'
 type ChartSignal = {
   time: string
   side: 'BUY' | 'SELL'
   price: number
   sourceTimeframe: string
-  roiTargetPrice?: number
-  roiPercent?: number
+  signalType?: ChartSignalType
 }
 type ChartTrade = { time?: string; createdAt?: string; side: 'BUY' | 'SELL'; price?: number; pnl?: string; source?: string; markerType?: 'entry' | 'exit' }
 export type StrategyChartIndicator = { panel: 'overlay' | 'lower'; values: Array<number | null> }
@@ -63,20 +63,18 @@ export function ForexChart({
   onPriceSelect,
   selectedIndicators = [],
   large = false,
-  analysisMode = false,
 }: {
   data: ForexChartData
   onPriceSelect?: (price: number) => void
   selectedIndicators?: string[]
   large?: boolean
-  analysisMode?: boolean
 }) {
   const width = 960
   const height = large ? 520 : 340
   const padding = 28
   const plotRight = width - 78
   const plotWidth = plotRight - padding
-  const [visible, setVisible] = useState({ candles: true, close: false, ema20: true, ema50: true, ema100: true, buy: analysisMode, sell: analysisMode, signals: analysisMode, roiTargets: false, trades: analysisMode })
+  const [visible, setVisible] = useState({ candles: true, close: false, ema20: false, ema50: false, ema100: false, buy: false, sell: false, signals: false, exitLong: false, exitShort: false, trades: false })
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null)
   const [zoomLevel, setZoomLevel] = useState(0)
   const [panOffset, setPanOffset] = useState(0)
@@ -122,7 +120,25 @@ export function ForexChart({
       const time = Date.parse(trade.time ?? trade.createdAt ?? '')
       return time >= startTime && time <= endTime
     })
-    const allPrices = [...values, ...ema20.slice(visibleStartIndex, visibleEndIndex + 1), ...ema50.slice(visibleStartIndex, visibleEndIndex + 1), ...ema100.slice(visibleStartIndex, visibleEndIndex + 1), ...overlaySeries.flatMap((indicator) => indicator.values.slice(visibleStartIndex, visibleEndIndex + 1).filter((value): value is number => value !== null && Number.isFinite(value))), ...visibleSignals.flatMap((signal) => [signal.price, signal.roiTargetPrice].filter((price): price is number => typeof price === 'number' && Number.isFinite(price))), ...visibleTrades.map((trade) => trade.price).filter((price): price is number => typeof price === 'number')]
+    const visibleEntrySignals = visibleSignals.filter((signal) => {
+      const signalType = signal.signalType ?? (signal.side === 'BUY' ? 'entry_long' : 'entry_short')
+      return signalType.startsWith('entry_')
+        && (visible.signals || visible[signal.side === 'BUY' ? 'buy' : 'sell'])
+    })
+    const visibleExitSignals = visibleSignals.filter((signal) => {
+      const signalType = signal.signalType
+      return signalType === 'exit_long' ? visible.exitLong : signalType === 'exit_short' && visible.exitShort
+    })
+    const allPrices = [
+      ...values,
+      ...(visible.ema20 ? ema20.slice(visibleStartIndex, visibleEndIndex + 1) : []),
+      ...(visible.ema50 ? ema50.slice(visibleStartIndex, visibleEndIndex + 1) : []),
+      ...(visible.ema100 ? ema100.slice(visibleStartIndex, visibleEndIndex + 1) : []),
+      ...overlaySeries.flatMap((indicator) => indicator.values.slice(visibleStartIndex, visibleEndIndex + 1).filter((value): value is number => value !== null && Number.isFinite(value))),
+      ...visibleEntrySignals.map((signal) => signal.price),
+      ...visibleExitSignals.map((signal) => signal.price),
+      ...(visible.trades ? visibleTrades.map((trade) => trade.price).filter((price): price is number => typeof price === 'number') : []),
+    ]
     const min = Math.min(...allPrices)
     const max = Math.max(...allPrices)
     const scaleY = (value: number) => height - padding - ((value - min) / Math.max(max - min, 0.00001)) * (height - padding * 2)
@@ -153,11 +169,6 @@ export function ForexChart({
       const index = data.candles.findIndex((candle) => candle.time === signal.time)
       return index < 0 ? null : { ...signal, x: scaleX(index), y: scaleY(signal.price) }
     }).filter(Boolean) as Array<ChartSignal & { x: number; y: number }>
-    const roiMarkers = signalMarkers.flatMap((signal) =>
-      typeof signal.roiTargetPrice === 'number' && Number.isFinite(signal.roiTargetPrice) && typeof signal.roiPercent === 'number' && Number.isFinite(signal.roiPercent)
-        ? [{ ...signal, roiY: scaleY(signal.roiTargetPrice) }]
-        : [],
-    )
     const tradeMarkers = data.trades.map((trade) => {
       const time = trade.time ?? trade.createdAt
       if (!time || (trade.side !== 'BUY' && trade.side !== 'SELL')) return null
@@ -187,8 +198,8 @@ export function ForexChart({
         isRsi,
       }]
     })
-    return { line, ema20, ema50, ema100, signalMarkers, roiMarkers, tradeMarkers, scaleX, scaleY, priceAtY, percentageTicks, min, max, candleWidth, overlaySeries, lowerPanels }
-  }, [data, height, plotWidth, selectedIndicators, visibleCount, visibleEndIndex, visibleReferencePrice, visibleStartIndex])
+    return { line, ema20, ema50, ema100, signalMarkers, tradeMarkers, scaleX, scaleY, priceAtY, percentageTicks, min, max, candleWidth, overlaySeries, lowerPanels }
+  }, [data, height, plotWidth, selectedIndicators, visible, visibleCount, visibleEndIndex, visibleReferencePrice, visibleStartIndex])
 
   const hoveredCandle = hoveredIndex === null ? null : data.candles[hoveredIndex]
   const hoveredSignal = hoveredCandle ? data.signals.find((signal) => signal.time === hoveredCandle.time) : undefined
@@ -315,8 +326,32 @@ export function ForexChart({
             const selectedIndex = selectedIndicators.indexOf(indicator.name)
             return <path key={indicator.name} d={indicatorPath(indicator.values.slice(visibleStartIndex, visibleEndIndex + 1), visibleStartIndex, chart.scaleX, chart.scaleY)} fill="none" stroke={STRATEGY_INDICATOR_COLORS[(selectedIndex < 0 ? index : selectedIndex) % STRATEGY_INDICATOR_COLORS.length]} strokeWidth="1.8"><title>{indicator.name}</title></path>
           })}
-          {visible.signals && visible.roiTargets && chart.roiMarkers.map((signal, index) => visible[signal.side === 'BUY' ? 'buy' : 'sell'] && <g key={`${signal.time}-${signal.side}-roi-${index}`}><line x1={signal.x} x2={signal.x} y1={signal.y} y2={signal.roiY} stroke="#fbbf24" strokeWidth="1.5" strokeDasharray="3 3" opacity="0.8" /><polygon points={`${signal.x},${signal.roiY - 6} ${signal.x + 6},${signal.roiY} ${signal.x},${signal.roiY + 6} ${signal.x - 6},${signal.roiY}`} fill="#0f172a" stroke="#fbbf24" strokeWidth="2"><title>Projected ROI target +{signal.roiPercent?.toFixed(2)}%; not an actual or executed exit</title></polygon><text x={signal.x + 9} y={signal.roiY - 5} fill="#fcd34d" fontSize="10">ROI +{signal.roiPercent?.toFixed(2)}% · projected</text></g>)}
-          {visible.signals && chart.signalMarkers.map((signal) => visible[signal.side === 'BUY' ? 'buy' : 'sell'] && <g key={`${signal.time}-${signal.side}`}><circle cx={signal.x} cy={signal.y} r="7" fill="none" stroke={signal.side === 'BUY' ? '#a7f3d0' : '#fecdd3'} strokeWidth="1" opacity="0.75" /><circle cx={signal.x} cy={signal.y} r="4" fill={signal.side === 'BUY' ? '#34d399' : '#fb7185'} /><text x={signal.x + 9} y={signal.y - 8} fill={signal.side === 'BUY' ? '#86efac' : '#fda4af'} fontSize="11">Signal {signal.side}</text></g>)}
+          {chart.signalMarkers.map((signal, index) => {
+            const signalType = signal.signalType ?? (signal.side === 'BUY' ? 'entry_long' : 'entry_short')
+            const isExit = signalType === 'exit_long' || signalType === 'exit_short'
+            const isLong = signalType === 'entry_long' || signalType === 'exit_long'
+            if (isExit ? !visible[signalType === 'exit_long' ? 'exitLong' : 'exitShort'] : !visible.signals && !visible[signal.side === 'BUY' ? 'buy' : 'sell']) return null
+            const label = isExit ? `EXIT ${isLong ? 'LONG' : 'SHORT'}` : `${isLong ? 'BUY' : 'SELL'} ENTRY`
+            const labelWidth = isExit ? 68 : 72
+            const labelX = signal.x + labelWidth + 11 > plotRight - 4
+              ? signal.x - labelWidth - 11
+              : signal.x + 11
+            return (
+              <g key={`${signal.time}-${signalType}-${index}`} className={`chart-signal-marker ${isExit ? 'is-exit' : 'is-entry'} ${isLong ? 'is-long' : 'is-short'}`}>
+                {isExit ? (
+                  <polygon points={isLong
+                    ? `${signal.x - 8},${signal.y - 7} ${signal.x + 8},${signal.y - 7} ${signal.x},${signal.y + 8}`
+                    : `${signal.x},${signal.y - 8} ${signal.x + 8},${signal.y + 7} ${signal.x - 8},${signal.y + 7}`}
+                  />
+                ) : (
+                  <circle cx={signal.x} cy={signal.y} r="6" />
+                )}
+                <rect x={labelX} y={signal.y - 10} width={labelWidth} height="18" rx="5" />
+                <text x={labelX + 5} y={signal.y + 3}>{label}</text>
+                <title>{label} · approved strategy {signal.sourceTimeframe}</title>
+              </g>
+            )
+          })}
           {visible.trades && chart.tradeMarkers.map((trade, index) => {
             const manual = trade.source === 'manual'
             const color = manual ? '#facc15' : trade.side === 'BUY' ? '#34d399' : '#fb7185'
@@ -365,7 +400,7 @@ export function ForexChart({
             {hoveredIndicatorValues.map((indicator) => (
               <span key={indicator.name}><i className="tooltip-color" style={{ background: indicator.color }} />{indicator.name} {formatValue(indicator.value)}</span>
             ))}
-            {hoveredSignal && <span className={hoveredSignal.side === 'BUY' ? 'tooltip-buy' : 'tooltip-sell'}>Strategy {hoveredSignal.side} · {hoveredSignal.sourceTimeframe}</span>}
+            {hoveredSignal && <span className={hoveredSignal.side === 'BUY' ? 'tooltip-buy' : 'tooltip-sell'}>{hoveredSignal.signalType?.replace('_', ' ').toUpperCase() ?? `Strategy ${hoveredSignal.side}`} · {hoveredSignal.sourceTimeframe}</span>}
           </div>
         )}
       </div>
@@ -451,7 +486,18 @@ export function ForexChart({
           </section>
         )
       })}
-      <div className="chart-legend"><button type="button" className={visible.candles ? 'legend-toggle active' : 'legend-toggle'} onClick={() => toggle('candles')}><i className="legend-candle" />Candles</button><button type="button" className={visible.close ? 'legend-toggle active' : 'legend-toggle'} onClick={() => toggle('close')}><i className="legend-line price" />Close</button><button type="button" className={visible.ema20 ? 'legend-toggle active' : 'legend-toggle'} onClick={() => toggle('ema20')}><i className="legend-line ema" />EMA 20</button><button type="button" className={visible.ema50 ? 'legend-toggle active' : 'legend-toggle'} onClick={() => toggle('ema50')}><i className="legend-line ema50" />EMA 50</button><button type="button" className={visible.ema100 ? 'legend-toggle active' : 'legend-toggle'} onClick={() => toggle('ema100')}><i className="legend-line ema100" />EMA 100</button><button type="button" className={visible.trades ? 'legend-toggle active' : 'legend-toggle'} onClick={() => toggle('trades')}><i className="legend-dot trade" />Trades</button><button type="button" className={visible.signals ? 'legend-toggle active' : 'legend-toggle'} onClick={() => toggle('signals')}><i className="legend-dot buy" />Signals</button><button type="button" className={visible.roiTargets ? 'legend-toggle active' : 'legend-toggle'} onClick={() => toggle('roiTargets')}><i className="legend-dot roi-target" />ROI targets · projected only</button><button type="button" className={visible.buy ? 'legend-toggle active' : 'legend-toggle'} onClick={() => toggle('buy')}><i className="legend-dot buy" />Buy</button><button type="button" className={visible.sell ? 'legend-toggle active' : 'legend-toggle'} onClick={() => toggle('sell')}><i className="legend-dot sell" />Sell</button></div>
+      <div className="chart-legend" aria-label="Chart layers">
+        <button type="button" aria-pressed={visible.close} className={`legend-toggle${visible.close ? ' active' : ''}`} onClick={() => toggle('close')}><i className="legend-line price" />Close</button>
+        <button type="button" aria-pressed={visible.ema20} className={`legend-toggle${visible.ema20 ? ' active' : ''}`} onClick={() => toggle('ema20')}><i className="legend-line ema" />EMA 20</button>
+        <button type="button" aria-pressed={visible.ema50} className={`legend-toggle${visible.ema50 ? ' active' : ''}`} onClick={() => toggle('ema50')}><i className="legend-line ema50" />EMA 50</button>
+        <button type="button" aria-pressed={visible.ema100} className={`legend-toggle${visible.ema100 ? ' active' : ''}`} onClick={() => toggle('ema100')}><i className="legend-line ema100" />EMA 100</button>
+        <button type="button" aria-pressed={visible.trades} className={`legend-toggle${visible.trades ? ' active' : ''}`} onClick={() => toggle('trades')}><i className="legend-dot trade" />Trades</button>
+        <button type="button" aria-pressed={visible.signals} className={`legend-toggle${visible.signals ? ' active' : ''}`} onClick={() => toggle('signals')}><i className="legend-dot buy" />Signals</button>
+        <button type="button" aria-pressed={visible.buy} className={`legend-toggle${visible.buy ? ' active' : ''}`} onClick={() => toggle('buy')}><i className="legend-dot buy" />Buy</button>
+        <button type="button" aria-pressed={visible.sell} className={`legend-toggle${visible.sell ? ' active' : ''}`} onClick={() => toggle('sell')}><i className="legend-dot sell" />Sell</button>
+        <button type="button" aria-pressed={visible.exitLong} className={`legend-toggle${visible.exitLong ? ' active' : ''}`} onClick={() => toggle('exitLong')}><i className="legend-exit-long" />Exit long</button>
+        <button type="button" aria-pressed={visible.exitShort} className={`legend-toggle${visible.exitShort ? ' active' : ''}`} onClick={() => toggle('exitShort')}><i className="legend-exit-short" />Exit short</button>
+      </div>
     </div>
   )
 }

@@ -1949,36 +1949,12 @@
   font-size: 0.78rem;
 }
 
-.indicator-picker {
-  margin: 18px 0 12px;
-  padding: 14px;
-  border: 1px solid rgba(148, 163, 184, 0.16);
-  border-radius: 12px;
-  background: rgba(2, 6, 23, 0.42);
-}
-
-.indicator-picker-heading,
 .indicator-picker-groups {
   display: flex;
   justify-content: space-between;
   gap: 14px;
 }
 
-.indicator-picker-heading {
-  align-items: center;
-}
-
-.indicator-picker-heading > div {
-  display: grid;
-  gap: 4px;
-}
-
-.indicator-picker-heading strong {
-  color: #e2e8f0;
-  font-size: 0.86rem;
-}
-
-.indicator-picker-heading span,
 .indicator-picker-group legend {
   color: #94a3b8;
   font-size: 0.72rem;
@@ -2187,15 +2163,18 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 0;
+  padding: 5px 8px;
   color: #64748b;
-  background: transparent;
-  border: 0;
+  background: rgba(15, 23, 42, 0.46);
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  border-radius: 999px;
   cursor: pointer;
+  transition: color 150ms ease, border-color 150ms ease, background 150ms ease;
 }
 
-.legend-toggle.active { color: #cbd5e1; }
-.legend-toggle:not(.active) i { opacity: 0.3; }
+.legend-toggle.active { color: #f8fafc; border-color: rgba(56, 189, 248, 0.38); background: rgba(14, 116, 144, 0.18); }
+.legend-toggle:not(.active) i { opacity: 0.45; }
+.legend-toggle:focus-visible { outline: 2px solid #38bdf8; outline-offset: 2px; }
 .legend-candle { width: 8px; height: 12px; background: #34d399; border-left: 1px solid #cbd5e1; border-right: 1px solid #cbd5e1; }
 
 .legend-line,
@@ -2208,6 +2187,54 @@
 .legend-line.ema50 { background: #c084fc; border-top: 1px dashed #c084fc; }
 .legend-line.ema100 { background: #f97316; border-top: 1px dashed #f97316; }
 .legend-dot.trade { background: #e2e8f0; transform: rotate(45deg); }
+.legend-exit-long,
+.legend-exit-short { width: 0; height: 0; border-left: 5px solid transparent; border-right: 5px solid transparent; }
+.legend-exit-long { border-top: 8px solid #fb7185; }
+.legend-exit-short { border-bottom: 8px solid #c084fc; }
+
+.chart-signal-marker circle,
+.chart-signal-marker polygon { fill: #0f172a; stroke: currentColor; stroke-width: 2; }
+.chart-signal-marker rect { fill: rgba(2, 6, 23, 0.92); stroke: currentColor; stroke-width: 1; }
+.chart-signal-marker text { fill: currentColor; font-size: 9px; font-weight: 700; letter-spacing: 0.25px; }
+.chart-signal-marker { pointer-events: none; }
+.chart-signal-marker.is-entry.is-long { color: #34d399; }
+.chart-signal-marker.is-entry.is-short { color: #f97316; }
+.chart-signal-marker.is-exit.is-long { color: #fb7185; }
+.chart-signal-marker.is-exit.is-short { color: #c084fc; }
+.chart-signal-marker.is-exit polygon { fill: currentColor; stroke: #f8fafc; }
+.chart-signal-marker.is-exit text { fill: #f8fafc; }
+.chart-legend { gap: 8px; padding: 10px 0 3px; }
+
+.indicator-picker {
+  margin: 14px 0 10px;
+  padding: 0;
+  border: 1px solid rgba(56, 189, 248, 0.2);
+  border-radius: 12px;
+  background: linear-gradient(120deg, rgba(8, 47, 73, 0.18), rgba(2, 6, 23, 0.45));
+}
+
+.indicator-picker-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 14px;
+  color: #e2e8f0;
+  cursor: pointer;
+  list-style: none;
+}
+
+.indicator-picker-summary::-webkit-details-marker { display: none; }
+.indicator-picker-summary::after { content: '+'; color: #7dd3fc; font-size: 1.2rem; font-weight: 600; }
+.indicator-picker[open] .indicator-picker-summary::after { content: '−'; }
+.indicator-picker-summary > span:first-child { display: grid; gap: 2px; }
+.indicator-picker-summary strong { font-size: 0.86rem; }
+.indicator-picker-summary > span:first-child > span,
+.indicator-picker-count { color: #94a3b8; font-size: 0.72rem; }
+.indicator-picker-count { margin-left: auto; white-space: nowrap; }
+.indicator-picker-content { padding: 0 14px 14px; }
+.indicator-picker-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: #94a3b8; font-size: 0.72rem; }
+.indicator-picker-actions .secondary-button { flex: 0 0 auto; }
 .legend-dot { width: 8px; height: 8px; border-radius: 50%; }
 .legend-dot.buy { background: #34d399; }
 .legend-dot.sell { background: #fb7185; }
@@ -2484,7 +2511,7 @@
     flex-direction: column;
   }
 
-  .indicator-picker-heading {
+  .indicator-picker-actions {
     align-items: flex-start;
     flex-direction: column;
   }

@@ -2498,6 +2498,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                             "side": signal_side,
                             "price": signal_price,
                             "sourceTimeframe": approved_timeframe,
+                            "signalType": (
+                                "entry_long" if signal == "long" else "entry_short"
+                            ),
                         }
                         if approved_roi_ratio is not None:
                             roi_multiplier = (
@@ -2520,6 +2523,40 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                                 signal_data["roiPercent"] = roi_percent_value
                         signals.append(signal_data)
                     previous = signal
+                    if getattr(
+                        strategy_adapter, "use_exit_signal", True
+                    ):
+                        signal_row = indicator_frame.iloc[index]
+                        for direction, signal_column in (
+                            ("long", "exit_long"),
+                            ("short", "exit_short"),
+                        ):
+                            exit_signal = signal_row.get(signal_column, False)
+                            if pd.isna(exit_signal) or not bool(exit_signal):
+                                continue
+                            signal_time = pd.Timestamp(frame.iloc[index]["date"])
+                            signal_time = (
+                                signal_time.tz_localize("UTC")
+                                if signal_time.tzinfo is None
+                                else signal_time.tz_convert("UTC")
+                            )
+                            mapped_time = next(
+                                (
+                                    candidate
+                                    for candidate in reversed(view_times)
+                                    if pd.Timestamp(candidate) <= signal_time
+                                ),
+                                view_times[0] if view_times else signal_time.isoformat(),
+                            )
+                            signals.append(
+                                {
+                                    "time": mapped_time,
+                                    "side": "BUY" if direction == "long" else "SELL",
+                                    "price": float(frame.iloc[index]["close"]),
+                                    "sourceTimeframe": approved_timeframe,
+                                    "signalType": f"exit_{direction}",
+                                }
+                            )
                 open_trades = await client.get_open_trades()
                 closed_trades = await client.get_closed_trades(count=100)
                 chart_trades: list[dict] = []
