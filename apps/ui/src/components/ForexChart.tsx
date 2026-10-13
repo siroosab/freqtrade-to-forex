@@ -9,9 +9,9 @@ type ChartSignal = {
   side: 'BUY' | 'SELL'
   price: number
   sourceTimeframe: string
-  signalType?: ChartSignalType
+  signalType: ChartSignalType
 }
-type ChartTrade = { time?: string; createdAt?: string; side: 'BUY' | 'SELL'; price?: number; pnl?: string; source?: string; markerType?: 'entry' | 'exit' }
+type ChartTrade = { time?: string; createdAt?: string; side: 'BUY' | 'SELL'; price?: number; pnl?: string; source?: string; markerType: 'entry' | 'exit' }
 export type StrategyChartIndicator = { panel: 'overlay' | 'lower'; values: Array<number | null> }
 
 export type ForexChartData = {
@@ -74,7 +74,7 @@ export function ForexChart({
   const padding = 28
   const plotRight = width - 78
   const plotWidth = plotRight - padding
-  const [visible, setVisible] = useState({ candles: true, close: false, ema20: false, ema50: false, ema100: false, buy: false, sell: false, signals: false, exitLong: false, exitShort: false, trades: false })
+  const [visible, setVisible] = useState({ candles: true, close: false, ema20: false, ema50: false, ema100: false, buy: false, sell: false, exitLong: false, exitShort: false, trades: false })
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null)
   const [zoomLevel, setZoomLevel] = useState(0)
   const [panOffset, setPanOffset] = useState(0)
@@ -121,13 +121,14 @@ export function ForexChart({
       return time >= startTime && time <= endTime
     })
     const visibleEntrySignals = visibleSignals.filter((signal) => {
-      const signalType = signal.signalType ?? (signal.side === 'BUY' ? 'entry_long' : 'entry_short')
-      return signalType.startsWith('entry_')
-        && (visible.signals || visible[signal.side === 'BUY' ? 'buy' : 'sell'])
+      return signal.signalType === 'entry_long'
+        ? visible.buy
+        : signal.signalType === 'entry_short' && visible.sell
     })
     const visibleExitSignals = visibleSignals.filter((signal) => {
-      const signalType = signal.signalType
-      return signalType === 'exit_long' ? visible.exitLong : signalType === 'exit_short' && visible.exitShort
+      return signal.signalType === 'exit_long'
+        ? visible.exitLong
+        : signal.signalType === 'exit_short' && visible.exitShort
     })
     const allPrices = [
       ...values,
@@ -327,10 +328,10 @@ export function ForexChart({
             return <path key={indicator.name} d={indicatorPath(indicator.values.slice(visibleStartIndex, visibleEndIndex + 1), visibleStartIndex, chart.scaleX, chart.scaleY)} fill="none" stroke={STRATEGY_INDICATOR_COLORS[(selectedIndex < 0 ? index : selectedIndex) % STRATEGY_INDICATOR_COLORS.length]} strokeWidth="1.8"><title>{indicator.name}</title></path>
           })}
           {chart.signalMarkers.map((signal, index) => {
-            const signalType = signal.signalType ?? (signal.side === 'BUY' ? 'entry_long' : 'entry_short')
+            const signalType = signal.signalType
             const isExit = signalType === 'exit_long' || signalType === 'exit_short'
             const isLong = signalType === 'entry_long' || signalType === 'exit_long'
-            if (isExit ? !visible[signalType === 'exit_long' ? 'exitLong' : 'exitShort'] : !visible.signals && !visible[signal.side === 'BUY' ? 'buy' : 'sell']) return null
+            if (isExit ? !visible[signalType === 'exit_long' ? 'exitLong' : 'exitShort'] : !visible[signalType === 'entry_long' ? 'buy' : 'sell']) return null
             const label = isExit ? `EXIT ${isLong ? 'LONG' : 'SHORT'}` : `${isLong ? 'BUY' : 'SELL'} ENTRY`
             const labelWidth = isExit ? 68 : 72
             const labelX = signal.x + labelWidth + 11 > plotRight - 4
@@ -355,8 +356,12 @@ export function ForexChart({
           {visible.trades && chart.tradeMarkers.map((trade, index) => {
             const manual = trade.source === 'manual'
             const color = manual ? '#facc15' : trade.side === 'BUY' ? '#34d399' : '#fb7185'
-            const label = manual ? `MANUAL ${trade.side} ${trade.markerType === 'exit' ? 'EXIT' : 'ENTRY'}` : `Strategy ${trade.side}`
-            return <g key={`${trade.time ?? trade.createdAt}-${trade.side}-${index}`}><polygon points={`${trade.x},${trade.y - 7} ${trade.x + 6},${trade.y} ${trade.x},${trade.y + 7} ${trade.x - 6},${trade.y}`} fill={manual ? '#0f172a' : color} stroke={color} strokeWidth={manual ? '2' : '1'} strokeDasharray={manual ? '2 1' : undefined} /><text x={trade.x + 9} y={trade.y + 14} fill={color} fontSize="11">{label}{manual && trade.markerType === 'exit' && trade.pnl ? ` ${trade.pnl}` : ''}</text></g>
+            const event = trade.markerType === 'exit' ? 'CLOSE' : 'OPEN'
+            const label = `${manual ? 'MANUAL ' : ''}${event} ${trade.side}`
+            const shape = trade.markerType === 'exit'
+              ? `${trade.x - 6},${trade.y - 6} ${trade.x + 6},${trade.y - 6} ${trade.x + 6},${trade.y + 6} ${trade.x - 6},${trade.y + 6}`
+              : `${trade.x},${trade.y - 7} ${trade.x + 6},${trade.y} ${trade.x},${trade.y + 7} ${trade.x - 6},${trade.y}`
+            return <g key={`${trade.time ?? trade.createdAt}-${trade.side}-${trade.markerType}-${index}`} className={`chart-trade-marker is-${trade.markerType}`}><polygon points={shape} fill={manual ? '#0f172a' : color} stroke={color} strokeWidth={manual ? '2' : '1'} strokeDasharray={manual ? '2 1' : undefined} /><text x={trade.x + 9} y={trade.y + 14} fill={color} fontSize="11">{label}{trade.markerType === 'exit' && trade.pnl ? ` ${trade.pnl}` : ''}</text><title>Filled broker trade · {label}</title></g>
           })}
           <line x1={padding} x2={plotRight} y1={chart.scaleY(visibleReferencePrice)} y2={chart.scaleY(visibleReferencePrice)} className="chart-zero-line" />
           <g className="chart-zero-handle" role="slider" aria-label="Movable zero price reference" aria-valuemin={chart.min} aria-valuemax={chart.max} aria-valuenow={visibleReferencePrice} tabIndex={0} onPointerDown={(event) => {
@@ -487,12 +492,12 @@ export function ForexChart({
         )
       })}
       <div className="chart-legend" aria-label="Chart layers">
+        <button type="button" aria-pressed={visible.candles} className={`legend-toggle${visible.candles ? ' active' : ''}`} onClick={() => toggle('candles')}><i className="legend-candle" />Candles</button>
         <button type="button" aria-pressed={visible.close} className={`legend-toggle${visible.close ? ' active' : ''}`} onClick={() => toggle('close')}><i className="legend-line price" />Close</button>
         <button type="button" aria-pressed={visible.ema20} className={`legend-toggle${visible.ema20 ? ' active' : ''}`} onClick={() => toggle('ema20')}><i className="legend-line ema" />EMA 20</button>
         <button type="button" aria-pressed={visible.ema50} className={`legend-toggle${visible.ema50 ? ' active' : ''}`} onClick={() => toggle('ema50')}><i className="legend-line ema50" />EMA 50</button>
         <button type="button" aria-pressed={visible.ema100} className={`legend-toggle${visible.ema100 ? ' active' : ''}`} onClick={() => toggle('ema100')}><i className="legend-line ema100" />EMA 100</button>
         <button type="button" aria-pressed={visible.trades} className={`legend-toggle${visible.trades ? ' active' : ''}`} onClick={() => toggle('trades')}><i className="legend-dot trade" />Trades</button>
-        <button type="button" aria-pressed={visible.signals} className={`legend-toggle${visible.signals ? ' active' : ''}`} onClick={() => toggle('signals')}><i className="legend-dot buy" />Signals</button>
         <button type="button" aria-pressed={visible.buy} className={`legend-toggle${visible.buy ? ' active' : ''}`} onClick={() => toggle('buy')}><i className="legend-dot buy" />Buy</button>
         <button type="button" aria-pressed={visible.sell} className={`legend-toggle${visible.sell ? ' active' : ''}`} onClick={() => toggle('sell')}><i className="legend-dot sell" />Sell</button>
         <button type="button" aria-pressed={visible.exitLong} className={`legend-toggle${visible.exitLong ? ' active' : ''}`} onClick={() => toggle('exitLong')}><i className="legend-exit-long" />Exit long</button>

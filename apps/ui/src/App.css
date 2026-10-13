@@ -2203,6 +2203,8 @@
 .chart-signal-marker.is-exit.is-short { color: #c084fc; }
 .chart-signal-marker.is-exit polygon { fill: currentColor; stroke: #f8fafc; }
 .chart-signal-marker.is-exit text { fill: #f8fafc; }
+.chart-trade-marker { pointer-events: none; }
+.chart-trade-marker.is-exit text { font-weight: 700; }
 .chart-legend { gap: 8px; padding: 10px 0 3px; }
 
 .indicator-picker {

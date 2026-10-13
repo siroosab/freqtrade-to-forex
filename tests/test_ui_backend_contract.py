@@ -757,10 +757,34 @@ def test_hyperopt_approval_flows_into_chart_strategy(
             ]
 
         async def get_open_trades(self):
-            return []
+            latest = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+            return [
+                {
+                    "id": "open-chart-trade",
+                    "instrument": "EUR_USD",
+                    "currentUnits": "1000",
+                    "price": "1.101",
+                    "openTime": (latest - timedelta(minutes=60)).isoformat(),
+                    "unrealizedPL": "2.5",
+                    "clientExtensions": {"id": "auto-chart-open"},
+                }
+            ]
 
         async def get_closed_trades(self, *, count=100):
-            return []
+            latest = datetime.now(timezone.utc).replace(second=0, microsecond=0)
+            return [
+                {
+                    "id": "closed-chart-trade",
+                    "instrument": "EUR_USD",
+                    "initialUnits": "-1000",
+                    "price": "1.102",
+                    "averageClosePrice": "1.099",
+                    "openTime": (latest - timedelta(minutes=75)).isoformat(),
+                    "closeTime": (latest - timedelta(minutes=45)).isoformat(),
+                    "realizedPL": "-3",
+                    "clientExtensions": {"id": "auto-chart-close"},
+                }
+            ]
 
         async def get_pending_orders(self):
             return []
@@ -774,7 +798,11 @@ def test_hyperopt_approval_flows_into_chart_strategy(
             return use_exit_signal
 
         def signal(self, candles):
-            signal = "long" if len(candles) == 1 else "short" if len(candles) == 2 else "flat"
+            signal = (
+                "long" if len(candles) <= 2
+                else "short" if len(candles) <= 4
+                else "flat"
+            )
             return type("Signal", (), {"value": signal})()
 
         def signal_series(self, candles):
@@ -1091,24 +1119,34 @@ def test_hyperopt_approval_flows_into_chart_strategy(
         for indicator in strategy_indicators.values()
     )
     chart_signals = chart.json()["signals"]
-    chart_entries = [
-        signal for signal in chart_signals if signal["signalType"].startswith("entry_")
-    ]
-    assert [signal["side"] for signal in chart_entries] == ["BUY", "SELL"]
+    chart_entries = [signal for signal in chart_signals if signal["signalType"].startswith("entry_")]
+    assert [signal["side"] for signal in chart_entries] == ["BUY", "BUY", "SELL", "SELL"]
     assert [signal["signalType"] for signal in chart_entries] == [
         "entry_long",
+        "entry_long",
+        "entry_short",
         "entry_short",
     ]
-    expected_exit_types = ["exit_long", "exit_short"] if use_exit_signal else []
+    assert [
+        (trade["markerType"], trade["side"])
+        for trade in chart.json()["trades"]
+    ] == [("entry", "BUY"), ("entry", "SELL"), ("exit", "SELL")]
     assert [
         signal["signalType"]
         for signal in chart_signals
         if signal["signalType"].startswith("exit_")
-    ] == expected_exit_types
+    ] == ["exit_long", "exit_short"]
     if optimize_roi:
-        assert [signal["roiPercent"] for signal in chart_entries] == [1.0, 1.0]
+        assert [signal["roiPercent"] for signal in chart_entries] == [
+            1.0,
+            1.0,
+            1.0,
+            1.0,
+        ]
         assert abs(chart_entries[0]["roiTargetPrice"] - 1.111) < 1e-12
-        assert abs(chart_entries[1]["roiTargetPrice"] - (1.10001 * 0.99)) < 1e-12
+        assert abs(chart_entries[1]["roiTargetPrice"] - (1.10001 * 1.01)) < 1e-12
+        assert abs(chart_entries[2]["roiTargetPrice"] - (1.10002 * 0.99)) < 1e-12
+        assert abs(chart_entries[3]["roiTargetPrice"] - (1.10003 * 0.99)) < 1e-12
     else:
         assert all("roiPercent" not in signal for signal in chart_entries)
         assert all("roiTargetPrice" not in signal for signal in chart_entries)
