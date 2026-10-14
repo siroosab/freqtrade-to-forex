@@ -15,11 +15,12 @@ import pandas as pd
 from joblib import cpu_count
 
 from freqtrade.forex.backtest import BacktestResult, ForexBacktester
+from freqtrade.forex.conditions import normalize_ema_trend_condition
 from freqtrade.forex.models import OandaInstrument
 from freqtrade.forex.strategy_execution import (
     FreqtradeStrategyAdapter,
     load_strategy,
-    strategy_informative_timeframes,
+    strategy_required_informative_timeframes,
 )
 from freqtrade.strategy.parameters import BaseParameter
 from freqtrade.timeframe import timeframe_to_minutes
@@ -56,6 +57,7 @@ class _HyperoptWorkerContext:
     timeframe: str
     pair: str
     informative_candles: dict[str, pd.DataFrame]
+    ema_trend_condition: dict[str, object]
     instrument: OandaInstrument
     starting_balance: Decimal
     risk_fraction: Decimal
@@ -116,6 +118,7 @@ def _evaluate_hyperopt_candidate(
         timeframe=context.timeframe,
         pair=context.pair,
         informative_candles=context.informative_candles,
+        ema_trend_condition=context.ema_trend_condition,
         instrument=context.instrument,
         starting_balance=context.starting_balance,
         risk_fraction=context.risk_fraction,
@@ -534,6 +537,7 @@ def _create_candidate_evaluator(
     timeframe: str,
     pair: str,
     informative_candles: dict[str, pd.DataFrame],
+    ema_trend_condition: dict[str, object],
     instrument: OandaInstrument,
     starting_balance: Decimal,
     risk_fraction: Decimal,
@@ -571,7 +575,12 @@ def _create_candidate_evaluator(
             candidate_strategy.minimal_roi = candidate_minimal_roi
         if data.empty:
             return BacktestResult(starting_balance, starting_balance, ())
-        adapter = FreqtradeStrategyAdapter(candidate_strategy, pair, informative_candles)
+        adapter = FreqtradeStrategyAdapter(
+            candidate_strategy,
+            pair,
+            informative_candles,
+            ema_trend_condition=ema_trend_condition,
+        )
         context = indicator_context if indicator_context is not None else data
         if "date" not in context.columns:
             raise ValueError("indicator context candles must include a date column")
@@ -631,6 +640,7 @@ def run_strategy_hyperopt(
     indicator_context: pd.DataFrame | None = None,
     should_stop: Callable[[], bool] | None = None,
     workers: int = 1,
+    ema_trend_condition: dict[str, object] | None = None,
 ) -> list[dict[str, object]]:
     """Optimize strategy parameters and selected ROI/exit behavior on held-out candles."""
     if len(candles) < 40:
@@ -646,6 +656,11 @@ def run_strategy_hyperopt(
         )
     if not isinstance(optimize_roi, bool) or not isinstance(use_exit_signal, bool):
         raise ValueError("optimize_roi and use_exit_signal must be booleans")
+    condition_settings = (
+        normalize_ema_trend_condition(ema_trend_condition)
+        if ema_trend_condition is not None
+        else {"enabled": False, "timeframe": "1h", "timeperiod": 4}
+    )
     strategy = load_strategy(strategy_class, timeframe, pair)
     class_attributes: dict[str, object] = {}
     for strategy_type in reversed(type(strategy).__mro__):
@@ -667,7 +682,9 @@ def run_strategy_hyperopt(
     original_minimal_roi = getattr(strategy, "minimal_roi", {})
     if not isinstance(original_minimal_roi, dict):
         raise ValueError("strategy minimal_roi must be a mapping of minutes to returns")
-    informative_timeframes = strategy_informative_timeframes(strategy, pair)
+    informative_timeframes = strategy_required_informative_timeframes(
+        strategy, pair, condition_settings
+    )
     missing_timeframes = set(informative_timeframes) - set(informative_candles)
     if missing_timeframes:
         raise ValueError(
@@ -684,6 +701,7 @@ def run_strategy_hyperopt(
         timeframe=timeframe,
         pair=pair,
         informative_candles=informative_candles,
+        ema_trend_condition=condition_settings,
         instrument=instrument,
         starting_balance=starting_balance,
         risk_fraction=risk_fraction,

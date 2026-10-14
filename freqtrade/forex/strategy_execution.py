@@ -15,6 +15,11 @@ from typing import Any
 import pandas as pd
 
 from freqtrade.enums import CandleType, RunMode
+from freqtrade.forex.conditions import (
+    EMA_TREND_EMA_COUNT,
+    apply_ema_trend_condition,
+    normalize_ema_trend_condition,
+)
 from freqtrade.forex.strategy_catalog import discover_strategy_files
 from freqtrade.forex.strategy_loop import Signal
 from freqtrade.strategy import IStrategy
@@ -169,8 +174,30 @@ def strategy_informative_timeframes(strategy: IStrategy, pair: str) -> tuple[str
     return tuple(sorted(timeframes, key=timeframe_to_minutes))
 
 
+def strategy_required_informative_timeframes(
+    strategy: IStrategy,
+    pair: str,
+    ema_trend_condition: dict[str, object] | None = None,
+) -> tuple[str, ...]:
+    """Return informative timeframes required by the strategy and shared condition."""
+    timeframes = set(strategy_informative_timeframes(strategy, pair))
+    if ema_trend_condition is not None:
+        condition = normalize_ema_trend_condition(ema_trend_condition)
+        if condition["enabled"]:
+            timeframe = str(condition["timeframe"])
+            if timeframe_to_minutes(timeframe) <= timeframe_to_minutes(strategy.timeframe):
+                raise ValueError(
+                    "EMA trend condition timeframe must be higher than the strategy timeframe"
+                )
+            timeframes.add(timeframe)
+    return tuple(sorted(timeframes, key=timeframe_to_minutes))
+
+
 def strategy_informative_candle_count(
-    strategy: IStrategy, timeframe: str, base_candle_count: int
+    strategy: IStrategy,
+    timeframe: str,
+    base_candle_count: int,
+    ema_trend_condition: dict[str, object] | None = None,
 ) -> int:
     """Return enough informative candles for both coverage and strategy warmup."""
     base_minutes = timeframe_to_minutes(strategy.timeframe)
@@ -178,7 +205,19 @@ def strategy_informative_candle_count(
     covered_candles = (
         base_candle_count * base_minutes + informative_minutes - 1
     ) // informative_minutes
-    return max(10, covered_candles + 5, strategy.startup_candle_count + 5)
+    warmup_candles = strategy.startup_candle_count + 5
+    if ema_trend_condition is not None:
+        condition = normalize_ema_trend_condition(ema_trend_condition)
+        if condition["enabled"] and timeframe_to_minutes(
+            timeframe
+        ) == timeframe_to_minutes(str(condition["timeframe"])):
+            warmup_candles = max(
+                warmup_candles,
+                2
+                + (EMA_TREND_EMA_COUNT - 1) * (int(condition["timeperiod"]) - 1)
+                + 5,
+            )
+    return max(10, covered_candles + 5, warmup_candles)
 
 
 class FreqtradeStrategyAdapter:
@@ -192,11 +231,20 @@ class FreqtradeStrategyAdapter:
         pair: str,
         informative_candles: dict[str, pd.DataFrame] | None = None,
         live_informative_candles: dict[str, pd.DataFrame] | None = None,
+        ema_trend_condition: dict[str, object] | None = None,
     ) -> None:
         self.strategy = strategy
         self.pair = pair
         self.informative_candles = informative_candles or {}
         self.live_informative_candles = live_informative_candles or {}
+        self.ema_trend_condition = (
+            normalize_ema_trend_condition(ema_trend_condition)
+            if ema_trend_condition is not None
+            else {"enabled": False, "timeframe": "1h", "timeperiod": 4}
+        )
+        strategy_required_informative_timeframes(
+            strategy, pair, self.ema_trend_condition
+        )
         self._cached_length = -1
         self._cached_frame: pd.DataFrame | None = None
         self._prepared_frame: pd.DataFrame | None = None
@@ -289,6 +337,22 @@ class FreqtradeStrategyAdapter:
         exits = self.strategy.populate_exit_trend(entries, metadata)
         if exits is None:
             raise ValueError("populate_exit_trend must return a dataframe")
+        condition = self.ema_trend_condition
+        if condition["enabled"]:
+            condition_timeframe = str(condition["timeframe"])
+            source = self.informative_candles.get(condition_timeframe)
+            if source is None:
+                raise ValueError(
+                    f"Missing informative candles for EMA trend condition timeframe "
+                    f"{condition_timeframe}"
+                )
+            exits = apply_ema_trend_condition(
+                exits,
+                source[source["date"] <= result.iloc[-1]["date"]],
+                base_timeframe=self.strategy.timeframe,
+                condition_timeframe=condition_timeframe,
+                timeperiod=int(condition["timeperiod"]),
+            )
         self._cached_length = len(candles)
         self._cached_frame = exits
         return exits

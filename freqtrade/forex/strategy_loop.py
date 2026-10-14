@@ -6,6 +6,7 @@ from enum import StrEnum
 from typing import Protocol
 
 import pandas as pd
+
 from freqtrade.forex.models import OandaInstrument
 from freqtrade.forex.paper import DryRunSession, PaperPosition
 from freqtrade.forex.provider import OandaMarketDataProvider
@@ -151,7 +152,7 @@ class DryRunStrategyLoop:
         if getattr(type(strategy), "supports_explicit_exit", False) is True and callable(refresh_informative) and strategy_instance is not None:
             from freqtrade.forex.strategy_execution import (
                 strategy_informative_candle_count,
-                strategy_informative_timeframes,
+                strategy_required_informative_timeframes,
             )
 
             informative_candles: dict[str, pd.DataFrame] = {}
@@ -159,11 +160,16 @@ class DryRunStrategyLoop:
             live_timeframes = set(
                 getattr(strategy_instance, "live_informative_timeframes", ())
             )
-            for informative_timeframe in strategy_informative_timeframes(
-                strategy_instance, pair
+            for informative_timeframe in strategy_required_informative_timeframes(
+                strategy_instance,
+                pair,
+                getattr(strategy, "ema_trend_condition", None),
             ):
                 informative_count = strategy_informative_candle_count(
-                    strategy_instance, informative_timeframe, candle_count
+                    strategy_instance,
+                    informative_timeframe,
+                    candle_count,
+                    getattr(strategy, "ema_trend_condition", None),
                 )
                 informative_candles[informative_timeframe] = await self.provider.fetch_ohlcv(
                     pair,

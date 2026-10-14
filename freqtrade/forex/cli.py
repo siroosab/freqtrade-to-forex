@@ -4,17 +4,21 @@ import argparse
 import asyncio
 import json
 import logging
+from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
-from collections.abc import Sequence
 
 import pandas as pd
 from rich.console import Console
 from rich.table import Table
 
 from freqtrade.forex.backtest import ForexBacktester
+from freqtrade.forex.conditions import (
+    normalize_approved_ema_trend_condition,
+    normalize_ema_trend_condition,
+)
 from freqtrade.forex.config import OandaSettings, load_forex_config, save_forex_config
 from freqtrade.forex.execution import ExecutionMode, OandaExecutionGateway
 from freqtrade.forex.health import OandaHealthCheck, OandaHealthReport
@@ -31,6 +35,7 @@ from freqtrade.forex.strategy_execution import (
     freqtrade_timeframe,
     load_strategy,
     strategy_informative_candle_count,
+    strategy_required_informative_timeframes,
 )
 from freqtrade.forex.strategy_hyperopt import (
     DEFAULT_HYPEROPT_LOSS,
@@ -56,7 +61,9 @@ def build_parser() -> argparse.ArgumentParser:
         default="user_data/oanda/paper.sqlite",
         help="SQLite paper ledger path",
     )
-    backup = subparsers.add_parser("paper-backup", help="Create a consistent SQLite paper ledger backup")
+    backup = subparsers.add_parser(
+        "paper-backup", help="Create a consistent SQLite paper ledger backup"
+    )
     backup.add_argument("--ledger", default="user_data/oanda/paper.sqlite")
     backup.add_argument("--destination", required=True)
     setup = subparsers.add_parser(
@@ -77,9 +84,13 @@ def build_parser() -> argparse.ArgumentParser:
     show_timeframes.add_argument("--pair", default=None, help="Show one pair only")
     show_timeframes.add_argument("--config", default=None, help="Forex config path")
     dry_run = subparsers.add_parser("dry-run", help="Run the live-price paper strategy safely")
-    dry_run.add_argument("--pair", default=None, help="Run one pair; defaults to all pairs in setup")
+    dry_run.add_argument(
+        "--pair", default=None, help="Run one pair; defaults to all pairs in setup"
+    )
     dry_run.add_argument("--timeframe", default=None)
-    dry_run.add_argument("--strategy", default=None, help="Override the pair's configured strategy class")
+    dry_run.add_argument(
+        "--strategy", default=None, help="Override the pair's configured strategy class"
+    )
     dry_run.add_argument("--steps", type=int, default=1, help="Number of steps; default: 1")
     dry_run.add_argument("--stop-pips", type=Decimal, default=Decimal("10"))
     dry_run.add_argument("--ledger", default="user_data/oanda/paper.sqlite")
@@ -98,7 +109,9 @@ def build_parser() -> argparse.ArgumentParser:
     practice.add_argument("--take-profit-price", default=None)
     practice.add_argument("--simulated-fill-price", default=None)
     practice.add_argument("--client-order-id", default=None)
-    practice_report = subparsers.add_parser("practice-report", help="Show recorded Practice session results")
+    practice_report = subparsers.add_parser(
+        "practice-report", help="Show recorded Practice session results"
+    )
     practice_report.add_argument(
         "--runs",
         default="user_data/oanda/practice-runs.jsonl",
@@ -117,13 +130,13 @@ def build_parser() -> argparse.ArgumentParser:
         "backtest", help="Run a read-only historical forex strategy backtest"
     )
     backtest.add_argument("--pair", default="EUR/USD")
-    backtest.add_argument(
-        "--timeframe", default="5m", choices=("1m", "5m", "15m", "1h")
-    )
+    backtest.add_argument("--timeframe", default="5m", choices=("1m", "5m", "15m", "1h"))
     backtest.add_argument("--count", type=int, default=500)
     backtest.add_argument("--start", default=None, help="UTC ISO start for cached historical data")
     backtest.add_argument("--end", default=None, help="UTC ISO end for cached historical data")
-    backtest.add_argument("--data-cache", default=None, help="JSON cache for raw and normalized candles")
+    backtest.add_argument(
+        "--data-cache", default=None, help="JSON cache for raw and normalized candles"
+    )
     backtest.add_argument(
         "--refresh-data", action="store_true", help="Fetch from OANDA even when cache exists"
     )
@@ -135,17 +148,20 @@ def build_parser() -> argparse.ArgumentParser:
     backtest.add_argument("--stop-pips", type=Decimal, default=Decimal("10"))
     backtest.add_argument("--slippage", type=Decimal, default=Decimal("0"))
     backtest.add_argument("--financing-rate-per-day", type=Decimal, default=Decimal("0"))
+    backtest.add_argument("--disable-ema-trend-condition", action="store_true")
+    backtest.add_argument("--ema-trend-timeframe", choices=("H1", "H4"), default="H1")
+    backtest.add_argument("--ema-trend-timeperiod", type=int, choices=range(4, 14), default=4)
     hyperopt = subparsers.add_parser(
         "hyperopt", help="Optimize a Freqtrade strategy's declared parameters"
     )
     hyperopt.add_argument("--pair", default="EUR/USD")
-    hyperopt.add_argument(
-        "--timeframe", default="5m", choices=("1m", "5m", "15m", "1h")
-    )
+    hyperopt.add_argument("--timeframe", default="5m", choices=("1m", "5m", "15m", "1h"))
     hyperopt.add_argument("--count", type=int, default=500)
     hyperopt.add_argument("--start", default=None, help="UTC ISO start for cached historical data")
     hyperopt.add_argument("--end", default=None, help="UTC ISO end for cached historical data")
-    hyperopt.add_argument("--data-cache", default=None, help="JSON cache for raw and normalized candles")
+    hyperopt.add_argument(
+        "--data-cache", default=None, help="JSON cache for raw and normalized candles"
+    )
     hyperopt.add_argument(
         "--refresh-data", action="store_true", help="Fetch from OANDA even when cache exists"
     )
@@ -160,6 +176,9 @@ def build_parser() -> argparse.ArgumentParser:
         default="ForexEmaStrategy",
         help="Freqtrade strategy class whose declared parameters should be optimized",
     )
+    hyperopt.add_argument("--disable-ema-trend-condition", action="store_true")
+    hyperopt.add_argument("--ema-trend-timeframe", choices=("H1", "H4"), default="H1")
+    hyperopt.add_argument("--ema-trend-timeperiod", type=int, choices=range(4, 14), default=4)
     hyperopt.add_argument(
         "--hyperopt-loss", choices=HYPEROPT_LOSS_FUNCTIONS, default=DEFAULT_HYPEROPT_LOSS
     )
@@ -169,9 +188,7 @@ def build_parser() -> argparse.ArgumentParser:
         "download-data", help="Download and cache OANDA historical candles"
     )
     download.add_argument("--pair", default="EUR/USD")
-    download.add_argument(
-        "--timeframe", default="5m", choices=("1m", "5m", "1h")
-    )
+    download.add_argument("--timeframe", default="5m", choices=("1m", "5m", "1h"))
     download.add_argument("--count", type=int, default=500)
     download.add_argument("--start", default=None)
     download.add_argument("--end", default=None)
@@ -183,9 +200,7 @@ def build_parser() -> argparse.ArgumentParser:
         "cache-clear", help="Clear all or selected cached OANDA candles"
     )
     clear_cache.add_argument("--pair", default=None)
-    clear_cache.add_argument(
-        "--timeframe", default=None, choices=("1m", "5m", "1h")
-    )
+    clear_cache.add_argument("--timeframe", default=None, choices=("1m", "5m", "1h"))
     clear_cache.add_argument("--data-cache", default="user_data/data/oanda/candles.json")
     hyperopt.add_argument("--slippage", type=Decimal, default=Decimal("0"))
     hyperopt.add_argument("--financing-rate-per-day", type=Decimal, default=Decimal("0"))
@@ -204,7 +219,9 @@ def run_setup(args: argparse.Namespace) -> int:
     if not instruments:
         raise ValueError("--instruments must contain at least one instrument")
     if args.environment == "live":
-        raise ValueError("initial setup only supports the Practice environment; configure Live after review")
+        raise ValueError(
+            "initial setup only supports the Practice environment; configure Live after review"
+        )
     payload = {
         "schema_version": 1,
         "exchange": {
@@ -221,12 +238,17 @@ def run_setup(args: argparse.Namespace) -> int:
         "setup": {"configured": False, "credentials_source": "ui"},
     }
     saved_path = save_forex_config(payload, config_path)
-    print(json.dumps({
-        "status": "ready",
-        "userdir": str(userdir),
-        "config": str(saved_path),
-        "next": "start the API and open /setup to enter OANDA credentials",
-    }, indent=2))
+    print(
+        json.dumps(
+            {
+                "status": "ready",
+                "userdir": str(userdir),
+                "config": str(saved_path),
+                "next": "start the API and open /setup to enter OANDA credentials",
+            },
+            indent=2,
+        )
+    )
     return 0
 
 
@@ -251,7 +273,7 @@ async def run_dry_run(settings: OandaSettings, args: argparse.Namespace) -> int:
     )
     if not instrument_names:
         raise ValueError("setup must configure at least one instrument")
-    selected_scopes: dict[str, tuple[str, str, dict[str, object], Decimal]] = {}
+    selected_scopes: dict[str, tuple[str, str, dict[str, object], Decimal, dict[str, object]]] = {}
     for instrument_name in instrument_names:
         pair = instrument_name.replace("_", "/")
         approved = settings.pair_approved_revisions.get(instrument_name)
@@ -268,8 +290,7 @@ async def run_dry_run(settings: OandaSettings, args: argparse.Namespace) -> int:
             or not strategy_class
             or not configured_timeframe
             or not configured_strategy
-            or freqtrade_timeframe(timeframe)
-            != freqtrade_timeframe(configured_timeframe)
+            or freqtrade_timeframe(timeframe) != freqtrade_timeframe(configured_timeframe)
             or strategy_class != configured_strategy
             or approved.get("pair") != pair.upper()
         ):
@@ -279,13 +300,20 @@ async def run_dry_run(settings: OandaSettings, args: argparse.Namespace) -> int:
             )
         timeframe = configured_timeframe
         if args.timeframe and freqtrade_timeframe(args.timeframe) != freqtrade_timeframe(timeframe):
-            raise ValueError(f"--timeframe cannot override the approved timeframe {timeframe} for {pair}")
+            raise ValueError(
+                f"--timeframe cannot override the approved timeframe {timeframe} for {pair}"
+            )
         if args.strategy and args.strategy != strategy_class:
-            raise ValueError(f"--strategy cannot override the approved strategy {strategy_class} for {pair}")
+            raise ValueError(
+                f"--strategy cannot override the approved strategy {strategy_class} for {pair}"
+            )
         hyperopt = approved.get("hyperopt")
         hyperopt = hyperopt if isinstance(hyperopt, dict) else {}
-        parameters = hyperopt.get(
-            "parameters", hyperopt.get("bestParameters", {})
+        parameters = hyperopt.get("parameters", hyperopt.get("bestParameters", {}))
+        run_settings = hyperopt.get("runSettings")
+        run_settings = run_settings if isinstance(run_settings, dict) else {}
+        ema_trend_condition = normalize_approved_ema_trend_condition(
+            hyperopt.get("emaTrendCondition", run_settings.get("emaTrendCondition"))
         )
         stop_pips = approved_stop_distance_pips(hyperopt.get("stopLoss"))
         selected_scopes[instrument_name] = (
@@ -293,6 +321,7 @@ async def run_dry_run(settings: OandaSettings, args: argparse.Namespace) -> int:
             timeframe,
             parameters if isinstance(parameters, dict) else {},
             stop_pips if stop_pips is not None else args.stop_pips,
+            ema_trend_condition,
         )
     async with OandaClient(
         settings.token, settings.account_id, environment=settings.environment
@@ -313,19 +342,30 @@ async def run_dry_run(settings: OandaSettings, args: argparse.Namespace) -> int:
                 raise ValueError("GBP_USD price is required for GBP account risk conversion")
             conversion = Decimal("1") / gbp_usd.midpoint
         ledger = PaperLedger(Path(args.ledger))
-        session = DryRunSession(client, OandaExecutionGateway(settings, ExecutionMode.DRY_RUN), instrument_names, ledger=ledger)
+        session = DryRunSession(
+            client,
+            OandaExecutionGateway(settings, ExecutionMode.DRY_RUN),
+            instrument_names,
+            ledger=ledger,
+        )
         provider = OandaMarketDataProvider(client, settings)
         workers: list[DryRunWorker] = []
         for instrument_name in instrument_names:
             pair = instrument_name.replace("_", "/")
-            strategy_class, timeframe, parameters, stop_pips = selected_scopes[instrument_name]
+            strategy_class, timeframe, parameters, stop_pips, ema_trend_condition = selected_scopes[
+                instrument_name
+            ]
             strategy = load_strategy(
                 strategy_class,
                 freqtrade_timeframe(timeframe),
                 pair,
                 parameter_values=parameters,
             )
-            adapter = FreqtradeStrategyAdapter(strategy, pair)
+            adapter = FreqtradeStrategyAdapter(
+                strategy,
+                pair,
+                ema_trend_condition=ema_trend_condition,
+            )
             loop = DryRunStrategyLoop(
                 provider,
                 session,
@@ -336,11 +376,19 @@ async def run_dry_run(settings: OandaSettings, args: argparse.Namespace) -> int:
                 stop_pips=stop_pips,
                 quote_to_account_rate=conversion,
             )
-            workers.append(DryRunWorker(
-                loop,
-                WorkerConfig(pair=pair, timeframe=timeframe, interval_seconds=float(timeframe_to_seconds(freqtrade_timeframe(timeframe)))),
-                on_result=lambda result: print(json.dumps(result.as_dict(), default=str)),
-            ))
+            workers.append(
+                DryRunWorker(
+                    loop,
+                    WorkerConfig(
+                        pair=pair,
+                        timeframe=timeframe,
+                        interval_seconds=float(
+                            timeframe_to_seconds(freqtrade_timeframe(timeframe))
+                        ),
+                    ),
+                    on_result=lambda result: print(json.dumps(result.as_dict(), default=str)),
+                )
+            )
         await DryRunPortfolioWorker(tuple(workers)).run(max_steps=args.steps)
     return 0
 
@@ -375,12 +423,14 @@ def run_show_timeframes(args: argparse.Namespace) -> int:
             and approved_strategy == configured_strategy
             and revision.get("pair") == instrument_name.replace("_", "/")
         )
-        result.append({
-            "pair": instrument_name.replace("_", "/"),
-            "timeframe": configured_timeframe,
-            "strategy": configured_strategy,
-            "approved": approved,
-        })
+        result.append(
+            {
+                "pair": instrument_name.replace("_", "/"),
+                "timeframe": configured_timeframe,
+                "strategy": configured_strategy,
+                "approved": approved,
+            }
+        )
     print(json.dumps(result, indent=2))
     return 0
 
@@ -509,7 +559,8 @@ def _backtest_summary(
         "strategy": strategy,
         "data_period": (
             f"{first_candle.isoformat()} - {last_candle.isoformat()}"
-            if first_candle is not None and last_candle is not None else "n/a"
+            if first_candle is not None and last_candle is not None
+            else "n/a"
         ),
         "candles": len(candles),
         "trades": len(trades),
@@ -552,9 +603,20 @@ def _print_backtest_summary(summary: dict[str, object]) -> None:
         (f"Starting balance ({currency})", f"{Decimal(str(summary['starting_balance'])):,.2f}"),
         (f"Ending balance ({currency})", f"{Decimal(str(summary['ending_balance'])):,.2f}"),
         (f"Net profit ({currency})", f"{Decimal(str(summary['net_pl'])):,.2f}"),
-        (f"Average P/L per trade ({currency})", f"{Decimal(str(summary['average_pl_per_trade'])):,.2f}"),
-        (f"Gross profit / loss ({currency})", f"{Decimal(str(summary['gross_profit'])):,.2f} / {Decimal(str(summary['gross_loss'])):,.2f}"),
-        ("Profit factor", f"{Decimal(str(summary['profit_factor'])):.2f}" if summary["profit_factor"] is not None else "n/a"),
+        (
+            f"Average P/L per trade ({currency})",
+            f"{Decimal(str(summary['average_pl_per_trade'])):,.2f}",
+        ),
+        (
+            f"Gross profit / loss ({currency})",
+            f"{Decimal(str(summary['gross_profit'])):,.2f} / {Decimal(str(summary['gross_loss'])):,.2f}",
+        ),
+        (
+            "Profit factor",
+            f"{Decimal(str(summary['profit_factor'])):.2f}"
+            if summary["profit_factor"] is not None
+            else "n/a",
+        ),
         (f"Max drawdown ({currency})", f"{Decimal(str(summary['max_drawdown'])):,.2f}"),
         ("Max drawdown rate", f"{Decimal(str(summary['max_drawdown_rate'])):.2%}"),
         (f"Total costs ({currency})", f"{Decimal(str(summary['total_costs'])):,.2f}"),
@@ -577,9 +639,8 @@ async def _fetch_strategy_informative_candles(
     store: HistoricalCandleStore,
     refresh: bool,
     config_overrides: dict[str, object] | None = None,
+    ema_trend_condition: dict[str, object] | None = None,
 ) -> dict[str, pd.DataFrame]:
-    from freqtrade.forex.strategy_execution import strategy_informative_timeframes
-
     strategy = load_strategy(
         strategy_class,
         freqtrade_timeframe(timeframe),
@@ -587,23 +648,27 @@ async def _fetch_strategy_informative_candles(
         config_overrides=config_overrides,
     )
     informative_candles: dict[str, pd.DataFrame] = {}
-    for informative_timeframe in strategy_informative_timeframes(strategy, pair):
+    informative_timeframes = strategy_required_informative_timeframes(
+        strategy, pair, ema_trend_condition
+    )
+    for informative_timeframe in informative_timeframes:
         informative_count = min(
             5000,
             strategy_informative_candle_count(
-                strategy, informative_timeframe, base_candle_count
+                strategy,
+                informative_timeframe,
+                base_candle_count,
+                ema_trend_condition,
             ),
         )
         if start and end:
-            informative_candles[informative_timeframe] = (
-                await provider.fetch_historical(
-                    pair,
-                    informative_timeframe,
-                    start=start,
-                    end=end,
-                    store=store,
-                    refresh=refresh,
-                )
+            informative_candles[informative_timeframe] = await provider.fetch_historical(
+                pair,
+                informative_timeframe,
+                start=start,
+                end=end,
+                store=store,
+                refresh=refresh,
             )
         else:
             informative_candles[informative_timeframe] = await provider.fetch_latest(
@@ -614,9 +679,7 @@ async def _fetch_strategy_informative_candles(
                 refresh=refresh,
             )
         if informative_candles[informative_timeframe].empty:
-            raise ValueError(
-                f"No informative candles returned for {informative_timeframe}"
-            )
+            raise ValueError(f"No informative candles returned for {informative_timeframe}")
     return informative_candles
 
 
@@ -635,13 +698,20 @@ async def run_backtest(settings: OandaSettings, args: argparse.Namespace) -> int
         store = HistoricalCandleStore(Path(args.data_cache or "user_data/data/oanda/candles.json"))
         if args.start and args.end:
             frame = await provider.fetch_historical(
-                args.pair, args.timeframe, start=args.start, end=args.end,
-                store=store, refresh=args.refresh_data,
+                args.pair,
+                args.timeframe,
+                start=args.start,
+                end=args.end,
+                store=store,
+                refresh=args.refresh_data,
             )
         else:
             frame = await provider.fetch_latest(
-                args.pair, args.timeframe, count=args.count,
-                store=store, refresh=args.refresh_data,
+                args.pair,
+                args.timeframe,
+                count=args.count,
+                store=store,
+                refresh=args.refresh_data,
             )
         price_instruments = (
             (instrument_name, "GBP_USD") if account.currency != "USD" else (instrument_name,)
@@ -661,6 +731,13 @@ async def run_backtest(settings: OandaSettings, args: argparse.Namespace) -> int
             strategy = EmaCrossStrategy()
             backtest_strategy = strategy
         else:
+            ema_trend_condition = normalize_ema_trend_condition(
+                {
+                    "enabled": not getattr(args, "disable_ema_trend_condition", False),
+                    "timeframe": getattr(args, "ema_trend_timeframe", "H1"),
+                    "timeperiod": getattr(args, "ema_trend_timeperiod", 4),
+                }
+            )
             timeframe = freqtrade_timeframe(args.timeframe)
             strategy = load_strategy(args.strategy, timeframe, args.pair)
             informative_candles = await _fetch_strategy_informative_candles(
@@ -673,9 +750,13 @@ async def run_backtest(settings: OandaSettings, args: argparse.Namespace) -> int
                 end=args.end,
                 store=store,
                 refresh=args.refresh_data,
+                ema_trend_condition=ema_trend_condition,
             )
             backtest_strategy = FreqtradeStrategyAdapter(
-                strategy, args.pair, informative_candles
+                strategy,
+                args.pair,
+                informative_candles,
+                ema_trend_condition=ema_trend_condition,
             )
             backtest_strategy.prepare_backtest(frame)
 
@@ -700,64 +781,71 @@ async def run_backtest(settings: OandaSettings, args: argparse.Namespace) -> int
         account_currency=account.currency,
     )
     _print_backtest_summary(summary)
-    print(json.dumps({
-        "instrument": instrument_name,
-        "timeframe": args.timeframe,
-        "strategy": args.strategy,
-        "candles": len(frame),
-        "starting_balance": str(result.starting_balance),
-        "ending_balance": str(result.ending_balance),
-        "net_pl": str(result.net_pl),
-        "trades": len(result.trades),
-        "win_rate": str(result.win_rate),
-        "spread": str(price_map[instrument_name].spread),
-        "slippage": str(args.slippage),
-        "financing_rate_per_day": str(args.financing_rate_per_day),
-        "total_costs": str(result.total_costs),
-        "quote_to_account_rate": str(conversion),
-        "trades_detail": list(result.trade_output),
-        "equity_curve": [
-            {"timestamp": str(point.timestamp), "balance": str(point.balance)}
-            for point in result.equity_curve
-        ],
-        "max_drawdown": str(result.max_drawdown),
-        "max_drawdown_rate": str(result.max_drawdown_rate),
-        "daily_breakdown": [
+    print(
+        json.dumps(
             {
-                "period": item.period,
-                "trades": item.trades,
-                "net_pl": str(item.net_pl),
-                "wins": item.wins,
-                "losses": item.losses,
-                "draws": item.draws,
-            }
-            for item in result.daily_breakdown
-        ],
-        "weekly_breakdown": [
-            {
-                "period": item.period,
-                "trades": item.trades,
-                "net_pl": str(item.net_pl),
-                "wins": item.wins,
-                "losses": item.losses,
-                "draws": item.draws,
-            }
-            for item in result.weekly_breakdown
-        ],
-        "monthly_breakdown": [
-            {
-                "period": item.period,
-                "trades": item.trades,
-                "net_pl": str(item.net_pl),
-                "wins": item.wins,
-                "losses": item.losses,
-                "draws": item.draws,
-            }
-            for item in result.monthly_breakdown
-        ],
-        "summary": summary,
-    }, indent=2, default=str))
+                "instrument": instrument_name,
+                "timeframe": args.timeframe,
+                "strategy": args.strategy,
+                "candles": len(frame),
+                "starting_balance": str(result.starting_balance),
+                "ending_balance": str(result.ending_balance),
+                "net_pl": str(result.net_pl),
+                "trades": len(result.trades),
+                "win_rate": str(result.win_rate),
+                "spread": str(price_map[instrument_name].spread),
+                "slippage": str(args.slippage),
+                "financing_rate_per_day": str(args.financing_rate_per_day),
+                "total_costs": str(result.total_costs),
+                "quote_to_account_rate": str(conversion),
+                "trades_detail": list(result.trade_output),
+                "equity_curve": [
+                    {"timestamp": str(point.timestamp), "balance": str(point.balance)}
+                    for point in result.equity_curve
+                ],
+                "max_drawdown": str(result.max_drawdown),
+                "max_drawdown_rate": str(result.max_drawdown_rate),
+                "daily_breakdown": [
+                    {
+                        "period": item.period,
+                        "trades": item.trades,
+                        "net_pl": str(item.net_pl),
+                        "wins": item.wins,
+                        "losses": item.losses,
+                        "draws": item.draws,
+                    }
+                    for item in result.daily_breakdown
+                ],
+                "weekly_breakdown": [
+                    {
+                        "period": item.period,
+                        "trades": item.trades,
+                        "net_pl": str(item.net_pl),
+                        "wins": item.wins,
+                        "losses": item.losses,
+                        "draws": item.draws,
+                    }
+                    for item in result.weekly_breakdown
+                ],
+                "monthly_breakdown": [
+                    {
+                        "period": item.period,
+                        "trades": item.trades,
+                        "net_pl": str(item.net_pl),
+                        "wins": item.wins,
+                        "losses": item.losses,
+                        "draws": item.draws,
+                    }
+                    for item in result.monthly_breakdown
+                ],
+                "summary": summary,
+            },
+            indent=2,
+            default=str,
+        )
+    )
     return 0
+
 
 async def run_hyperopt(settings: OandaSettings, args: argparse.Namespace) -> int:
     if args.count < 40:
@@ -776,13 +864,20 @@ async def run_hyperopt(settings: OandaSettings, args: argparse.Namespace) -> int
         store = HistoricalCandleStore(Path(args.data_cache or "user_data/data/oanda/candles.json"))
         if args.start and args.end:
             frame = await provider.fetch_historical(
-                args.pair, args.timeframe, start=args.start, end=args.end,
-                store=store, refresh=args.refresh_data,
+                args.pair,
+                args.timeframe,
+                start=args.start,
+                end=args.end,
+                store=store,
+                refresh=args.refresh_data,
             )
         else:
             frame = await provider.fetch_latest(
-                args.pair, args.timeframe, count=args.count,
-                store=store, refresh=args.refresh_data,
+                args.pair,
+                args.timeframe,
+                count=args.count,
+                store=store,
+                refresh=args.refresh_data,
             )
         price_instruments = (
             (instrument_name, "GBP_USD") if account.currency != "USD" else (instrument_name,)
@@ -797,6 +892,13 @@ async def run_hyperopt(settings: OandaSettings, args: argparse.Namespace) -> int
             if gbp_usd is None:
                 raise ValueError("GBP_USD price is required for GBP account hyperopt conversion")
             conversion = Decimal("1") / gbp_usd.midpoint
+        ema_trend_condition = normalize_ema_trend_condition(
+            {
+                "enabled": not getattr(args, "disable_ema_trend_condition", False),
+                "timeframe": getattr(args, "ema_trend_timeframe", "H1"),
+                "timeperiod": getattr(args, "ema_trend_timeperiod", 4),
+            }
+        )
         informative_candles = await _fetch_strategy_informative_candles(
             provider,
             strategy_class=args.strategy,
@@ -807,12 +909,11 @@ async def run_hyperopt(settings: OandaSettings, args: argparse.Namespace) -> int
             end=args.end,
             store=store,
             refresh=args.refresh_data,
+            ema_trend_condition=ema_trend_condition,
         )
         strategy_timeframe = freqtrade_timeframe(args.timeframe)
 
-        def show_strategy_epoch(
-            done: int, total: int, candidate: dict[str, object]
-        ) -> None:
+        def show_strategy_epoch(done: int, total: int, candidate: dict[str, object]) -> None:
             print(
                 f"Epoch {done}/{total} | objective={candidate['objective']} "
                 f"| validation_pl={candidate['validationNetPl']} "
@@ -838,22 +939,27 @@ async def run_hyperopt(settings: OandaSettings, args: argparse.Namespace) -> int
             max_attempts=args.epochs,
             hyperopt_loss=args.hyperopt_loss,
             on_candidate=show_strategy_epoch,
+            ema_trend_condition=ema_trend_condition,
         )
         report_path = Path(args.results_dir) / (
             f"{instrument_name}_{args.timeframe}_{args.strategy}_hyperopt.json"
         )
         report_path.parent.mkdir(parents=True, exist_ok=True)
         report_path.write_text(
-            json.dumps({
-                "strategy": args.strategy,
-                "pair": args.pair.upper(),
-                "timeframe": args.timeframe,
-                "hyperopt_loss": args.hyperopt_loss,
-                "candidates_tested": len(candidates),
-                "best": candidates[0],
-                "best_minimal_roi": candidates[0].get("minimal_roi") or {},
-                "candidates": candidates,
-            }, indent=2, default=str),
+            json.dumps(
+                {
+                    "strategy": args.strategy,
+                    "pair": args.pair.upper(),
+                    "timeframe": args.timeframe,
+                    "hyperopt_loss": args.hyperopt_loss,
+                    "candidates_tested": len(candidates),
+                    "best": candidates[0],
+                    "best_minimal_roi": candidates[0].get("minimal_roi") or {},
+                    "candidates": candidates,
+                },
+                indent=2,
+                default=str,
+            ),
             encoding="utf-8",
         )
 
@@ -866,14 +972,21 @@ async def run_hyperopt(settings: OandaSettings, args: argparse.Namespace) -> int
             f"{candidate['validationNetPl']:>14} | "
             f"{candidate['validationDrawdown']:>8} | {candidate['parameters']}"
         )
-    print(json.dumps({
-        "strategy": args.strategy,
-        "candidates_tested": len(candidates),
-        "best_parameters": candidates[0]["parameters"],
-        "best_minimal_roi": candidates[0].get("minimal_roi") or {},
-        "report_path": str(report_path),
-    }, indent=2, default=str))
+    print(
+        json.dumps(
+            {
+                "strategy": args.strategy,
+                "candidates_tested": len(candidates),
+                "best_parameters": candidates[0]["parameters"],
+                "best_minimal_roi": candidates[0].get("minimal_roi") or {},
+                "report_path": str(report_path),
+            },
+            indent=2,
+            default=str,
+        )
+    )
     return 0
+
 
 async def run_download_data(settings: OandaSettings, args: argparse.Namespace) -> int:
     if args.count < 1:
@@ -887,18 +1000,32 @@ async def run_download_data(settings: OandaSettings, args: argparse.Namespace) -
         provider = OandaMarketDataProvider(client, settings)
         if args.start and args.end:
             frame = await provider.fetch_historical(
-                args.pair, args.timeframe, start=args.start, end=args.end,
-                store=store, refresh=args.refresh_data,
+                args.pair,
+                args.timeframe,
+                start=args.start,
+                end=args.end,
+                store=store,
+                refresh=args.refresh_data,
             )
         else:
             frame = await provider.fetch_latest(
-                args.pair, args.timeframe, count=args.count,
-                store=store, refresh=args.refresh_data,
+                args.pair,
+                args.timeframe,
+                count=args.count,
+                store=store,
+                refresh=args.refresh_data,
             )
-    print(json.dumps({
-        "pair": args.pair.upper(), "timeframe": args.timeframe,
-        "candles": len(frame), "cache": str(store.path),
-    }, indent=2))
+    print(
+        json.dumps(
+            {
+                "pair": args.pair.upper(),
+                "timeframe": args.timeframe,
+                "candles": len(frame),
+                "cache": str(store.path),
+            },
+            indent=2,
+        )
+    )
     return 0
 
 
@@ -952,7 +1079,9 @@ def paper_report_to_json(ledger: PaperLedger) -> str:
                     "units": trade.units,
                     "entry_price": str(trade.entry_price),
                     "exit_price": str(trade.exit_price) if trade.exit_price is not None else None,
-                    "realized_pl": str(trade.realized_pl) if trade.realized_pl is not None else None,
+                    "realized_pl": str(trade.realized_pl)
+                    if trade.realized_pl is not None
+                    else None,
                     "unrealized_pl": str(trade.unrealized_pl)
                     if trade.unrealized_pl is not None
                     else None,

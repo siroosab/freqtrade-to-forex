@@ -9,6 +9,7 @@ from typing import Any
 
 import pandas as pd
 
+from freqtrade.forex.conditions import normalize_approved_ema_trend_condition
 from freqtrade.forex.config import OandaSettings
 from freqtrade.forex.models import OandaInstrument, OandaPrice
 from freqtrade.forex.oanda import OandaClient
@@ -20,7 +21,7 @@ from freqtrade.forex.strategy_execution import (
     load_strategy,
     oanda_granularity,
     strategy_informative_candle_count,
-    strategy_informative_timeframes,
+    strategy_required_informative_timeframes,
 )
 from freqtrade.forex.strategy_loop import Signal
 
@@ -168,6 +169,11 @@ class OandaAutoStrategyExecutor:
         parameters = parameters if isinstance(parameters, dict) else {}
         parameter_values = parameters.get("parameters", parameters.get("bestParameters", {}))
         minimal_roi = parameters.get("minimal_roi", parameters.get("bestMinimalRoi"))
+        run_settings = parameters.get("runSettings")
+        run_settings = run_settings if isinstance(run_settings, dict) else {}
+        ema_trend_condition = normalize_approved_ema_trend_condition(
+            parameters.get("emaTrendCondition", run_settings.get("emaTrendCondition"))
+        )
         strategy = load_strategy(
             str(revision["strategyClass"]),
             freqtrade_timeframe(timeframe),
@@ -186,8 +192,15 @@ class OandaAutoStrategyExecutor:
             ),
         )
         informative_candles: dict[str, pd.DataFrame] = {}
-        for informative_timeframe in strategy_informative_timeframes(strategy, pair):
-            count = strategy_informative_candle_count(strategy, informative_timeframe, len(candles))
+        for informative_timeframe in strategy_required_informative_timeframes(
+            strategy, pair, ema_trend_condition
+        ):
+            count = strategy_informative_candle_count(
+                strategy,
+                informative_timeframe,
+                len(candles),
+                ema_trend_condition,
+            )
             raw_informative = await self.client.get_candles(
                 instrument,
                 oanda_granularity(informative_timeframe),
@@ -195,7 +208,12 @@ class OandaAutoStrategyExecutor:
             )
             informative_candles[informative_timeframe] = _candle_frame(raw_informative)
 
-        adapter = FreqtradeStrategyAdapter(strategy, pair, informative_candles)
+        adapter = FreqtradeStrategyAdapter(
+            strategy,
+            pair,
+            informative_candles,
+            ema_trend_condition=ema_trend_condition,
+        )
         signal = adapter.signal(candles)
         last_candle = candles.iloc[-1]
         candle_time = pd.Timestamp(last_candle["date"]).isoformat()

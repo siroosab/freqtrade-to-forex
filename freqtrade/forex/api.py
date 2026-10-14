@@ -31,6 +31,10 @@ from fastapi.responses import FileResponse, HTMLResponse, Response
 
 from freqtrade.forex.auto_execution import OandaAutoStrategyExecutor
 from freqtrade.forex.backtest import ForexBacktester
+from freqtrade.forex.conditions import (
+    normalize_approved_ema_trend_condition,
+    normalize_ema_trend_condition,
+)
 from freqtrade.forex.config import (
     VALID_EXECUTION_MODES,
     OandaSettings,
@@ -56,7 +60,7 @@ from freqtrade.forex.strategy_execution import (
     load_strategy,
     oanda_granularity,
     strategy_informative_candle_count,
-    strategy_informative_timeframes,
+    strategy_required_informative_timeframes,
 )
 from freqtrade.forex.strategy_hyperopt import (
     DEFAULT_HYPEROPT_LOSS,
@@ -2355,6 +2359,14 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     if parsed_roi_ratio > 0:
                         approved_roi_ratio = parsed_roi_ratio
                 parameters = hyperopt.get("parameters", {})
+                run_settings = hyperopt.get("runSettings")
+                run_settings = run_settings if isinstance(run_settings, dict) else {}
+                ema_trend_condition = normalize_approved_ema_trend_condition(
+                    hyperopt.get(
+                        "emaTrendCondition",
+                        run_settings.get("emaTrendCondition"),
+                    )
+                )
                 strategy = load_strategy(
                     approved_strategy,
                     freqtrade_timeframe(approved_timeframe),
@@ -2377,11 +2389,14 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     ),
                 )
                 informative_candles = {}
-                for informative_timeframe in strategy_informative_timeframes(
-                    strategy, normalized_pair
+                for informative_timeframe in strategy_required_informative_timeframes(
+                    strategy, normalized_pair, ema_trend_condition
                 ):
                     informative_count = strategy_informative_candle_count(
-                        strategy, informative_timeframe, signal_count
+                        strategy,
+                        informative_timeframe,
+                        signal_count,
+                        ema_trend_condition,
                     )
                     informative_raw = await client.get_candles(
                         instrument_name,
@@ -2392,7 +2407,10 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                         informative_raw
                     )
                 strategy_adapter = FreqtradeStrategyAdapter(
-                    strategy, normalized_pair, informative_candles
+                    strategy,
+                    normalized_pair,
+                    informative_candles,
+                    ema_trend_condition=ema_trend_condition,
                 )
 
                 signals: list[dict] = []
@@ -4155,6 +4173,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         optimize_roi: bool,
         use_exit_signal: bool,
         trailing_stop_loss: bool,
+        ema_trend_condition: dict[str, object],
         position_size_mode: str,
         position_size: Decimal,
         account_currency: str,
@@ -4191,6 +4210,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 optimize_roi=optimize_roi,
                 use_exit_signal=use_exit_signal,
                 trailing_stop_loss=trailing_stop_loss,
+                ema_trend_condition=ema_trend_condition,
                 max_attempts=attempts,
                 hyperopt_loss=hyperopt_loss,
                 slippage=slippage,
@@ -4243,6 +4263,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "optimizeRoi": optimize_roi,
                 "useExitSignal": use_exit_signal,
                 "runSettings": dict(job.get("runSettings") or {}),
+                "emaTrendCondition": dict(ema_trend_condition),
                 "parameters": best.get("parameters", {}),
                 "minimal_roi": best.get("minimal_roi"),
                 "stopLoss": best_stop_loss,
@@ -4275,6 +4296,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "optimizeRoi": optimize_roi,
                 "useExitSignal": use_exit_signal,
                 "runSettings": dict(job.get("runSettings") or {}),
+                "emaTrendCondition": dict(ema_trend_condition),
                 "stopLoss": best_stop_loss,
                 "trailingStopLoss": trailing_stop_loss,
                 "costSettings": {
@@ -4711,6 +4733,12 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 ),
                 "optimizeRoi": run_settings.get(
                     "optimizeRoi", approved_hyperopt.get("optimizeRoi", True)
+                ),
+                "emaTrendCondition": normalize_approved_ema_trend_condition(
+                    approved_hyperopt.get(
+                        "emaTrendCondition",
+                        run_settings.get("emaTrendCondition"),
+                    )
                 ),
                 "useExitSignal": run_settings.get(
                     "useExitSignal", approved_hyperopt.get("useExitSignal", True)
@@ -5206,6 +5234,12 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 detail="optimizeRoi and useExitSignal must be booleans",
             )
         try:
+            ema_trend_condition = normalize_ema_trend_condition(
+                payload.get("emaTrendCondition")
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        try:
             position_size = Decimal(str(payload.get("positionSize", "1000")))
             stop_distance_mode = str(payload.get("stopDistanceMode", "static")).lower()
             stop_loss_mode = str(payload.get("stopLossMode", "pips"))
@@ -5251,7 +5285,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             )
         try:
             strategy = load_strategy(strategy_class, freqtrade_timeframe(timeframe), pair)
-            informative_timeframes = strategy_informative_timeframes(strategy, pair)
+            informative_timeframes = strategy_required_informative_timeframes(
+                strategy, pair, ema_trend_condition
+            )
             oanda_granularity(freqtrade_timeframe(timeframe))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -5365,7 +5401,10 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     informative_count = min(
                         5000,
                         strategy_informative_candle_count(
-                            strategy, informative_timeframe, len(candles)
+                            strategy,
+                            informative_timeframe,
+                            len(candles),
+                            ema_trend_condition,
                         ),
                     )
                     informative_frame = await provider.fetch_latest(
@@ -5388,7 +5427,15 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 status_code=502, detail=f"Hyperopt data request failed: {exc}"
             ) from exc
 
-        data_hash = candle_frame_hash({instrument_name: candles})
+        data_hash = candle_frame_hash(
+            {
+                instrument_name: candles,
+                **{
+                    f"{instrument_name}:{key}": value
+                    for key, value in informative_candles.items()
+                },
+            }
+        )
         schema_hash = strategy_schema_hash(strategy_class, timeframe)
         run_settings: dict[str, object] = {
             "historyMode": history_mode,
@@ -5402,6 +5449,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             "trailingStopLoss": trailing_stop_loss,
             "optimizeRoi": optimize_roi,
             "useExitSignal": use_exit_signal,
+            "emaTrendCondition": dict(ema_trend_condition),
             "hyperoptLoss": hyperopt_loss,
             "spread": str(spread),
             "slippage": str(slippage),
@@ -5428,6 +5476,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             "stopDistanceMode": stop_distance_mode,
             "optimizeRoi": optimize_roi,
             "useExitSignal": use_exit_signal,
+            "emaTrendCondition": dict(ema_trend_condition),
             "runSettings": run_settings,
             "startedAt": datetime.now(timezone.utc).isoformat(),
             "stopEvent": threading.Event(),
@@ -5456,6 +5505,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 optimize_roi=optimize_roi,
                 use_exit_signal=use_exit_signal,
                 trailing_stop_loss=trailing_stop_loss,
+                ema_trend_condition=ema_trend_condition,
                 position_size_mode=position_size_mode,
                 position_size=position_size,
                 account_currency=account_currency,
@@ -5611,6 +5661,11 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "attempts": int(report.get("attemptsRequested", 24)),
                 "stopDistanceMode": report.get("stopDistanceMode", "static"),
                 "runSettings": dict(report.get("runSettings") or {}),
+                "emaTrendCondition": dict(
+                    report.get("emaTrendCondition")
+                    or dict(report.get("runSettings") or {}).get("emaTrendCondition")
+                    or {}
+                ),
                 "parameters": dict(report.get("bestParameters") or {}),
                 "minimal_roi": dict(report.get("bestMinimalRoi") or {}),
                 "optimizeRoi": report.get("optimizeRoi", True),
@@ -5670,6 +5725,11 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     "attempts": pending.get("attempts", 24),
                     "stopDistanceMode": pending.get("stopDistanceMode", "static"),
                     "runSettings": dict(pending.get("runSettings") or {}),
+                    "emaTrendCondition": dict(
+                        pending.get("emaTrendCondition")
+                        or dict(pending.get("runSettings") or {}).get("emaTrendCondition")
+                        or {}
+                    ),
                     "dataHash": pending.get("dataHash"),
                     "dataRevision": pending.get("dataRevision"),
                     "strategySchemaHash": pending.get("strategySchemaHash"),
@@ -5862,6 +5922,12 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             or strategy_config_for_pair(normalized_pair).get("strategyClass", "ForexMasterStrategy")
         )
         selected_timeframe = freqtrade_timeframe(timeframe)
+        try:
+            ema_trend_condition = normalize_ema_trend_condition(
+                payload.get("emaTrendCondition")
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         history_mode = str(payload.get("historyMode", "candles")).lower()
         date_range_mode = history_mode == "date_range"
         if date_range_mode:
@@ -5925,6 +5991,20 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 and int(approved_hyperopt.get("historyValue", steps)) == history_value
             )
             if pair_matches and timeframe_matches and strategy_matches:
+                run_settings = approved_hyperopt.get("runSettings")
+                run_settings = run_settings if isinstance(run_settings, dict) else {}
+                try:
+                    ema_trend_condition = normalize_ema_trend_condition(
+                        approved_hyperopt.get(
+                            "emaTrendCondition",
+                            run_settings.get("emaTrendCondition"),
+                        )
+                    )
+                except ValueError as exc:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=f"Approved EMA trend condition is invalid: {exc}",
+                    ) from exc
                 # Hyperopt parameters remain valid for the same pair/timeframe;
                 # a different history window only changes the validation sample.
                 if not history_matches:
@@ -6002,8 +6082,8 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     else None
                 ),
             )
-            informative_timeframes = strategy_informative_timeframes(
-                strategy_instance, normalized_pair
+            informative_timeframes = strategy_required_informative_timeframes(
+                strategy_instance, normalized_pair, ema_trend_condition
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -6071,7 +6151,10 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     informative_count = min(
                         5000,
                         strategy_informative_candle_count(
-                            strategy_instance, informative_timeframe, steps
+                            strategy_instance,
+                            informative_timeframe,
+                            steps,
+                            ema_trend_condition,
                         ),
                     )
                     informative_frame = await provider.fetch_latest(
@@ -6116,7 +6199,10 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     message=f"History ready: {len(frame)} {timeframe} candles and {len(informative_frames)} informative timeframe(s). Running {strategy_class_name}.",
                 )
                 strategy = FreqtradeStrategyAdapter(
-                    strategy_instance, normalized_pair, informative_frames
+                    strategy_instance,
+                    normalized_pair,
+                    informative_frames,
+                    ema_trend_condition=ema_trend_condition,
                 )
                 result = ForexBacktester(
                     strategy,
@@ -6261,6 +6347,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                         "useExitSignal": bool(
                             getattr(strategy_instance, "use_exit_signal", True)
                         ),
+                        "emaTrendCondition": dict(ema_trend_condition),
                         "spread": str(spread),
                         "slippage": str(slippage),
                         "financingRatePerDayPercent": str(financing_rate_per_day * Decimal("100")),

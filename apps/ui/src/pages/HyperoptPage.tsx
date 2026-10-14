@@ -53,6 +53,20 @@ function initialDateRange(): { startDate: string; endDate: string } {
   }
 }
 
+function timeframeMinutes(value: string): number {
+  if (value.toUpperCase().startsWith('MN')) {
+    const months = Number(value.slice(2))
+    return Number.isFinite(months) ? months * 43200 : 0
+  }
+  const match = /^(\d+)([mhdw])$/i.exec(value)
+    ?? /^([mhdw])(\d+)$/i.exec(value)
+  if (!match) return 0
+  const unitFirst = /^[mhdw]/i.test(value)
+  const amount = Number(match[unitFirst ? 2 : 1])
+  const unit = match[unitFirst ? 1 : 2].toLowerCase()
+  return amount * (unit === 'm' ? 1 : unit === 'h' ? 60 : unit === 'd' ? 1440 : 10080)
+}
+
 function formatUtcDateTime(value: string): string {
   return `${new Date(value).toLocaleString(undefined, { timeZone: 'UTC' })} UTC`
 }
@@ -114,6 +128,9 @@ export function HyperoptPage() {
   const [trailingStopLoss, setTrailingStopLoss] = useState(true)
   const [optimizeRoi, setOptimizeRoi] = useState(true)
   const [useExitSignal, setUseExitSignal] = useState(true)
+  const [emaTrendEnabled, setEmaTrendEnabled] = useState(true)
+  const [emaTrendTimeframe, setEmaTrendTimeframe] = useState<'1h' | '4h'>('1h')
+  const [emaTrendTimeperiod, setEmaTrendTimeperiod] = useState(4)
   const [stopLossPips, setStopLossPips] = useState('0.5')
   const [backtestStopLossPipsOverride, setBacktestStopLossPipsOverride] = useState<{
     scope: string
@@ -190,6 +207,22 @@ export function HyperoptPage() {
     queryFn: () => getStrategyReview(pair, timeframe, strategyClass),
     enabled: scopeEnabled,
   })
+  useEffect(() => {
+    const revision = reviewQuery.data?.approvedRevision
+    if (
+      !revision
+      || revision.pair !== pair
+      || revision.timeframe.toUpperCase() !== timeframe.toUpperCase()
+      || revision.strategyClass !== strategyClass
+    ) return
+    const runSettings = revision.hyperopt?.runSettings
+    const condition = revision.hyperopt?.emaTrendCondition
+      ?? runSettings?.emaTrendCondition
+    if (!condition) return
+    setEmaTrendEnabled(condition.enabled)
+    setEmaTrendTimeframe(condition.timeframe)
+    setEmaTrendTimeperiod(condition.timeperiod)
+  }, [pair, reviewQuery.data?.approvedRevision, strategyClass, timeframe])
   const backtestQuery = useQuery({
     queryKey: ['backtest-job', backtestJobId],
     queryFn: () => getBacktestJob(backtestJobId ?? ''),
@@ -312,6 +345,13 @@ export function HyperoptPage() {
   const backtestStopLossValid = Number.isFinite(Number(backtestStopLossValue))
     && Number(backtestStopLossValue) > 0
   const hyperoptStopLossValid = stopDistanceMode === 'automatic' || stopLossValid
+  const emaTrendTimeframeValid = !emaTrendEnabled
+    || timeframeMinutes(emaTrendTimeframe) > timeframeMinutes(timeframe)
+  const emaTrendCondition = {
+    enabled: emaTrendEnabled,
+    timeframe: emaTrendTimeframe,
+    timeperiod: emaTrendTimeperiod,
+  } as const
 
   useEffect(() => {
     if (backtestQuery.data?.status === 'completed') {
@@ -339,6 +379,7 @@ export function HyperoptPage() {
       positionSize: positionSizeMode === 'risk' ? null : selectedPositionSize,
       stopLossMode,
       stopLossValue: backtestStopLossValue,
+      emaTrendCondition,
     })
   }
 
@@ -364,6 +405,7 @@ export function HyperoptPage() {
       trailingStopLoss,
       optimizeRoi,
       useExitSignal,
+      emaTrendCondition,
       stopLossMode: stopDistanceMode === 'automatic' ? 'pips' : stopLossMode,
       stopLossValue: stopDistanceMode === 'automatic' ? stopLossPips : stopLossValue,
     })
@@ -557,7 +599,7 @@ export function HyperoptPage() {
         <div className="panel research-panel">
           <div className="panel-header compact">
             <div><p className="eyebrow">Research · 01</p><h3>Backtest</h3></div>
-            <button className="primary-action" type="button" onClick={runResearch} disabled={!scopeEnabled || !historyValueValid || !costSettingsValid || !positionSizeValid || !backtestStopLossValid || quoteQuery.isPending || quoteQuery.isError || setupQuery.isPending || setupQuery.isError || researchBusy}>
+            <button className="primary-action" type="button" onClick={runResearch} disabled={!scopeEnabled || !historyValueValid || !costSettingsValid || !positionSizeValid || !backtestStopLossValid || !emaTrendTimeframeValid || quoteQuery.isPending || quoteQuery.isError || setupQuery.isPending || setupQuery.isError || researchBusy}>
               {backtestMutation.isPending || backtestRunning ? 'Backtest running…' : 'Run backtest'}
             </button>
           </div>
@@ -705,6 +747,19 @@ export function HyperoptPage() {
                   </strong>
                 </div>
               )}
+              {backtest.execution && (
+                <div>
+                  <span>EMA trend condition</span>
+                  <strong>
+                    {backtest.execution.emaTrendCondition.enabled
+                      ? `Enabled · ${backtest.execution.emaTrendCondition.timeframe.toUpperCase()} · period ${backtest.execution.emaTrendCondition.timeperiod}`
+                      : 'Disabled'}
+                    {backtest.execution.configSource === 'approved-hyperopt'
+                      ? ' · approved Hyperopt'
+                      : ''}
+                  </strong>
+                </div>
+              )}
               {backtest.warning && <div><span>Data note</span><strong>{backtest.warning}</strong></div>}
             </div>
           )}
@@ -720,7 +775,7 @@ export function HyperoptPage() {
           <div className="panel-header compact">
             <div><p className="eyebrow">02 · Manual Hyperopt</p><h3>🧠 Optimize strategy parameters</h3></div>
             <div className="summary-grid">
-              <button className="primary-action" type="button" onClick={runOptimization} disabled={!scopeEnabled || !historyValueValid || !costSettingsValid || !positionSizeValid || !hyperoptStopLossValid || quoteQuery.isPending || quoteQuery.isError || setupQuery.isPending || setupQuery.isError || researchBusy || !strategies.length}>
+              <button className="primary-action" type="button" onClick={runOptimization} disabled={!scopeEnabled || !historyValueValid || !costSettingsValid || !positionSizeValid || !hyperoptStopLossValid || !emaTrendTimeframeValid || quoteQuery.isPending || quoteQuery.isError || setupQuery.isPending || setupQuery.isError || researchBusy || !strategies.length}>
                 {running || hyperoptMutation.isPending ? 'Optimizing…' : 'Run hyperopt'}
               </button>
               <button className="secondary-action" type="button" onClick={() => stopMutation.mutate()} disabled={!running || stopMutation.isPending}>
@@ -816,6 +871,50 @@ export function HyperoptPage() {
                 When enabled, signal-based and explicit strategy exits are evaluated. The approved setting overrides the strategy default in Backtest and live trading.
               </small>
             </label>
+            <label className="field-block">
+              <span>EMA higher-timeframe trend condition</span>
+              <input
+                className="trailing-stop-checkbox"
+                type="checkbox"
+                checked={emaTrendEnabled}
+                onChange={(event) => setEmaTrendEnabled(event.target.checked)}
+              />
+              <small>
+                Enabled by default. Long entries require EMA 9 above EMA 10; short entries require EMA 9 below EMA 10. This global condition does not require edits to the strategy.
+              </small>
+            </label>
+            {emaTrendEnabled && (
+              <>
+                <label className="field-block">
+                  <span>EMA trend timeframe</span>
+                  <select
+                    value={emaTrendTimeframe}
+                    onChange={(event) => setEmaTrendTimeframe(event.target.value as '1h' | '4h')}
+                  >
+                    <option value="1h">1 hour (H1)</option>
+                    <option value="4h">4 hours (H4)</option>
+                  </select>
+                  <small>The condition timeframe must be higher than the strategy timeframe.</small>
+                </label>
+                <label className="field-block">
+                  <span>EMA chain timeperiod</span>
+                  <select
+                    value={emaTrendTimeperiod}
+                    onChange={(event) => setEmaTrendTimeperiod(Number(event.target.value))}
+                  >
+                    {Array.from({ length: 10 }, (_, index) => index + 4).map((period) => (
+                      <option key={period} value={period}>{period}</option>
+                    ))}
+                  </select>
+                  <small>Fixed for this Hyperopt run; chained EMA columns run from ema_x_2 through ema_x_10.</small>
+                </label>
+              </>
+            )}
+            {!emaTrendTimeframeValid && (
+              <p className="field-block" role="alert">
+                Select H1 or H4 above the strategy timeframe, or disable the EMA condition.
+              </p>
+            )}
             {stopDistanceMode === 'static' ? (
               <>
                 <label className="field-block">
@@ -934,6 +1033,13 @@ export function HyperoptPage() {
                   {' · strategy exit signals '}
                   {report.useExitSignal === false ? 'disabled' : 'enabled'}
                 </strong></div>
+                {report.emaTrendCondition && (
+                  <div><span>EMA trend condition</span><strong>
+                    {report.emaTrendCondition.enabled
+                      ? `Enabled · ${report.emaTrendCondition.timeframe.toUpperCase()} · timeperiod ${report.emaTrendCondition.timeperiod}`
+                      : 'Disabled'}
+                  </strong></div>
+                )}
                 {report.bestMinimalRoi && Object.keys(report.bestMinimalRoi).length > 0 && <div><span>Minimal ROI</span><strong>{Object.entries(report.bestMinimalRoi).map(([key, value]) => `${key}m: ${value}`).join(' · ')}</strong></div>}
               </div>
               <div className="strategy-table-wrap">
@@ -988,6 +1094,9 @@ export function HyperoptPage() {
                 : 'disabled'}
               {' '}· ROI: {reviewQuery.data.approvedRevision.hyperopt?.optimizeRoi === false ? 'disabled' : 'enabled'}
               {' '}· strategy exit signals: {reviewQuery.data.approvedRevision.hyperopt?.useExitSignal === false ? 'disabled' : 'enabled'}
+              {' '}· EMA trend condition: {reviewQuery.data.approvedRevision.hyperopt?.emaTrendCondition?.enabled === false
+                ? 'disabled'
+                : `${(reviewQuery.data.approvedRevision.hyperopt?.emaTrendCondition?.timeframe ?? '1h').toUpperCase()} · period ${reviewQuery.data.approvedRevision.hyperopt?.emaTrendCondition?.timeperiod ?? 4}`}
             </p>
           )}
           <div className="summary-grid">

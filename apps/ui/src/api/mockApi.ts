@@ -158,6 +158,10 @@ export type StrategyReview = {
       trailingStopLoss?: boolean
       optimizeRoi?: boolean
       useExitSignal?: boolean
+      emaTrendCondition?: EmaTrendConditionSettings
+      runSettings?: {
+        emaTrendCondition?: EmaTrendConditionSettings
+      }
       stopLoss?: {
         mode: 'pips' | 'percent' | 'money'
         value: string
@@ -166,6 +170,12 @@ export type StrategyReview = {
       }
     }
   } | null
+}
+
+export type EmaTrendConditionSettings = {
+  enabled: boolean
+  timeframe: '1h' | '4h'
+  timeperiod: number
 }
 
 export type HyperoptCandidateRow = {
@@ -217,6 +227,7 @@ export type HyperoptReport = {
   trailingStopLoss?: boolean
   optimizeRoi?: boolean
   useExitSignal?: boolean
+  emaTrendCondition?: EmaTrendConditionSettings
   positionSizing?: {
     mode: 'risk' | 'units' | 'account_amount'
     value: string | null
@@ -377,6 +388,7 @@ export type BacktestRunResult = {
     trailingStopLoss: boolean
     useRoi: boolean
     useExitSignal: boolean
+    emaTrendCondition: EmaTrendConditionSettings
     configSource: 'approved-hyperopt' | 'default'
   }
   tradeDetails?: Array<Record<string, string | number | null | boolean>>
@@ -443,7 +455,7 @@ async function throwApiError(response: Response, message: string): Promise<never
   throw new Error(`${message}: ${detail}`)
 }
 
-export async function startHyperopt(payload: { pair: string; timeframe: string; strategyClass: string; steps: number; attempts: number; workers: number; historyMode?: 'candles' | 'days' | 'date_range'; historyValue?: number; startDate?: string; endDate?: string; hyperoptLoss?: string; spread?: string; slippage?: string; financingRatePerDayPercent?: string; commissionRatePercent?: string; positionSizeMode?: 'risk' | 'units' | 'account_amount'; positionSize?: string; stopDistanceMode?: 'static' | 'automatic'; stopLossMode?: 'pips' | 'percent' | 'money'; stopLossValue?: string; trailingStopLoss?: boolean; optimizeRoi?: boolean; useExitSignal?: boolean }): Promise<{ pair: string; status: string; attemptsTotal: number; workers: number }> {
+export async function startHyperopt(payload: { pair: string; timeframe: string; strategyClass: string; steps: number; attempts: number; workers: number; historyMode?: 'candles' | 'days' | 'date_range'; historyValue?: number; startDate?: string; endDate?: string; hyperoptLoss?: string; spread?: string; slippage?: string; financingRatePerDayPercent?: string; commissionRatePercent?: string; positionSizeMode?: 'risk' | 'units' | 'account_amount'; positionSize?: string; stopDistanceMode?: 'static' | 'automatic'; stopLossMode?: 'pips' | 'percent' | 'money'; stopLossValue?: string; trailingStopLoss?: boolean; optimizeRoi?: boolean; useExitSignal?: boolean; emaTrendCondition?: EmaTrendConditionSettings }): Promise<{ pair: string; status: string; attemptsTotal: number; workers: number }> {
   const response = await fetch(buildApiUrl('/api/v1/hyperopt/start'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -1179,7 +1191,7 @@ export async function getBacktestJob(jobId: string): Promise<BacktestRunResult> 
   return response.json() as Promise<BacktestRunResult>
 }
 
-export async function runBacktest(payload: { pair: string; timeframe: string; strategyClass: string; steps: number; historyMode?: 'candles' | 'days' | 'date_range'; historyValue?: number; startDate?: string; endDate?: string; spread?: string; slippage?: string; financingRatePerDayPercent?: string; commissionRatePercent?: string; positionSizeMode?: 'risk' | 'units' | 'account_amount'; positionSize?: string | null; stopLossMode?: 'pips' | 'percent' | 'money'; stopLossValue?: string }): Promise<BacktestRunResult> {
+export async function runBacktest(payload: { pair: string; timeframe: string; strategyClass: string; steps: number; historyMode?: 'candles' | 'days' | 'date_range'; historyValue?: number; startDate?: string; endDate?: string; spread?: string; slippage?: string; financingRatePerDayPercent?: string; commissionRatePercent?: string; positionSizeMode?: 'risk' | 'units' | 'account_amount'; positionSize?: string | null; stopLossMode?: 'pips' | 'percent' | 'money'; stopLossValue?: string; emaTrendCondition?: EmaTrendConditionSettings }): Promise<BacktestRunResult> {
   const response = await fetch(buildApiUrl('/api/v1/backtests/run'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

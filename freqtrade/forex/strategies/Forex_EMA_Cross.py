@@ -74,7 +74,7 @@ class ForexEmaCrossStrategy(IStrategy):
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         add_chained_ema_indicators(
             dataframe,
-            ema_count=20,
+            ema_count=30,
             timeperiod=int(self.entry_ema_timeperiod.value),
         )
         exit_indicators = add_chained_ema_indicators(
