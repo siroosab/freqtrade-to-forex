@@ -92,7 +92,7 @@ class ForexEmaCrossStrategy(IStrategy):
         dataframe["enter_long"] = qtpylib.crossed_above(fast_ema, slow_ema).fillna(False)
         dataframe["enter_short"] = qtpylib.crossed_below(fast_ema, slow_ema).fillna(False)
         return dataframe
-
+#test
     def populate_exit_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         fast_ema = dataframe[f"exit_ema_x_{self.exit_fast_ema_index.value}"]
         slow_ema = dataframe[f"exit_ema_x_{self.exit_slow_ema_index.value}"]
