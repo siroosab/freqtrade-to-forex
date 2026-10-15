@@ -1,12 +1,10 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import type { ChangeEvent, FormEvent } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { controlRuntime, controlSystemdService, discoverSetupAccounts, getAvailableStrategies, getRuntimeStatus, getSetupFileUrl, getSetupInstruments, getSetupStatus, getSystemdServiceStatus, saveSetup, setAutoExecution, uploadSetupFile, type SetupAccount, type SetupPayload, type SystemdServiceAction } from '../api/mockApi'
+import { controlRuntime, controlSystemdService, discoverSetupAccounts, getAvailableStrategies, getAutoExecutionStatus, getRuntimeStatus, getSetupFileUrl, getSetupInstruments, getSetupStatus, getSystemdServiceStatus, saveSetup, setAutoExecution, uploadSetupFile, type SetupAccount, type SetupPayload, type SystemdServiceAction } from '../api/mockApi'
 import { useUiStore } from '../store/useUiStore'
 
 export function SetupPage() {
-  const navigate = useNavigate()
   const userRole = useUiStore((state) => state.userRole)
   const sharedInstruments = useUiStore((state) => state.selectedInstruments)
   const setSelectedInstruments = useUiStore((state) => state.setSelectedInstruments)
@@ -20,6 +18,7 @@ export function SetupPage() {
     instruments: sharedInstruments.map((item) => item.replace('/', '_')),
   })
   const [error, setError] = useState<string | null>(null)
+  const [saveMessage, setSaveMessage] = useState<string | null>(null)
   const [operationMessage, setOperationMessage] = useState<string | null>(null)
   const [startAfterSave, setStartAfterSave] = useState(false)
   const [accounts, setAccounts] = useState<SetupAccount[]>([])
@@ -31,6 +30,12 @@ export function SetupPage() {
   const runtimeQuery = useQuery({ queryKey: ['setup-runtime'], queryFn: getRuntimeStatus })
   const strategiesQuery = useQuery({ queryKey: ['available-strategies'], queryFn: getAvailableStrategies })
   const savedSetupQuery = useQuery({ queryKey: ['setup-status'], queryFn: getSetupStatus })
+  const autoExecutionQuery = useQuery({
+    queryKey: ['auto-execution-status'],
+    queryFn: getAutoExecutionStatus,
+    refetchInterval: 5_000,
+    retry: 2,
+  })
   const runtimeMutation = useMutation({ mutationFn: controlRuntime, onSuccess: (result) => { setOperationMessage(result.message); void runtimeQuery.refetch() } })
   const serviceQuery = useQuery({
     queryKey: ['setup-systemd-service'],
@@ -78,6 +83,7 @@ export function SetupPage() {
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     setError(null)
+    setSaveMessage(null)
     if (
       startAfterSave &&
       form.environment === 'live' &&
@@ -90,9 +96,18 @@ export function SetupPage() {
       return
     }
     setSelectedInstruments(form.instruments.map((item) => item.replace(/_/g, '/')))
+    setSaveMessage('Setup settings were saved successfully.')
+    void savedSetupQuery.refetch()
     if (startAfterSave) {
       try {
-        await startExecutionMutation.mutateAsync()
+        const status = await startExecutionMutation.mutateAsync()
+        if (!status.enabled) {
+          throw new Error('The server did not confirm that automatic execution was enabled.')
+        }
+        setSaveMessage(
+          `Setup saved. Automatic ${form.environment} strategy execution is enabled; waiting for the first strategy cycle.`,
+        )
+        void autoExecutionQuery.refetch()
       } catch (reason) {
         setError(
           `Setup was saved, but automatic execution did not start: ${
@@ -102,7 +117,6 @@ export function SetupPage() {
         return
       }
     }
-    navigate('/', { replace: true })
   }
 
   const addInstrument = (instrument: string) => {
@@ -294,7 +308,37 @@ export function SetupPage() {
               </span>
             </label>
 
+            <section className="setup-auto-status field-wide" aria-labelledby="setup-auto-status-title">
+              <strong id="setup-auto-status-title">Automatic strategy execution</strong>
+              {autoExecutionQuery.isLoading && <small>Checking execution status…</small>}
+              {autoExecutionQuery.isError && (
+                <small className="setup-error" role="alert">
+                  {autoExecutionQuery.error instanceof Error
+                    ? autoExecutionQuery.error.message
+                    : 'Automatic execution status is unavailable.'}
+                </small>
+              )}
+              {autoExecutionQuery.data && (
+                <>
+                  <span>
+                    {autoExecutionQuery.data.enabled
+                      ? `Active · ${autoExecutionQuery.data.environment}`
+                      : 'Not active'}
+                  </span>
+                  {autoExecutionQuery.data.lastCycleAt && (
+                    <small>Last strategy cycle: {new Date(autoExecutionQuery.data.lastCycleAt).toLocaleString()}</small>
+                  )}
+                  {autoExecutionQuery.data.lastError && (
+                    <small className="setup-error" role="alert">
+                      Execution is enabled, but the latest cycle reported an error: {autoExecutionQuery.data.lastError}
+                    </small>
+                  )}
+                </>
+              )}
+            </section>
+
             {error && <p className="setup-error" role="alert">{error}</p>}
+            {saveMessage && <p className="setup-operation-message field-wide" role="status">{saveMessage}</p>}
             <div className="setup-footer">
               <span className="setup-secure-note">{form.environment === 'live' ? 'Live account · server-side config' : 'Practice environment · server-side config'}</span>
               <button className="primary-action setup-submit" type="submit" disabled={mutation.isPending || startExecutionMutation.isPending || !selectedAccount || !form.accountConfirmed || (form.environment === 'live' && (!form.liveConfirmed || userRole !== 'admin')) || (startAfterSave && form.environment === 'live' && userRole !== 'admin')}>

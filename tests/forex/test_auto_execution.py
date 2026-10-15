@@ -706,6 +706,17 @@ def test_auto_execution_api_requires_approved_strategy_before_enable(
             json={"enabled": True},
             headers=_auth_headers(client),
         )
+        state_path = tmp_path / "auto-execution.json"
+        state_path.write_text(
+            '{"enabled": true, "lastCycleAt": "2026-10-15T10:00:00Z", '
+            '"lastError": null, "results": []}',
+            encoding="utf-8",
+        )
+        active_status = client.get("/api/v1/strategy/auto-execution")
+        state_path.write_text(
+            '{"enabled": false, "lastProcessed": {}, "results": []}',
+            encoding="utf-8",
+        )
 
     with TestClient(create_app(tmp_path / "api-restarted.sqlite")) as restarted_client:
         restored_risk = restarted_client.get("/api/v1/account/risk/config?pair=EUR%2FUSD")
@@ -734,3 +745,7 @@ def test_auto_execution_api_requires_approved_strategy_before_enable(
     assert "units" not in restored_other_pair.json()
     assert enable.status_code == 409
     assert "approved strategy revision" in enable.json()["detail"]
+    assert active_status.status_code == 200
+    assert active_status.json()["enabled"] is True
+    assert active_status.json()["environment"] == "practice"
+    assert active_status.json()["lastCycleAt"] == "2026-10-15T10:00:00Z"

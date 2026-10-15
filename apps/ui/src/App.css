@@ -3073,6 +3073,26 @@
   color: #fda4af;
 }
 
+.setup-auto-status {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 13px 14px;
+  border: 1px solid rgba(103, 232, 249, 0.2);
+  border-radius: 7px;
+  background: rgba(8, 47, 73, 0.2);
+  color: #d8e2ee;
+  font-size: 0.78rem;
+}
+
+.setup-auto-status > strong {
+  color: #e2e8f0;
+}
+
+.setup-auto-status > small {
+  color: #9eafc2;
+}
+
 .setup-footer {
   display: flex;
   align-items: center;

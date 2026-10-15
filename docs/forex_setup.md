@@ -76,8 +76,11 @@ allowed side, maximum exposure, and a running runtime gate before it starts.
 Live additionally requires an admin session and a second browser confirmation
 before the request is sent. If these checks fail, the account config remains
 saved but automatic execution remains stopped; Setup displays the reason.
-Execution status, the latest cycle result, and errors are also visible on the
-Dashboard. Unchecking the start option only saves the account configuration.
+After a successful save, Setup stays open and confirms that the configuration
+was saved and whether the executor was enabled. Its automatic-execution status
+refreshes while the page is open and shows the environment, last cycle time, and
+any cycle error; the same execution details are visible on the Dashboard.
+Unchecking the start option only saves the account configuration.
 
 This automated lifecycle evaluates the approved `IStrategy` on completed
 OANDA candles, submits protected broker market orders, and manages its own
