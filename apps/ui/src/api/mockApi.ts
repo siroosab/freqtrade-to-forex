@@ -908,6 +908,7 @@ export type SetupStatus = {
   configured: boolean
   environment: 'practice' | 'live'
   executionMode: 'dry_run' | 'practice' | 'live'
+  liveTradingApproved: boolean
   instruments: string[]
   pairTimeframes: Record<string, string>
   pairStrategies: Record<string, string>
@@ -1087,7 +1088,7 @@ export async function controlSystemdService(
   }>
 }
 
-export async function uploadSetupFile(fileKind: 'config' | 'strategy', file: File): Promise<{ uploaded: boolean; reloadRequired: boolean; strategyNames?: string[] }> {
+export async function uploadSetupFile(fileKind: 'config' | 'strategy', file: File): Promise<{ uploaded: boolean; reloadRequired: boolean; strategyNames?: string[]; autoExecutionStopped?: boolean; liveTradingApprovalRevoked?: boolean }> {
   const content = await file.text()
   const response = await fetch(buildApiUrl(`/api/v1/setup/files/${fileKind}`), {
     method: 'POST',
@@ -1098,7 +1099,7 @@ export async function uploadSetupFile(fileKind: 'config' | 'strategy', file: Fil
     const detail = (await response.json().catch(() => ({}))) as { detail?: string }
     throw new Error(detail.detail ?? `${fileKind} upload was rejected`)
   }
-  return response.json() as Promise<{ uploaded: boolean; reloadRequired: boolean }>
+  return response.json() as Promise<{ uploaded: boolean; reloadRequired: boolean; strategyNames?: string[]; autoExecutionStopped?: boolean; liveTradingApprovalRevoked?: boolean }>
 }
 
 export type StrategyOption = { name: string; fileName: string; builtin: boolean }

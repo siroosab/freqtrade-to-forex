@@ -62,9 +62,29 @@ are readable. Select an account and confirm it before saving. Other accounts
 cannot be selected. The token is not saved until the confirmed setup is
 submitted and is never placed in the browser URL.
 
-Live requires both the explicit confirmation in the page and the server
-environment variable `OANDA_LIVE_CONFIRM=1`. In this project, the only setup
-modes are Practice and Live; there is no third execution selector.
+Live setup is restricted to an admin session. The account confirmation in the
+page is stored as a server-side approval; no environment-variable gate is
+required. The approval is preserved when the approved config is exported and
+re-uploaded, but an uploaded config cannot grant Live approval. Saving any
+account setup stops the current strategy executor so changing credentials or
+environments cannot leave a previous run active.
+
+To start the approved strategy loop directly from Setup, select **Start
+automatic strategy execution immediately after saving**. The server checks
+every configured pair for a current approved strategy revision, stop loss,
+allowed side, maximum exposure, and a running runtime gate before it starts.
+Live additionally requires an admin session and a second browser confirmation
+before the request is sent. If these checks fail, the account config remains
+saved but automatic execution remains stopped; Setup displays the reason.
+Execution status, the latest cycle result, and errors are also visible on the
+Dashboard. Unchecking the start option only saves the account configuration.
+
+This automated lifecycle evaluates the approved `IStrategy` on completed
+OANDA candles, submits protected broker market orders, and manages its own
+tagged trades using strategy exits, reversals, and the approved ROI schedule
+(subject to configured Take Profit protections). It is the Forex Auto
+Execution worker, not the standard `freqtrade trade` CLI exchange lifecycle.
+In this project, the only account environments are Practice and Live.
 
 ## Pair strategies and research runs
 
@@ -139,18 +159,6 @@ the 4h EMA is used as a trend filter for entries. This strategy's declared
 four-hour informative timeframe must be equal to or higher than its selected
 base timeframe, so selecting a base timeframe above 4h is rejected by the
 strategy loader.
-
-For a user-level systemd service, enable the Live setup gate only when needed:
-
-```bash
-mkdir -p ~/.config/systemd/user/freqtrade-forex.service.d
-printf '[Service]\nEnvironment=OANDA_LIVE_CONFIRM=1\n' > ~/.config/systemd/user/freqtrade-forex.service.d/live-confirm.conf
-systemctl --user daemon-reload
-systemctl --user restart freqtrade-forex
-```
-
-This gate permits saving a Live account configuration; the only setup modes
-remain Practice and Live.
 
 ## Forex CLI backtest and Hyperopt
 

@@ -43,8 +43,21 @@ The `DryRunSession` reads current OANDA prices and simulates fills in memory. Lo
 entries use the ask price, short entries use the bid price, and mark-to-market
 uses the opposite side of the spread. No order endpoint is called in this mode.
 
-This is the next execution layer before connecting a strategy loop. Keep
-`OANDA_EXECUTION_MODE=dry_run` while validating signals and risk sizing.
+Keep `OANDA_EXECUTION_MODE=dry_run` while validating signals and risk sizing.
+The scheduled Forex strategy executor is a separate, explicit opt-in: select
+Practice in Setup, approve a strategy revision, configure its risk controls,
+and choose **Start automatic strategy execution immediately after saving**.
+That worker submits protected market orders to the Practice account and
+manages its tagged trades with strategy exits, reversals, and the approved ROI
+schedule. Configured Take Profit orders are handled by OANDA and take
+precedence over strategy/ROI exits.
+
+Live uses the same order lifecycle but is only available after an admin
+confirms the Live account in Setup. Starting Live additionally requires the
+explicit confirmation prompt there. The approval is stored server-side; no
+`OANDA_LIVE_CONFIRM` environment variable is used. Any account setup change
+stops the current automated strategy loop. For requirements and safety checks,
+see [Forex Setup](./forex_setup.md).
 
 ## Strategy worker
 

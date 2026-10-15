@@ -2777,8 +2777,25 @@ def test_setup_discovery_returns_only_supported_accounts_and_never_token(monkeyp
     assert "private-token" not in response.text
 
 
-def test_live_setup_requires_server_side_confirmation_flag(monkeypatch, tmp_path):
+def test_live_setup_uses_setup_confirmation_without_server_environment_flag(monkeypatch, tmp_path):
     monkeypatch.delenv("OANDA_LIVE_CONFIRM", raising=False)
+
+    async def verified_live_account(token, environment):
+        return {
+            "accounts": [
+                {
+                    "accountId": "live-account",
+                    "accountTypeCode": "003",
+                    "accountType": "CFD",
+                    "tags": ["CFD"],
+                    "summary": {"alias": "Live CFD", "currency": "GBP"},
+                    "summaryAccessible": True,
+                }
+            ],
+            "excludedAccountCount": 0,
+        }
+
+    monkeypatch.setattr("freqtrade.forex.api.discover_oanda_accounts", verified_live_account)
     response = client.post(
         "/api/v1/setup",
         json={
@@ -2793,15 +2810,16 @@ def test_live_setup_requires_server_side_confirmation_flag(monkeypatch, tmp_path
             "riskFraction": "0.01",
             "configPath": str(tmp_path / "live-config.json"),
         },
-        headers=_auth_headers(client),
+        headers=_auth_headers(client, "admin"),
     )
-    assert response.status_code == 403
-    assert "OANDA_LIVE_CONFIRM=1" in response.json()["detail"]
-    assert not (tmp_path / "live-config.json").exists()
+    assert response.status_code == 200, response.text
+    saved = json.loads((tmp_path / "live-config.json").read_text(encoding="utf-8"))
+    assert saved["live_trading_approved"] is True
+    assert response.json()["liveTradingApproved"] is True
 
 
 def test_live_mode_maps_environment_to_live_execution(monkeypatch, tmp_path):
-    monkeypatch.setenv("OANDA_LIVE_CONFIRM", "1")
+    monkeypatch.delenv("OANDA_LIVE_CONFIRM", raising=False)
 
     async def verified_live_account(token, environment):
         assert token == "live-token"
@@ -2835,7 +2853,7 @@ def test_live_mode_maps_environment_to_live_execution(monkeypatch, tmp_path):
             "riskFraction": "0.01",
             "configPath": str(tmp_path / "live-config.json"),
         },
-        headers=_auth_headers(client),
+        headers=_auth_headers(client, "admin"),
     )
 
     assert response.status_code == 200, response.text
@@ -2843,6 +2861,76 @@ def test_live_mode_maps_environment_to_live_execution(monkeypatch, tmp_path):
     saved = json.loads((tmp_path / "live-config.json").read_text(encoding="utf-8"))
     assert saved["exchange"]["oanda_environment"] == "live"
     assert saved["exchange"]["oanda_execution_mode"] == "live"
+    assert saved["live_trading_approved"] is True
+
+
+def test_config_upload_cannot_grant_live_trading_approval(monkeypatch, tmp_path):
+    config_path = tmp_path / "server-config.json"
+    monkeypatch.setenv("OANDA_CONFIG_PATH", str(config_path))
+    response = client.post(
+        "/api/v1/setup/files/config",
+        json={
+            "content": json.dumps(
+                {
+                    "live_trading_approved": True,
+                    "exchange": {
+                        "name": "oanda",
+                        "oanda_environment": "live",
+                        "oanda_execution_mode": "live",
+                    },
+                }
+            )
+        },
+        headers=_auth_headers(client),
+    )
+
+    assert response.status_code == 403
+    assert "only be saved through confirmed /setup" in response.json()["detail"]
+    assert not config_path.exists()
+
+
+def test_config_upload_revokes_live_approval_and_stops_auto_execution(monkeypatch, tmp_path):
+    config_path = tmp_path / "server-config.json"
+    execution_state_path = tmp_path / "strategy-execution.json"
+    monkeypatch.setenv("OANDA_CONFIG_PATH", str(config_path))
+    monkeypatch.setenv("OANDA_AUTO_EXECUTION_STATE_PATH", str(execution_state_path))
+    config_path.write_text(
+        json.dumps(
+            {
+                "live_trading_approved": True,
+                "exchange": {"name": "oanda", "oanda_environment": "live"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    execution_state_path.write_text(
+        json.dumps({"enabled": True, "lastProcessed": {}, "results": []}),
+        encoding="utf-8",
+    )
+    upload_client = TestClient(create_app(tmp_path / "upload-config.sqlite"))
+    response = upload_client.post(
+        "/api/v1/setup/files/config",
+        json={
+            "content": json.dumps(
+                {
+                    "schema_version": 2,
+                    "exchange": {
+                        "name": "oanda",
+                        "oanda_environment": "practice",
+                    },
+                }
+            )
+        },
+        headers=_auth_headers(upload_client),
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["autoExecutionStopped"] is True
+    assert response.json()["liveTradingApprovalRevoked"] is True
+    saved = json.loads(config_path.read_text(encoding="utf-8"))
+    assert saved["live_trading_approved"] is False
+    execution_state = json.loads(execution_state_path.read_text(encoding="utf-8"))
+    assert execution_state["enabled"] is False
 
 
 def test_untagged_practice_v20_account_can_be_confirmed(monkeypatch, tmp_path):

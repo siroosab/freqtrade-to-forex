@@ -982,6 +982,22 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         )
         temporary_path.replace(strategy_execution_state_path)
 
+    async def stop_strategy_execution() -> bool:
+        state = read_strategy_execution_state()
+        was_enabled = state.get("enabled") is True
+        state["enabled"] = False
+        write_strategy_execution_state(state)
+        current_task = app.state.strategy_execution_task
+        if current_task is not None and not current_task.done():
+            was_enabled = True
+            current_task.cancel()
+            try:
+                await current_task
+            except asyncio.CancelledError:
+                pass
+            app.state.strategy_execution_task = None
+        return was_enabled
+
     async def auto_execution_cycle() -> list[dict[str, object]]:
         settings = OandaSettings.from_environment()
         setup_path, _ = resolve_setup_paths()
@@ -3454,6 +3470,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             "configured": bool(token and account_id),
             "environment": exchange.get("oanda_environment", "practice"),
             "executionMode": exchange.get("oanda_execution_mode", "dry_run"),
+            "liveTradingApproved": persisted.get("live_trading_approved") is True,
             "instruments": instruments,
             "pairTimeframes": pair_timeframes,
             "pairStrategies": pair_strategies,
@@ -3610,14 +3627,14 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 detail="Live supports Spread Betting (002) and CFD (003); Practice also supports verified V20 accounts.",
             )
         if environment == "live":
+            if user_role != "admin":
+                raise HTTPException(
+                    status_code=403,
+                    detail="Saving Live OANDA trading approval requires admin role",
+                )
             if payload.get("liveConfirmed") is not True:
                 raise HTTPException(
                     status_code=400, detail="Explicitly confirm that this is a Live OANDA account"
-                )
-            if os.environ.get("OANDA_LIVE_CONFIRM") != "1":
-                raise HTTPException(
-                    status_code=403,
-                    detail="Live setup is disabled. Set OANDA_LIVE_CONFIRM=1 on the server and restart the API.",
                 )
         try:
             environment_enum = OandaEnvironment(environment)
@@ -3687,6 +3704,8 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "schema_version": 1,
                 "timeframe": "5m",
                 "setup": {"configured": True, "credentials_source": "ui"},
+                "live_trading_approved": environment == "live"
+                and payload.get("liveConfirmed") is True,
                 "pair_timeframes": pair_timeframes,
                 "pair_strategies": pair_strategies,
                 "pair_approved_revisions": approved_revisions,
@@ -3705,12 +3724,15 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 },
             }
         )
+        await stop_strategy_execution()
         saved_path = save_forex_config(current, config_path)
         record_audit_event(
             "setup.saved",
             details={
                 "environment": environment,
                 "executionMode": execution_mode,
+                "liveTradingApproved": environment == "live"
+                and payload.get("liveConfirmed") is True,
                 "instruments": instruments,
             },
             allowed=True,
@@ -3720,6 +3742,8 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             "configPath": str(saved_path),
             "environment": environment,
             "executionMode": execution_mode,
+            "liveTradingApproved": environment == "live"
+            and payload.get("liveConfirmed") is True,
             "accountTypeCode": selected_account["accountTypeCode"],
             "accountType": selected_account["accountType"],
             "instruments": instruments,
@@ -4121,6 +4145,22 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 raise HTTPException(
                     status_code=400, detail="config.json must contain a JSON object"
                 )
+            uploaded_exchange = config_payload.get("exchange", {})
+            if not isinstance(uploaded_exchange, dict):
+                raise HTTPException(
+                    status_code=400, detail="config.json exchange must be an object"
+                )
+            if (
+                config_payload.get("live_trading_approved") is True
+                or uploaded_exchange.get("oanda_environment") == "live"
+            ):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Live OANDA configuration can only be saved through confirmed /setup",
+                )
+            approval_was_active = load_forex_config(path).get("live_trading_approved") is True
+            config_payload["live_trading_approved"] = False
+            content = json.dumps(config_payload, indent=2) + "\n"
         else:
             file_name = str(payload.get("fileName") or strategy_path.name)
             strategy_directory = Path(
@@ -4139,6 +4179,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         temporary_path = path.with_suffix(f"{path.suffix}.tmp")
         temporary_path.write_text(content, encoding="utf-8")
         temporary_path.replace(path)
+        auto_execution_stopped = False
+        if file_kind == "config":
+            auto_execution_stopped = await stop_strategy_execution()
         record_audit_event(
             "setup.file_uploaded", details={"fileKind": file_kind, "path": str(path)}, allowed=True
         )
@@ -4148,6 +4191,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             "path": str(path),
             "reloadRequired": True,
         }
+        if file_kind == "config":
+            result["autoExecutionStopped"] = auto_execution_stopped
+            result["liveTradingApprovalRevoked"] = approval_was_active
         if file_kind == "strategy":
             result["strategyNames"] = strategy_names
         return result

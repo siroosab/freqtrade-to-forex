@@ -2,7 +2,7 @@ import { useMutation, useQuery } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import type { ChangeEvent, FormEvent } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { controlRuntime, controlSystemdService, discoverSetupAccounts, getAvailableStrategies, getRuntimeStatus, getSetupFileUrl, getSetupInstruments, getSetupStatus, getSystemdServiceStatus, saveSetup, uploadSetupFile, type SetupAccount, type SetupPayload, type SystemdServiceAction } from '../api/mockApi'
+import { controlRuntime, controlSystemdService, discoverSetupAccounts, getAvailableStrategies, getRuntimeStatus, getSetupFileUrl, getSetupInstruments, getSetupStatus, getSystemdServiceStatus, saveSetup, setAutoExecution, uploadSetupFile, type SetupAccount, type SetupPayload, type SystemdServiceAction } from '../api/mockApi'
 import { useUiStore } from '../store/useUiStore'
 
 export function SetupPage() {
@@ -21,10 +21,12 @@ export function SetupPage() {
   })
   const [error, setError] = useState<string | null>(null)
   const [operationMessage, setOperationMessage] = useState<string | null>(null)
+  const [startAfterSave, setStartAfterSave] = useState(false)
   const [accounts, setAccounts] = useState<SetupAccount[]>([])
   const [selectedAccountId, setSelectedAccountId] = useState('')
   const [strategyUploadMessage, setStrategyUploadMessage] = useState<string | null>(null)
   const mutation = useMutation({ mutationFn: saveSetup })
+  const startExecutionMutation = useMutation({ mutationFn: () => setAutoExecution(true) })
   const discoveryMutation = useMutation({ mutationFn: discoverSetupAccounts })
   const runtimeQuery = useQuery({ queryKey: ['setup-runtime'], queryFn: getRuntimeStatus })
   const strategiesQuery = useQuery({ queryKey: ['available-strategies'], queryFn: getAvailableStrategies })
@@ -41,7 +43,18 @@ export function SetupPage() {
     mutationFn: controlSystemdService,
     onSuccess: () => void serviceQuery.refetch(),
   })
-  const uploadMutation = useMutation({ mutationFn: ({ kind, file }: { kind: 'config' | 'strategy'; file: File }) => uploadSetupFile(kind, file), onSuccess: () => setOperationMessage('File uploaded. Reload the bot before the next cycle.') })
+  const uploadMutation = useMutation({
+    mutationFn: ({ kind, file }: { kind: 'config' | 'strategy'; file: File }) => uploadSetupFile(kind, file),
+    onSuccess: (result, variables) => {
+      if (variables.kind === 'config' && result.liveTradingApprovalRevoked) {
+        setOperationMessage('Config uploaded. Previous Live approval was revoked; confirm the Live account again in Setup before trading.')
+      } else if (variables.kind === 'config' && result.autoExecutionStopped) {
+        setOperationMessage('Config uploaded. Automatic execution was stopped; reload the bot before the next cycle.')
+      } else {
+        setOperationMessage('File uploaded. Reload the bot before the next cycle.')
+      }
+    },
+  })
   const instrumentsQuery = useQuery({
     queryKey: ['setup-instruments', form.environment, form.token, selectedAccountId],
     queryFn: () => getSetupInstruments({ token: form.token, accountId: selectedAccountId, environment: form.environment }),
@@ -62,16 +75,34 @@ export function SetupPage() {
     }))
   }, [savedSetupQuery.data])
 
-  const submit = (event: FormEvent<HTMLFormElement>) => {
+  const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     setError(null)
-    mutation.mutate(form, {
-      onSuccess: () => {
-        setSelectedInstruments(form.instruments.map((item) => item.replace(/_/g, '/')))
-        navigate('/', { replace: true })
-      },
-      onError: (reason) => setError(reason instanceof Error ? reason.message : 'Setup was rejected'),
-    })
+    if (
+      startAfterSave &&
+      form.environment === 'live' &&
+      !window.confirm('Start automatic execution on OANDA Live? Approved signals can place real orders and close real positions.')
+    ) return
+    try {
+      await mutation.mutateAsync(form)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Setup was rejected')
+      return
+    }
+    setSelectedInstruments(form.instruments.map((item) => item.replace(/_/g, '/')))
+    if (startAfterSave) {
+      try {
+        await startExecutionMutation.mutateAsync()
+      } catch (reason) {
+        setError(
+          `Setup was saved, but automatic execution did not start: ${
+            reason instanceof Error ? reason.message : 'request rejected'
+          }`,
+        )
+        return
+      }
+    }
+    navigate('/', { replace: true })
   }
 
   const addInstrument = (instrument: string) => {
@@ -203,7 +234,7 @@ export function SetupPage() {
               <button type="button" aria-pressed={form.environment === 'practice'} className={form.environment === 'practice' ? 'selected' : ''} onClick={() => { discoveryMutation.reset(); setAccounts([]); setSelectedAccountId(''); setForm((current) => ({ ...current, token: '', environment: 'practice', accountId: '', accountTypeCode: '', accountConfirmed: false, liveConfirmed: false })) }}><strong>Practice</strong><small>Practice API · demo orders</small></button>
               <button type="button" aria-pressed={form.environment === 'live'} className={form.environment === 'live' ? 'selected' : ''} onClick={() => { discoveryMutation.reset(); setAccounts([]); setSelectedAccountId(''); setForm((current) => ({ ...current, token: '', environment: 'live', accountId: '', accountTypeCode: '', accountConfirmed: false, liveConfirmed: false })) }}><strong>Live</strong><small>Live API · real orders</small></button>
             </div>
-            {form.environment === 'live' && <p className="setup-live-note field-wide">Live uses the real OANDA API and can place orders against real funds. Saving requires <code>OANDA_LIVE_CONFIRM=1</code> on the server and the explicit confirmations below. Test using Practice first.</p>}
+            {form.environment === 'live' && <p className="setup-live-note field-wide">Live uses the real OANDA API and can place orders against real funds. Saving and starting require the account confirmation below, an explicit start confirmation, and an admin session. Test using Practice first.</p>}
             <label className="field-block field-wide">
               <span>OANDA {form.environment === 'live' ? 'Live' : 'Practice'} token</span>
               <input type="password" autoComplete="new-password" required value={form.token} onChange={(event) => { discoveryMutation.reset(); setAccounts([]); setSelectedAccountId(''); setForm((current) => ({ ...current, token: event.target.value, accountId: '', accountTypeCode: '', accountConfirmed: false, liveConfirmed: false })) }} />
@@ -247,12 +278,27 @@ export function SetupPage() {
             <ul className="setup-pair-list field-wide">
               {form.instruments.map((instrument) => <li className="setup-pair-item" key={instrument}>{instrument.replace('_', '/')}</li>)}
             </ul>
+            <label className="account-confirm field-wide">
+              <input
+                type="checkbox"
+                checked={startAfterSave}
+                disabled={form.environment === 'live' && userRole !== 'admin'}
+                onChange={(event) => setStartAfterSave(event.target.checked)}
+              />
+              <span>
+                Start automatic strategy execution immediately after saving. The server will
+                require an approved strategy revision and complete risk controls for every pair.
+                {form.environment === 'live' && userRole !== 'admin'
+                  ? ' Live execution can only be started from an admin session.'
+                  : ''}
+              </span>
+            </label>
 
             {error && <p className="setup-error" role="alert">{error}</p>}
             <div className="setup-footer">
               <span className="setup-secure-note">{form.environment === 'live' ? 'Live account · server-side config' : 'Practice environment · server-side config'}</span>
-              <button className="primary-action setup-submit" type="submit" disabled={mutation.isPending || !selectedAccount || !form.accountConfirmed || (form.environment === 'live' && !form.liveConfirmed)}>
-                {mutation.isPending ? 'Saving configuration...' : `Save ${form.environment === 'live' ? 'Live' : 'Practice'} mode`}
+              <button className="primary-action setup-submit" type="submit" disabled={mutation.isPending || startExecutionMutation.isPending || !selectedAccount || !form.accountConfirmed || (form.environment === 'live' && (!form.liveConfirmed || userRole !== 'admin')) || (startAfterSave && form.environment === 'live' && userRole !== 'admin')}>
+                {mutation.isPending ? 'Saving configuration...' : startExecutionMutation.isPending ? 'Starting strategy execution...' : startAfterSave ? `Save and start ${form.environment === 'live' ? 'Live' : 'Practice'} trading` : `Save ${form.environment === 'live' ? 'Live' : 'Practice'} mode`}
               </button>
             </div>
           </form>

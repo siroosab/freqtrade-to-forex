@@ -60,6 +60,7 @@ def validate_native_forex_config(config: dict, runmode: RunMode | str) -> "Oanda
         timeframes=settings.timeframes,
         risk_fraction=settings.risk_fraction,
         execution_mode=execution_mode,
+        live_trading_approved=settings.live_trading_approved,
         transaction_cursor_path=settings.transaction_cursor_path,
         pair_timeframes=settings.pair_timeframes,
         pair_strategies=settings.pair_strategies,
@@ -75,6 +76,7 @@ class OandaSettings:
     timeframes: tuple[str, ...] = ("5m", "1h")
     risk_fraction: str = "0.01"
     execution_mode: str = "dry_run"
+    live_trading_approved: bool = False
     transaction_cursor_path: str = "user_data/oanda/transaction_cursor.json"
     pair_timeframes: dict[str, str] = field(default_factory=dict)
     pair_strategies: dict[str, str] = field(default_factory=dict)
@@ -85,8 +87,8 @@ class OandaSettings:
             raise ValueError("OANDA token is required")
         if not self.account_id:
             raise ValueError("OANDA account ID is required")
-        if self.environment is OandaEnvironment.LIVE and environ.get("OANDA_LIVE_CONFIRM") != "1":
-            raise ValueError("live OANDA mode requires OANDA_LIVE_CONFIRM=1")
+        if self.environment is OandaEnvironment.LIVE and not self.live_trading_approved:
+            raise ValueError("Live OANDA trading requires explicit approval in /setup")
         if self.execution_mode not in VALID_EXECUTION_MODES:
             raise ValueError(f"unsupported OANDA execution mode: {self.execution_mode}")
 
@@ -130,6 +132,7 @@ class OandaSettings:
             timeframes=timeframes,
             risk_fraction=environ.get("OANDA_RISK_FRACTION", str(exchange.get("oanda_risk_fraction", "0.01"))),
             execution_mode=environ.get("OANDA_EXECUTION_MODE", exchange.get("oanda_execution_mode", "dry_run")),
+            live_trading_approved=persisted.get("live_trading_approved") is True,
             pair_timeframes=pair_timeframes,
             pair_strategies=pair_strategies,
             pair_approved_revisions=pair_approved_revisions,
@@ -154,6 +157,7 @@ class OandaSettings:
             timeframes=tuple(config.get("timeframe", "5m").split(",")),
             risk_fraction=str(exchange.get("oanda_risk_fraction", "0.01")),
             execution_mode=exchange.get("oanda_execution_mode", "dry_run"),
+            live_trading_approved=config.get("live_trading_approved") is True,
             transaction_cursor_path=exchange.get(
                 "oanda_transaction_cursor_path", "user_data/oanda/transaction_cursor.json"
             ),

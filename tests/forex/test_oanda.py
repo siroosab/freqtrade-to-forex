@@ -864,10 +864,43 @@ async def test_market_data_provider_can_fetch_only_forming_candles() -> None:
     assert frame.iloc[0]["close"] == pytest.approx(1.115)
 
 
-def test_live_settings_require_explicit_confirmation(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("OANDA_LIVE_CONFIRM", raising=False)
-    with pytest.raises(ValueError, match="OANDA_LIVE_CONFIRM=1"):
+def test_live_settings_require_setup_approval(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    with pytest.raises(ValueError, match="explicit approval in /setup"):
         OandaSettings("token", "account", environment=OandaEnvironment.LIVE)
+
+    settings = OandaSettings(
+        "token",
+        "account",
+        environment=OandaEnvironment.LIVE,
+        live_trading_approved=True,
+    )
+    assert settings.live_trading_approved is True
+
+    config_path = tmp_path / "live-config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "live_trading_approved": True,
+                "exchange": {
+                    "oanda_environment": "live",
+                    "oanda_execution_mode": "live",
+                    "oanda_token": "token",
+                    "account_id": "account",
+                    "pair_whitelist": ["EUR_USD"],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OANDA_CONFIG_PATH", str(config_path))
+    monkeypatch.delenv("OANDA_LIVE_CONFIRM", raising=False)
+    monkeypatch.delenv("OANDA_ENVIRONMENT", raising=False)
+    monkeypatch.delenv("OANDA_EXECUTION_MODE", raising=False)
+    monkeypatch.delenv("OANDA_TOKEN", raising=False)
+    monkeypatch.delenv("OANDA_ACCOUNT_ID", raising=False)
+    loaded_settings = OandaSettings.from_environment()
+    assert loaded_settings.environment is OandaEnvironment.LIVE
+    assert loaded_settings.live_trading_approved is True
 
 
 def test_oanda_settings_and_pair_mapping_from_freqtrade_config() -> None:
@@ -1842,8 +1875,12 @@ async def test_dry_run_gateway_never_calls_oanda() -> None:
 
 
 def test_practice_mode_requires_practice_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("OANDA_LIVE_CONFIRM", "1")
-    settings = OandaSettings("token", "account", environment=OandaEnvironment.LIVE)
+    settings = OandaSettings(
+        "token",
+        "account",
+        environment=OandaEnvironment.LIVE,
+        live_trading_approved=True,
+    )
     with pytest.raises(ExecutionModeError, match="Practice environment"):
         OandaExecutionGateway(settings, ExecutionMode.PRACTICE, client=AsyncMock())
 

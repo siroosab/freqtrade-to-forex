@@ -637,7 +637,6 @@ async def _no_depth_quote(instruments: tuple[str, ...]) -> list[OandaPrice]:
 
 
 def test_live_execution_requires_the_live_account_mode(monkeypatch) -> None:
-    monkeypatch.setenv("OANDA_LIVE_CONFIRM", "1")
     with pytest.raises(AutoExecutionError, match="environment and execution mode"):
         OandaAutoStrategyExecutor(
             FakeOandaClient(_candles("long")),
@@ -646,6 +645,7 @@ def test_live_execution_requires_the_live_account_mode(monkeypatch) -> None:
                 "test-account",
                 environment=OandaEnvironment.LIVE,
                 execution_mode="practice",
+                live_trading_approved=True,
             ),
             {},
             {},
