@@ -73,10 +73,14 @@ To start the approved strategy loop directly from Setup, select **Start
 automatic strategy execution immediately after saving**. The server checks
 every configured pair for a current approved strategy revision, stop loss,
 allowed side, maximum exposure, and a running runtime gate before it starts.
-Risk controls are configured per pair; a stop loss is not guessed or copied
-between instruments. The start check reports all pair-level blockers together,
-and keeps the last failed-start reason visible in Setup until the next start
-attempt or a later execution error replaces it.
+Risk controls are configured per pair. A positive pips- or percent-based stop
+loss in that pair's approved Hyperopt revision is used as the default unless a
+stop loss is explicitly changed in Risk controls; that per-pair setting takes
+precedence. Values are never copied between instruments. Hyperopt stop losses
+in unsupported modes, including money, must be replaced with a pips or percent
+value in Risk controls before execution can start. The start check reports all
+pair-level blockers together, and keeps the last failed-start reason visible
+in Setup until the next start attempt or a later execution error replaces it.
 Live additionally requires an admin session and a second browser confirmation
 before the request is sent. If these checks fail, the account config remains
 saved but automatic execution remains stopped; Setup displays the reason.

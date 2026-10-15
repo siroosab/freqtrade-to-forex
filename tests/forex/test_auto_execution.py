@@ -798,3 +798,106 @@ def test_auto_execution_reports_missing_stop_loss_for_all_configured_pairs(
     assert "Configure a stop loss for GBP/USD in Risk controls" in detail
     assert status_after_rejection.json()["enabled"] is False
     assert status_after_rejection.json()["lastError"] == detail
+
+
+def test_approved_hyperopt_stop_loss_is_risk_default_until_operator_override(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OANDA_CONFIG_PATH", str(tmp_path / "config.json"))
+    monkeypatch.setenv("OANDA_AUTO_EXECUTION_STATE_PATH", str(tmp_path / "auto-execution.json"))
+    monkeypatch.setenv("OANDA_TOKEN", "test-token")
+    monkeypatch.setenv("OANDA_ACCOUNT_ID", "test-account")
+    monkeypatch.setenv("OANDA_ENVIRONMENT", "practice")
+    monkeypatch.setenv("OANDA_EXECUTION_MODE", "practice")
+    monkeypatch.setenv("OANDA_INSTRUMENTS", "EUR_USD")
+    monkeypatch.setenv("OANDA_RISK_CONFIG_PATH", str(tmp_path / "risk-config.json"))
+    setup = {
+        "pair_strategies": {"EUR_USD": "TestStrategy"},
+        "pair_timeframes": {"EUR_USD": "5m"},
+        "pair_approved_revisions": {
+            "EUR_USD": {
+                "pair": "EUR/USD",
+                "strategyClass": "TestStrategy",
+                "timeframe": "5m",
+                "hyperopt": {
+                    "stopLoss": {
+                        "mode": "pips",
+                        "value": "15",
+                        "optimized": False,
+                    },
+                    "trailingStopLoss": False,
+                },
+            }
+        },
+    }
+    (tmp_path / "config.json").write_text(json.dumps(setup), encoding="utf-8")
+
+    class NoOandaRequests:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+        async def get_account_summary(self):
+            return None
+
+        async def get_open_trades(self):
+            return []
+
+        async def get_candles(self, instrument, granularity, *, count):
+            return []
+
+    monkeypatch.setattr("freqtrade.forex.api.OandaClient", NoOandaRequests)
+    with TestClient(create_app(tmp_path / "api.sqlite")) as client:
+        headers = _auth_headers(client)
+        inherited = client.get("/api/v1/account/risk/config?pair=EUR%2FUSD")
+        enable = client.post(
+            "/api/v1/strategy/auto-execution",
+            json={"enabled": True},
+            headers=headers,
+        )
+        disable = client.post(
+            "/api/v1/strategy/auto-execution",
+            json={"enabled": False},
+            headers=headers,
+        )
+        unrelated_update = client.post(
+            "/api/v1/account/risk/config",
+            json={
+                **inherited.json(),
+                "maxExposure": "25",
+            },
+            headers=headers,
+        )
+        after_unrelated_update = client.get(
+            "/api/v1/account/risk/config?pair=EUR%2FUSD"
+        )
+        explicit_override = client.post(
+            "/api/v1/account/risk/config",
+            json={
+                **after_unrelated_update.json(),
+                "stopLoss": "20",
+            },
+            headers=headers,
+        )
+        after_override = client.get("/api/v1/account/risk/config?pair=EUR%2FUSD")
+
+    assert inherited.status_code == 200
+    assert inherited.json()["stopLoss"] == "15"
+    assert inherited.json()["stopLossMode"] == "pips"
+    assert inherited.json()["stopLossSource"] == "approved-hyperopt"
+    assert inherited.json()["stopLossOverride"] is False
+    assert enable.status_code == 200, enable.text
+    assert enable.json()["enabled"] is True
+    assert disable.status_code == 200, disable.text
+    assert unrelated_update.status_code == 200, unrelated_update.text
+    assert unrelated_update.json()["stopLossOverride"] is False
+    assert after_unrelated_update.json()["stopLoss"] == "15"
+    assert after_unrelated_update.json()["stopLossSource"] == "approved-hyperopt"
+    assert explicit_override.status_code == 200, explicit_override.text
+    assert explicit_override.json()["stopLossOverride"] is True
+    assert after_override.json()["stopLoss"] == "20"
+    assert after_override.json()["stopLossSource"] == "operator-config"

@@ -506,6 +506,12 @@ export function RiskPage() {
                 <span>Stop loss</span>
                 <div className="value-mode"><input value={form.stopLoss ?? ''} placeholder="Chart or value" onChange={(event) => update('stopLoss', event.target.value || null)} />{modeOptions(form.stopLossMode, (value) => update('stopLossMode', value))}</div>
                 {renderValues(stopValues)}
+                {form.stopLossSource === 'approved-hyperopt' && (
+                  <small className="risk-field-help">
+                    Using the approved Hyperopt stop loss by default. Changing this value and saving creates a per-pair Risk controls override.
+                  </small>
+                )}
+                {form.stopLossIssue && <small className="inline-error" role="alert">{form.stopLossIssue}</small>}
                 <small className="risk-hyperopt-reference">{hyperoptStopLossSummary(approvedHyperopt)}</small>
               </label>
               <label className="field-block">

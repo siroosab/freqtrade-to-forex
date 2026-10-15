@@ -952,6 +952,41 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         RISK_CONFIG_BY_PAIR[normalized] = config
         return config
 
+    def effective_risk_config_for_pair(pair: str) -> dict[str, object]:
+        risk = dict(risk_config_for_pair(pair))
+        stop_loss_override = risk.get("stopLossOverride")
+        if not isinstance(stop_loss_override, bool):
+            stop_loss_override = (
+                risk.get("source") == "operator-config"
+                and bool(str(risk.get("stopLoss") or "").strip())
+            )
+        risk["stopLossOverride"] = stop_loss_override
+        if stop_loss_override:
+            risk["stopLossSource"] = "operator-config"
+            return risk
+
+        revision = approved_runtime_revision(pair)
+        hyperopt = revision.get("hyperopt") if isinstance(revision, dict) else None
+        approved_stop_loss = hyperopt.get("stopLoss") if isinstance(hyperopt, dict) else None
+        if isinstance(approved_stop_loss, dict):
+            mode = approved_stop_loss.get("mode")
+            try:
+                value = Decimal(str(approved_stop_loss.get("value", "")))
+            except (InvalidOperation, TypeError, ValueError):
+                value = Decimal(0)
+            if mode in {"pips", "percent"} and value.is_finite() and value > 0:
+                risk["stopLoss"] = format(value, "f")
+                risk["stopLossMode"] = mode
+                risk["stopLossSource"] = "approved-hyperopt"
+                return risk
+            risk["stopLossIssue"] = (
+                f"Approved Hyperopt stop loss for {normalize_pair(pair)} cannot be used "
+                "automatically; set a positive pips or percent stop loss in Risk controls"
+            )
+        else:
+            risk["stopLossSource"] = "default-policy"
+        return risk
+
     def read_strategy_execution_state() -> dict[str, object]:
         if not strategy_execution_state_path.exists():
             return {"enabled": False, "lastProcessed": {}, "results": []}
@@ -1009,7 +1044,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         instruments = tuple(settings.instruments)
         risk_configs = {
             instrument.replace("_", "/").upper(): dict(
-                risk_config_for_pair(instrument.replace("_", "/"))
+                effective_risk_config_for_pair(instrument.replace("_", "/"))
             )
             for instrument in instruments
         }
@@ -1908,7 +1943,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
 
     @app.get("/api/v1/account/risk/config")
     async def risk_config(pair: str = "EUR/USD") -> dict:
-        return dict(risk_config_for_pair(pair))
+        return effective_risk_config_for_pair(pair)
 
     def positive_risk_config_value(value: object, name: str) -> Decimal:
         try:
@@ -1936,7 +1971,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
     ) -> dict:
         validate_write_access(user_role, csrf_token, session_token)
         pair = str(payload.get("pair", "EUR/USD"))
-        current = risk_config_for_pair(pair)
+        current = effective_risk_config_for_pair(pair)
         candidate = dict(current)
         configurable_fields = (
             "leverage",
@@ -1954,6 +1989,17 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         for key in configurable_fields:
             if key in payload:
                 candidate[key] = payload[key]
+        previous_stop_loss_override = current.get("stopLossOverride") is True
+        stop_loss_changed = any(
+            key in payload and payload[key] != current.get(key)
+            for key in ("stopLoss", "stopLossMode")
+        )
+        candidate["stopLossOverride"] = previous_stop_loss_override or stop_loss_changed
+        candidate["stopLossSource"] = (
+            "operator-config"
+            if candidate["stopLossOverride"]
+            else current.get("stopLossSource", "default-policy")
+        )
         if str(candidate["side"]).upper() not in {"LONG", "SHORT", "BOTH", "NONE"}:
             raise HTTPException(
                 status_code=400, detail="Risk side must be LONG, SHORT, BOTH, or NONE"
@@ -3989,11 +4035,27 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     preflight_issues.append(
                         f"{pair} needs a current approved strategy revision"
                     )
-                risk = risk_config_for_pair(pair)
+                risk = effective_risk_config_for_pair(pair)
                 if not risk.get("stopLoss"):
                     preflight_issues.append(
-                        f"Configure a stop loss for {pair} in Risk controls"
+                        str(
+                            risk.get("stopLossIssue")
+                            or f"Configure a stop loss for {pair} in Risk controls"
+                        )
                     )
+                else:
+                    try:
+                        stop_loss_value = Decimal(str(risk["stopLoss"]))
+                    except (InvalidOperation, TypeError, ValueError):
+                        stop_loss_value = Decimal(0)
+                    if (
+                        not stop_loss_value.is_finite()
+                        or stop_loss_value <= 0
+                        or risk.get("stopLossMode") not in {"price", "pips", "percent"}
+                    ):
+                        preflight_issues.append(
+                            f"Configure a valid positive price, pips, or percent stop loss for {pair}"
+                        )
                 if str(risk.get("side", "NONE")).upper() not in {
                     "LONG",
                     "SHORT",

@@ -233,7 +233,11 @@ class OandaAutoStrategyExecutor:
         panel_stop_loss = risk.get("stopLoss")
         trailing_stop_loss = (
             parameters.get("trailingStopLoss") is True
-            and (panel_stop_loss is None or not str(panel_stop_loss).strip())
+            and (
+                risk.get("stopLossSource") == "approved-hyperopt"
+                or panel_stop_loss is None
+                or not str(panel_stop_loss).strip()
+            )
         )
         if panel_stop_loss is None or not str(panel_stop_loss).strip():
             risk = _risk_with_approved_stop_loss(
