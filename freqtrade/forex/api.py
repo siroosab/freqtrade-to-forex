@@ -3970,6 +3970,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             approved = setup.get("pair_approved_revisions", {})
             strategies = setup.get("pair_strategies", {})
             timeframes = setup.get("pair_timeframes", {})
+            preflight_issues: list[str] = []
             for instrument in configured_pairs:
                 pair_key = instrument.upper().replace("/", "_")
                 pair = instrument.replace("_", "/").upper()
@@ -3985,15 +3986,13 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                         str(timeframes.get(pair_key, "")) if isinstance(timeframes, dict) else ""
                     )
                 ):
-                    raise HTTPException(
-                        status_code=409,
-                        detail=f"{pair} needs a current approved strategy revision before auto-execution",
+                    preflight_issues.append(
+                        f"{pair} needs a current approved strategy revision"
                     )
                 risk = risk_config_for_pair(pair)
                 if not risk.get("stopLoss"):
-                    raise HTTPException(
-                        status_code=409,
-                        detail=f"Configure a stop loss for {pair} in Risk controls before auto-execution",
+                    preflight_issues.append(
+                        f"Configure a stop loss for {pair} in Risk controls"
                     )
                 if str(risk.get("side", "NONE")).upper() not in {
                     "LONG",
@@ -4001,15 +4000,23 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     "BOTH",
                     "NONE",
                 }:
-                    raise HTTPException(
-                        status_code=409,
-                        detail=f"Configure an allowed entry side for {pair} in Risk controls",
+                    preflight_issues.append(
+                        f"Configure an allowed entry side for {pair} in Risk controls"
                     )
                 if not risk.get("maxExposure"):
-                    raise HTTPException(
-                        status_code=409,
-                        detail=f"Configure maximum exposure for {pair}",
-                    )
+                    preflight_issues.append(f"Configure maximum exposure for {pair}")
+            if preflight_issues:
+                preflight_error = (
+                    "Automatic execution was not started. Fix these settings: "
+                    + "; ".join(preflight_issues)
+                )
+                state["enabled"] = False
+                state["lastError"] = preflight_error
+                write_strategy_execution_state(state)
+                raise HTTPException(
+                    status_code=409,
+                    detail=preflight_error,
+                )
             runtime_state_path = Path("user_data/oanda/runtime-state.json")
             if runtime_state_path.exists():
                 try:
@@ -4025,8 +4032,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                         detail="Resume runtime controls before enabling strategy execution",
                     )
         state["enabled"] = enabled
-        if not enabled:
-            state["lastError"] = None
+        state["lastError"] = None
         write_strategy_execution_state(state)
         current_task = app.state.strategy_execution_task
         if enabled and (current_task is None or current_task.done()):

@@ -109,6 +109,7 @@ export function SetupPage() {
         )
         void autoExecutionQuery.refetch()
       } catch (reason) {
+        void autoExecutionQuery.refetch()
         setError(
           `Setup was saved, but automatic execution did not start: ${
             reason instanceof Error ? reason.message : 'request rejected'
@@ -330,11 +331,16 @@ export function SetupPage() {
                   )}
                   {autoExecutionQuery.data.lastError && (
                     <small className="setup-error" role="alert">
-                      Execution is enabled, but the latest cycle reported an error: {autoExecutionQuery.data.lastError}
+                      {autoExecutionQuery.data.enabled
+                        ? `Execution is enabled, but the latest cycle reported an error: ${autoExecutionQuery.data.lastError}`
+                        : `Automatic execution did not start: ${autoExecutionQuery.data.lastError}`}
                     </small>
                   )}
                 </>
               )}
+              <a href="/risk" target="_blank" rel="noreferrer">
+                Review risk controls for every configured pair
+              </a>
             </section>
 
             {error && <p className="setup-error" role="alert">{error}</p>}

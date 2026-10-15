@@ -73,6 +73,10 @@ To start the approved strategy loop directly from Setup, select **Start
 automatic strategy execution immediately after saving**. The server checks
 every configured pair for a current approved strategy revision, stop loss,
 allowed side, maximum exposure, and a running runtime gate before it starts.
+Risk controls are configured per pair; a stop loss is not guessed or copied
+between instruments. The start check reports all pair-level blockers together,
+and keeps the last failed-start reason visible in Setup until the next start
+attempt or a later execution error replaces it.
 Live additionally requires an admin session and a second browser confirmation
 before the request is sent. If these checks fail, the account config remains
 saved but automatic execution remains stopped; Setup displays the reason.

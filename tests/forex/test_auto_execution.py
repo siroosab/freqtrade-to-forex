@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -749,3 +750,51 @@ def test_auto_execution_api_requires_approved_strategy_before_enable(
     assert active_status.json()["enabled"] is True
     assert active_status.json()["environment"] == "practice"
     assert active_status.json()["lastCycleAt"] == "2026-10-15T10:00:00Z"
+
+
+def test_auto_execution_reports_missing_stop_loss_for_all_configured_pairs(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OANDA_CONFIG_PATH", str(tmp_path / "config.json"))
+    monkeypatch.setenv("OANDA_AUTO_EXECUTION_STATE_PATH", str(tmp_path / "auto-execution.json"))
+    monkeypatch.setenv("OANDA_TOKEN", "test-token")
+    monkeypatch.setenv("OANDA_ACCOUNT_ID", "test-account")
+    monkeypatch.setenv("OANDA_ENVIRONMENT", "practice")
+    monkeypatch.setenv("OANDA_EXECUTION_MODE", "practice")
+    monkeypatch.setenv("OANDA_INSTRUMENTS", "EUR_USD,GBP_USD")
+    monkeypatch.setenv("OANDA_RISK_CONFIG_PATH", str(tmp_path / "risk-config.json"))
+    setup = {
+        "pair_strategies": {"EUR_USD": "TestStrategy", "GBP_USD": "TestStrategy"},
+        "pair_timeframes": {"EUR_USD": "5m", "GBP_USD": "5m"},
+        "pair_approved_revisions": {
+            "EUR_USD": {
+                "pair": "EUR/USD",
+                "strategyClass": "TestStrategy",
+                "timeframe": "5m",
+            },
+            "GBP_USD": {
+                "pair": "GBP/USD",
+                "strategyClass": "TestStrategy",
+                "timeframe": "5m",
+            },
+        },
+    }
+    (tmp_path / "config.json").write_text(json.dumps(setup), encoding="utf-8")
+
+    with TestClient(create_app(tmp_path / "api.sqlite")) as client:
+        response = client.post(
+            "/api/v1/strategy/auto-execution",
+            json={"enabled": True},
+            headers=_auth_headers(client),
+        )
+        status_after_rejection = client.get("/api/v1/strategy/auto-execution")
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert "Automatic execution was not started" in detail
+    assert "Configure a stop loss for EUR/USD in Risk controls" in detail
+    assert "Configure a stop loss for GBP/USD in Risk controls" in detail
+    assert status_after_rejection.json()["enabled"] is False
+    assert status_after_rejection.json()["lastError"] == detail
