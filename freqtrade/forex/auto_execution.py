@@ -253,7 +253,6 @@ class OandaAutoStrategyExecutor:
             raise AutoExecutionError(f"{pair} is not currently tradeable")
         strategy_trades = [trade for trade in open_trades if trade.get("instrument") == instrument]
         automated_trades = [trade for trade in strategy_trades if _is_automated_trade(trade)]
-        manual_trades = [trade for trade in strategy_trades if not _is_automated_trade(trade)]
         take_profit_configured = bool(str(risk.get("takeProfit") or "").strip())
 
         close_result = await self._close_on_strategy_exit(
@@ -281,7 +280,7 @@ class OandaAutoStrategyExecutor:
                 "candleTime": candle_time,
                 "status": "no_entry",
             }
-        if manual_trades or any(trade.get("instrument") == instrument for trade in open_trades):
+        if any(trade.get("instrument") == instrument for trade in open_trades):
             self._mark_processed(instrument, candle_time)
             return {
                 "pair": pair,
@@ -298,15 +297,54 @@ class OandaAutoStrategyExecutor:
             self._mark_processed(instrument, candle_time)
             raise AutoExecutionError(f"{pair} risk policy does not allow {side} entries")
 
-        approved_stop_loss = parameters.get("stopLoss")
-        stop_price, take_profit, units, trailing_distance = await self._protected_order_size(
+        return await self._execute_signal_entry(
             pair,
+            timeframe,
+            instrument,
+            candle_time,
+            signal,
             side,
             risk,
             account,
             price,
-            trailing_stop_loss=approved_stop_loss if trailing_stop_loss else None,
+            parameters,
+            trailing_stop_loss=trailing_stop_loss,
         )
+
+    async def _execute_signal_entry(
+        self,
+        pair: str,
+        timeframe: str,
+        instrument: str,
+        candle_time: str,
+        signal: Signal,
+        side: str,
+        risk: dict[str, Any],
+        account: Any,
+        price: OandaPrice,
+        parameters: dict[str, Any],
+        *,
+        trailing_stop_loss: bool,
+    ) -> dict[str, object]:
+        approved_stop_loss = parameters.get("stopLoss")
+        try:
+            stop_price, take_profit, units, trailing_distance = await self._protected_order_size(
+                pair,
+                side,
+                risk,
+                account,
+                price,
+                trailing_stop_loss=approved_stop_loss if trailing_stop_loss else None,
+            )
+        except (AutoExecutionError, OandaAPIError, OSError, InvalidOperation, ValueError) as exc:
+            return {
+                "pair": pair,
+                "timeframe": timeframe,
+                "signal": signal.value,
+                "candleTime": candle_time,
+                "status": "blocked",
+                "reason": str(exc),
+            }
         signed_units = units if side == "long" else -units
         client_order_id = _client_order_id(instrument, candle_time, side)
         self._mark_processed(instrument, candle_time)
@@ -736,23 +774,29 @@ def _depth_available_units(
     side: str,
     units_precision: int,
 ) -> int:
-    if not price.units_available or not price.bids or not price.asks:
+    levels = price.asks if side == "long" else price.bids
+    side_available = (
+        price.units_available.get("default", {}).get(side)
+        if price.units_available is not None
+        else None
+    )
+    has_unit_limit = side_available is not None
+    if not levels and not has_unit_limit:
         raise AutoExecutionError(
-            "OANDA depth and units-available data are required for automatic execution"
+            f"OANDA returned neither {side} quote liquidity nor available-unit limits"
         )
-    side_available = price.units_available.get("default", {}).get(side)
-    if side_available is None:
-        raise AutoExecutionError(f"OANDA did not report available {side} units")
     try:
-        available = Decimal(str(side_available))
-        levels = price.asks if side == "long" else price.bids
         visible = sum((liquidity for _, liquidity in levels), Decimal(0))
+        available = Decimal(str(side_available)) if side_available is not None else None
     except (InvalidOperation, TypeError, ValueError) as exc:
         raise AutoExecutionError("OANDA returned invalid depth data") from exc
-    if not available.is_finite() or available <= 0 or visible <= 0:
-        raise AutoExecutionError("OANDA reports no available liquidity for this side")
+    if available is not None and (not available.is_finite() or available <= 0):
+        raise AutoExecutionError(f"OANDA reports no available {side} units")
+    if levels and (not visible.is_finite() or visible <= 0):
+        raise AutoExecutionError(f"OANDA reports no visible {side} quote liquidity")
+    caps = [cap for cap in (available, visible if levels else None) if cap is not None]
     step = Decimal(1).scaleb(-units_precision)
-    return int(min(available, visible).quantize(step, rounding=ROUND_DOWN))
+    return int(min(caps).quantize(step, rounding=ROUND_DOWN))
 
 
 def _max_exposure_units(

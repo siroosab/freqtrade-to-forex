@@ -460,8 +460,58 @@ async def test_signal_is_blocked_when_oanda_does_not_return_depth(
     result = await executor.run_cycle()
 
     assert result[0]["status"] == "blocked"
-    assert "depth" in str(result[0]["reason"]).lower()
+    assert result[0]["signal"] == "long"
+    assert result[0]["candleTime"] == datetime(2026, 10, 3, 17, 55, tzinfo=UTC).isoformat()
+    assert "neither long quote liquidity nor available-unit limits" in str(result[0]["reason"])
     assert client.orders == []
+
+
+@pytest.mark.asyncio
+async def test_auto_execution_uses_quote_liquidity_when_oanda_omits_units_available(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _strategy_directory(tmp_path, monkeypatch)
+    client = FakeOandaClient(_candles("long"))
+    client.get_prices = lambda instruments: _quote_without_units_available(instruments)
+    executor = _executor(client)
+
+    result = await executor.run_cycle()
+
+    assert result[0]["status"] == "filled"
+    assert result[0]["units"] == 2500
+
+
+@pytest.mark.asyncio
+async def test_auto_execution_falls_back_to_quote_liquidity_when_side_units_are_omitted(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _strategy_directory(tmp_path, monkeypatch)
+    client = FakeOandaClient(_candles("long"))
+    client.get_prices = lambda instruments: _quote_without_long_units(instruments)
+    executor = _executor(client)
+
+    result = await executor.run_cycle()
+
+    assert result[0]["status"] == "filled"
+    assert result[0]["units"] == 2500
+
+
+@pytest.mark.asyncio
+async def test_auto_execution_uses_units_available_when_quote_liquidity_is_missing(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _strategy_directory(tmp_path, monkeypatch)
+    client = FakeOandaClient(_candles("long"))
+    client.get_prices = lambda instruments: _quote_without_visible_depth(instruments)
+    executor = _executor(client)
+
+    result = await executor.run_cycle()
+
+    assert result[0]["status"] == "filled"
+    assert result[0]["units"] == 1500
 
 
 @pytest.mark.asyncio
@@ -808,6 +858,54 @@ async def _no_depth_quote(instruments: tuple[str, ...]) -> list[OandaPrice]:
             time="2026-10-03T18:00:00Z",
             bid=Decimal("1.1000"),
             ask=Decimal("1.1002"),
+        )
+    ]
+
+
+async def _quote_without_units_available(
+    instruments: tuple[str, ...],
+) -> list[OandaPrice]:
+    del instruments
+    return [
+        OandaPrice(
+            instrument="EUR_USD",
+            time="2026-10-03T18:00:00Z",
+            bid=Decimal("1.1000"),
+            ask=Decimal("1.1002"),
+            bids=((Decimal("1.1000"), Decimal(4000)),),
+            asks=((Decimal("1.1002"), Decimal(2500)),),
+        )
+    ]
+
+
+async def _quote_without_visible_depth(
+    instruments: tuple[str, ...],
+) -> list[OandaPrice]:
+    del instruments
+    return [
+        OandaPrice(
+            instrument="EUR_USD",
+            time="2026-10-03T18:00:00Z",
+            bid=Decimal("1.1000"),
+            ask=Decimal("1.1002"),
+            units_available={"default": {"long": "1500", "short": "1800"}},
+        )
+    ]
+
+
+async def _quote_without_long_units(
+    instruments: tuple[str, ...],
+) -> list[OandaPrice]:
+    del instruments
+    return [
+        OandaPrice(
+            instrument="EUR_USD",
+            time="2026-10-03T18:00:00Z",
+            bid=Decimal("1.1000"),
+            ask=Decimal("1.1002"),
+            bids=((Decimal("1.1000"), Decimal(4000)),),
+            asks=((Decimal("1.1002"), Decimal(2500)),),
+            units_available={"default": {"short": "1800"}},
         )
     ]
 
