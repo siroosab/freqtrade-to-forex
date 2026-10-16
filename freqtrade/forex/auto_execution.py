@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import UTC, datetime
-from decimal import ROUND_DOWN, Decimal, InvalidOperation
+from decimal import ROUND_DOWN, ROUND_UP, Decimal, InvalidOperation
 from typing import Any
 
 import pandas as pd
@@ -348,23 +348,33 @@ class OandaAutoStrategyExecutor:
         signed_units = units if side == "long" else -units
         client_order_id = _client_order_id(instrument, candle_time, side)
         self._mark_processed(instrument, candle_time)
-        result = await self.client.create_market_order(
-            instrument,
-            signed_units,
-            stop_loss_price=None if trailing_stop_loss else str(stop_price),
-            trailing_stop_loss_distance=(
-                str(trailing_distance)
-                if trailing_stop_loss and trailing_distance is not None
-                else None
-            ),
-            take_profit_price=str(take_profit) if take_profit is not None else None,
-            client_order_id=client_order_id,
-            trade_client_extensions={
-                "id": client_order_id,
-                "tag": _AUTO_TRADE_TAG,
-                "comment": "approved-strategy",
-            },
-        )
+        try:
+            result = await self.client.create_market_order(
+                instrument,
+                signed_units,
+                stop_loss_price=None if trailing_stop_loss else str(stop_price),
+                trailing_stop_loss_distance=(
+                    str(trailing_distance)
+                    if trailing_stop_loss and trailing_distance is not None
+                    else None
+                ),
+                take_profit_price=str(take_profit) if take_profit is not None else None,
+                client_order_id=client_order_id,
+                trade_client_extensions={
+                    "id": client_order_id,
+                    "tag": _AUTO_TRADE_TAG,
+                    "comment": "approved-strategy",
+                },
+            )
+        except (OandaAPIError, OSError, InvalidOperation, ValueError) as exc:
+            return {
+                "pair": pair,
+                "timeframe": timeframe,
+                "signal": signal.value,
+                "candleTime": candle_time,
+                "status": "blocked",
+                "reason": str(exc),
+            }
         if result.fill_price is None:
             return {
                 "pair": pair,
@@ -409,6 +419,7 @@ class OandaAutoStrategyExecutor:
             raise AutoExecutionError(f"OANDA instrument metadata is unavailable for {pair}")
         metadata = instrument_metadata[0]
         entry_price = price.price_for_side(side)
+        depth_units = _depth_available_units(price, side, metadata.trade_units_precision)
         stop_price = _protection_price(
             risk.get("stopLoss"),
             str(risk.get("stopLossMode", "price")),
@@ -448,7 +459,7 @@ class OandaAutoStrategyExecutor:
             gbp_to_account_rate = gbp_conversion.position_value
         units = min(
             risk_units,
-            _depth_available_units(price, side, metadata.trade_units_precision),
+            depth_units,
             _max_exposure_units(
                 risk.get("maxExposure"),
                 str(risk.get("maxExposureMode", "margin_percent")),
@@ -466,6 +477,54 @@ class OandaAutoStrategyExecutor:
             raise AutoExecutionError(
                 f"{pair} risk size or available market depth is below OANDA's minimum trade size"
             )
+        depth_levels = price.asks if side == "long" else price.bids
+        if depth_levels:
+            entry_price = _depth_execution_price(price, side, units)
+            stop_price = _protection_price(
+                risk.get("stopLoss"),
+                str(risk.get("stopLossMode", "price")),
+                entry_price,
+                metadata,
+                side,
+                is_stop=True,
+            )
+            take_profit = _protection_price(
+                risk.get("takeProfit"),
+                str(risk.get("takeProfitMode", "price")),
+                entry_price,
+                metadata,
+                side,
+                is_stop=False,
+            )
+            risk_units = units_for_fixed_risk(
+                account_equity=account.nav,
+                risk_fraction=risk_fraction,
+                entry_price=entry_price,
+                stop_price=stop_price,
+                instrument=metadata,
+                quote_to_account_rate=conversion.account_loss,
+            )
+            units = min(
+                units,
+                risk_units,
+                depth_units,
+                _max_exposure_units(
+                    risk.get("maxExposure"),
+                    str(risk.get("maxExposureMode", "margin_percent")),
+                    entry_price,
+                    conversion.position_value,
+                    metadata.trade_units_precision,
+                    account.nav,
+                    margin_available=account.margin_available,
+                    margin_rate=metadata.margin_rate,
+                    gbp_to_account_rate=gbp_to_account_rate,
+                ),
+            )
+            units = int(units)
+        if units < int(metadata.minimum_trade_size):
+            raise AutoExecutionError(
+                f"{pair} risk size or available market depth is below OANDA's minimum trade size"
+            )
         trailing_distance: Decimal | None = None
         if trailing_stop_loss is not None:
             if not isinstance(trailing_stop_loss, dict):
@@ -477,18 +536,42 @@ class OandaAutoStrategyExecutor:
                 raise AutoExecutionError("Approved trailing-stop distance is invalid") from exc
             if not value.is_finite() or value <= 0:
                 raise AutoExecutionError("Approved trailing-stop distance must be positive")
-            if mode == "pips":
-                trailing_distance = value * metadata.pip_size
-            elif mode == "percent":
-                trailing_distance = entry_price * value / Decimal("100")
-            elif mode == "money":
-                trailing_distance = value / (conversion.account_loss * Decimal(units))
-            else:
-                raise AutoExecutionError(
-                    "Approved trailing-stop mode must be pips, percent, or money"
-                )
-            if not trailing_distance.is_finite() or trailing_distance <= 0:
-                raise AutoExecutionError("Calculated trailing-stop distance must be positive")
+            if mode != "pips":
+                raise AutoExecutionError("OANDA trailing stops must be configured in pips")
+            trailing_distance = _oanda_trailing_distance(value, metadata)
+            stop_price = (
+                entry_price - trailing_distance
+                if side == "long"
+                else entry_price + trailing_distance
+            )
+            risk_units = units_for_fixed_risk(
+                account_equity=account.nav,
+                risk_fraction=risk_fraction,
+                entry_price=entry_price,
+                stop_price=stop_price,
+                instrument=metadata,
+                quote_to_account_rate=conversion.account_loss,
+            )
+            units = min(
+                units,
+                risk_units,
+                _max_exposure_units(
+                    risk.get("maxExposure"),
+                    str(risk.get("maxExposureMode", "margin_percent")),
+                    entry_price,
+                    conversion.position_value,
+                    metadata.trade_units_precision,
+                    account.nav,
+                    margin_available=account.margin_available,
+                    margin_rate=metadata.margin_rate,
+                    gbp_to_account_rate=gbp_to_account_rate,
+                ),
+            )
+            units = int(units)
+        if units < int(metadata.minimum_trade_size):
+            raise AutoExecutionError(
+                f"{pair} risk size or available market depth is below OANDA's minimum trade size"
+            )
         return stop_price, take_profit, units, trailing_distance
 
     async def _close_on_strategy_exit(
@@ -766,6 +849,25 @@ def _protection_price(
         side == "short" and not is_stop and price >= entry_price
     ):
         raise AutoExecutionError("Take profit is on the wrong side of the entry price")
+    price_precision = min(
+        instrument.display_precision,
+        max(0, -price.as_tuple().exponent),
+    )
+    price_step = Decimal(1).scaleb(-price_precision)
+    rounding = (
+        ROUND_UP
+        if (side == "long" and is_stop) or (side == "short" and not is_stop)
+        else ROUND_DOWN
+    )
+    price = price.quantize(price_step, rounding=rounding)
+    if (side == "long" and is_stop and price >= entry_price) or (
+        side == "short" and is_stop and price <= entry_price
+    ):
+        raise AutoExecutionError("Stop loss is on the wrong side of the entry price")
+    if (side == "long" and not is_stop and price <= entry_price) or (
+        side == "short" and not is_stop and price >= entry_price
+    ):
+        raise AutoExecutionError("Take profit is on the wrong side of the entry price")
     return price
 
 
@@ -797,6 +899,47 @@ def _depth_available_units(
     caps = [cap for cap in (available, visible if levels else None) if cap is not None]
     step = Decimal(1).scaleb(-units_precision)
     return int(min(caps).quantize(step, rounding=ROUND_DOWN))
+
+
+def _depth_execution_price(price: OandaPrice, side: str, units: int) -> Decimal:
+    levels = price.asks if side == "long" else price.bids
+    if not levels:
+        return price.price_for_side(side)
+    ordered_levels = sorted(levels, key=lambda level: level[0], reverse=side == "short")
+    remaining = Decimal(units)
+    notional = Decimal(0)
+    for level_price, liquidity in ordered_levels:
+        if (
+            not level_price.is_finite()
+            or level_price <= 0
+            or not liquidity.is_finite()
+            or liquidity <= 0
+        ):
+            raise AutoExecutionError("OANDA returned invalid order-book levels")
+        filled_at_level = min(remaining, liquidity)
+        notional += level_price * filled_at_level
+        remaining -= filled_at_level
+        if remaining <= 0:
+            break
+    if remaining > 0:
+        raise AutoExecutionError("OANDA order-book depth is below the calculated order size")
+    return notional / Decimal(units)
+
+
+def _oanda_trailing_distance(value: Decimal, instrument: OandaInstrument) -> Decimal:
+    if instrument.display_precision < 0:
+        raise AutoExecutionError("OANDA instrument precision is invalid")
+    distance_step = Decimal(1).scaleb(-instrument.display_precision)
+    distance = (value * instrument.pip_size).quantize(distance_step, rounding=ROUND_UP)
+    minimum = instrument.minimum_trailing_stop_distance
+    if minimum is not None:
+        distance = max(distance, minimum.quantize(distance_step, rounding=ROUND_UP))
+    maximum = instrument.maximum_trailing_stop_distance
+    if maximum is not None and distance > maximum:
+        raise AutoExecutionError(
+            "Approved trailing-stop distance exceeds OANDA's instrument maximum"
+        )
+    return distance
 
 
 def _max_exposure_units(

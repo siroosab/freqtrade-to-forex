@@ -515,6 +515,165 @@ async def test_auto_execution_uses_units_available_when_quote_liquidity_is_missi
 
 
 @pytest.mark.asyncio
+async def test_automatic_order_prices_protection_from_side_book_vwap(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _strategy_directory(tmp_path, monkeypatch)
+    client = FakeOandaClient(_candles("long"))
+
+    async def get_book(instruments: tuple[str, ...]) -> list[OandaPrice]:
+        del instruments
+        return [
+            OandaPrice(
+                instrument="EUR_USD",
+                time="2026-10-03T18:00:00Z",
+                bid=Decimal("1.1000"),
+                ask=Decimal("1.1002"),
+                bids=((Decimal("1.1000"), Decimal(4000)),),
+                asks=(
+                    (Decimal("1.1002"), Decimal(1000)),
+                    (Decimal("1.1012"), Decimal(1500)),
+                ),
+                units_available={"default": {"long": "2500", "short": "1800"}},
+            )
+        ]
+
+    client.get_prices = get_book
+    executor = _executor(client)
+    executor.setup["pair_approved_revisions"]["EUR_USD"]["hyperopt"] = {
+        "stopLoss": {"mode": "pips", "value": "10"},
+    }
+
+    result = await executor.run_cycle()
+
+    assert result[0]["status"] == "filled"
+    assert client.orders[0][1]["stop_loss_price"] == "1.0998"
+    assert client.orders[0][1]["take_profit_price"] == "1.1028"
+
+
+@pytest.mark.asyncio
+async def test_short_order_protection_uses_bid_book_vwap(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _strategy_directory(tmp_path, monkeypatch)
+    client = FakeOandaClient(_candles("short"))
+
+    async def get_book(instruments: tuple[str, ...]) -> list[OandaPrice]:
+        del instruments
+        return [
+            OandaPrice(
+                instrument="EUR_USD",
+                time="2026-10-03T18:00:00Z",
+                bid=Decimal("1.1000"),
+                ask=Decimal("1.1002"),
+                bids=(
+                    (Decimal("1.1000"), Decimal(1000)),
+                    (Decimal("1.0990"), Decimal(1500)),
+                ),
+                asks=((Decimal("1.1002"), Decimal(4000)),),
+                units_available={"default": {"long": "1500", "short": "2500"}},
+            )
+        ]
+
+    client.get_prices = get_book
+    executor = _executor(client)
+
+    result = await executor.run_cycle()
+
+    assert result[0]["status"] == "filled"
+    assert client.orders[0][1]["stop_loss_price"] == "1.1004"
+    assert client.orders[0][1]["take_profit_price"] == "1.0974"
+
+
+@pytest.mark.asyncio
+async def test_trailing_stop_is_rounded_up_to_oanda_precision_and_minimum(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _strategy_directory(tmp_path, monkeypatch)
+    client = FakeOandaClient(_candles("long"))
+    get_instruments = client.get_instruments
+
+    async def instrument_with_trailing_constraints(instruments: tuple[str, ...]):
+        metadata = (await get_instruments(instruments))[0]
+        return [
+            OandaInstrument(
+                name=metadata.name,
+                display_name=metadata.display_name,
+                pip_location=metadata.pip_location,
+                display_precision=metadata.display_precision,
+                trade_units_precision=metadata.trade_units_precision,
+                minimum_trade_size=metadata.minimum_trade_size,
+                base_currency=metadata.base_currency,
+                quote_currency=metadata.quote_currency,
+                margin_rate=metadata.margin_rate,
+                minimum_trailing_stop_distance=Decimal("0.000605"),
+                maximum_trailing_stop_distance=Decimal("0.01"),
+            )
+        ]
+
+    client.get_instruments = instrument_with_trailing_constraints
+    executor = _executor(client)
+    executor.setup["pair_approved_revisions"]["EUR_USD"]["hyperopt"] = {
+        "stopLoss": {"mode": "pips", "value": "6.02"},
+        "trailingStopLoss": True,
+    }
+    executor.risk_configs["EUR/USD"]["stopLoss"] = None
+
+    result = await executor.run_cycle()
+
+    assert result[0]["status"] == "filled"
+    assert client.orders[0][1]["trailing_stop_loss_distance"] == "0.00061"
+    assert client.orders[0][1]["stop_loss_price"] is None
+
+
+@pytest.mark.asyncio
+async def test_oanda_trailing_stop_requires_pips(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _strategy_directory(tmp_path, monkeypatch)
+    client = FakeOandaClient(_candles("long"))
+    executor = _executor(client)
+    executor.setup["pair_approved_revisions"]["EUR_USD"]["hyperopt"] = {
+        "stopLoss": {"mode": "percent", "value": "1"},
+        "trailingStopLoss": True,
+    }
+    executor.risk_configs["EUR/USD"]["stopLoss"] = None
+
+    result = await executor.run_cycle()
+
+    assert result[0]["status"] == "blocked"
+    assert result[0]["reason"] == "OANDA trailing stops must be configured in pips"
+    assert client.orders == []
+
+
+@pytest.mark.asyncio
+async def test_automatic_order_rejection_reports_signal_and_candle(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _strategy_directory(tmp_path, monkeypatch)
+    client = FakeOandaClient(_candles("long"))
+
+    async def reject_order(*args, **kwargs):
+        del args, kwargs
+        raise OandaAPIError("OANDA rejected trailing stop precision")
+
+    client.create_market_order = reject_order
+    executor = _executor(client)
+
+    result = await executor.run_cycle()
+
+    assert result[0]["status"] == "blocked"
+    assert result[0]["signal"] == "long"
+    assert result[0]["candleTime"] == datetime(2026, 10, 3, 17, 55, tzinfo=UTC).isoformat()
+    assert "precision" in str(result[0]["reason"])
+
+
+@pytest.mark.asyncio
 async def test_automatic_order_respects_panel_units_exposure_cap(
     tmp_path,
     monkeypatch,
