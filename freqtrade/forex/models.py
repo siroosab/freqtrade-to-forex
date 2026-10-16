@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from datetime import time as dt_time
-from decimal import ROUND_DOWN, Decimal
+from decimal import ROUND_DOWN, ROUND_UP, Decimal
 from enum import StrEnum
 from typing import Any
 
@@ -107,6 +107,33 @@ class OandaInstrument:
         if units >= 0:
             return units.quantize(self.units_step, rounding=ROUND_DOWN)
         return (-units).quantize(self.units_step, rounding=ROUND_DOWN) * Decimal("-1")
+
+    def format_units(self, units: int | Decimal) -> str:
+        value = Decimal(units)
+        if not value.is_finite() or self.round_units(value) != value:
+            raise ValueError(
+                f"Order units exceed {self.trade_units_precision} decimal places"
+            )
+        return f"{value:.{self.trade_units_precision}f}"
+
+    def round_trailing_stop_distance(self, distance: Decimal) -> Decimal:
+        if not distance.is_finite() or distance <= 0:
+            raise ValueError("trailing_stop_loss_distance must be a positive number")
+        if self.display_precision < 0:
+            raise ValueError("OANDA instrument precision is invalid")
+        precision = Decimal(1).scaleb(-self.display_precision)
+        rounded = distance.quantize(precision, rounding=ROUND_UP)
+        minimum = self.minimum_trailing_stop_distance
+        if minimum is not None:
+            rounded = max(rounded, minimum.quantize(precision, rounding=ROUND_UP))
+        maximum = self.maximum_trailing_stop_distance
+        if maximum is not None and rounded > maximum:
+            raise ValueError("trailing stop distance exceeds OANDA's instrument maximum")
+        return rounded
+
+    def format_trailing_stop_distance(self, distance: Decimal) -> str:
+        rounded = self.round_trailing_stop_distance(distance)
+        return format(rounded.normalize(), "f")
 
     def is_quote_currency(self, currency: str) -> bool:
         return self.quote_currency == currency.upper()
@@ -344,7 +371,9 @@ class OandaOrderResult:
             order_id=created["id"],
             transaction_id=payload["lastTransactionID"],
             fill_price=Decimal(filled["price"]) if filled else None,
-            units=Decimal(created["units"]),
+            units=Decimal(
+                filled.get("units", created["units"]) if filled else created["units"]
+            ),
             cancel_reason=(canceled or {}).get("reason") if canceled else None,
         )
 

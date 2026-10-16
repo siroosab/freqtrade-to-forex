@@ -39,10 +39,10 @@ class BrokerOrderValidator:
         if self.minimum_stop_distance < 0:
             raise OrderValidationError("minimum stop distance cannot be negative")
 
-    def validate_units(self, units: int) -> int:
+    def validate_units(self, units: int | Decimal) -> int | Decimal:
         if units == 0:
             raise OrderValidationError("order units cannot be zero")
-        absolute_units = Decimal(abs(units))
+        absolute_units = abs(Decimal(units))
         if absolute_units < self.instrument.minimum_trade_size:
             raise OrderValidationError("order units are below minimum trade size")
         if self.instrument.round_units(absolute_units) != absolute_units:

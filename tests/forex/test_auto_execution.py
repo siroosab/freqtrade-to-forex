@@ -674,6 +674,32 @@ async def test_automatic_order_rejection_reports_signal_and_candle(
 
 
 @pytest.mark.asyncio
+async def test_filled_result_reports_oanda_fill_units(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _strategy_directory(tmp_path, monkeypatch)
+    client = FakeOandaClient(_candles("long"))
+
+    async def filled_with_different_units(*args, **kwargs) -> OandaOrderResult:
+        client.orders.append((args, kwargs))
+        return OandaOrderResult(
+            order_id="order-1",
+            transaction_id="transaction-1",
+            fill_price=Decimal("1.1001"),
+            units=Decimal("303555"),
+        )
+
+    client.create_market_order = filled_with_different_units
+    executor = _executor(client)
+
+    result = await executor.run_cycle()
+
+    assert result[0]["status"] == "filled"
+    assert result[0]["units"] == 303555
+
+
+@pytest.mark.asyncio
 async def test_automatic_order_respects_panel_units_exposure_cap(
     tmp_path,
     monkeypatch,

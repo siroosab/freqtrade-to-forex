@@ -56,20 +56,10 @@ def _validated_trailing_stop_distance(
         raise ValueError("A fixed stop loss and a trailing stop loss cannot be set simultaneously")
     if distance is None:
         return None
-    trailing_distance = Decimal(distance)
-    if not trailing_distance.is_finite() or trailing_distance <= 0:
-        raise ValueError("trailing_stop_loss_distance must be a positive number")
-    if (
-        instrument.minimum_trailing_stop_distance is not None
-        and trailing_distance < instrument.minimum_trailing_stop_distance
-    ):
-        raise ValueError("trailing stop distance is below OANDA's instrument minimum")
-    if (
-        instrument.maximum_trailing_stop_distance is not None
-        and trailing_distance > instrument.maximum_trailing_stop_distance
-    ):
-        raise ValueError("trailing stop distance exceeds OANDA's instrument maximum")
-    return trailing_distance
+    try:
+        return instrument.round_trailing_stop_distance(Decimal(distance))
+    except InvalidOperation as exc:
+        raise ValueError("trailing_stop_loss_distance must be a positive number") from exc
 
 
 def classify_oanda_account(tags: Any) -> dict[str, str] | None:
@@ -210,6 +200,8 @@ class OandaClient:
             timeout=timeout,
         )
         self._owns_client = http_client is None
+        self._instrument_cache: dict[str, OandaInstrument] = {}
+        self._all_instruments_cached = False
 
     async def __aenter__(self) -> "OandaClient":
         return self
@@ -224,11 +216,35 @@ class OandaClient:
     async def get_instruments(
         self, instruments: Sequence[str] | None = None
     ) -> list[OandaInstrument]:
-        params = {"instruments": ",".join(instruments)} if instruments else None
-        payload = await self._request(
-            "GET", f"/v3/accounts/{self.account_id}/instruments", params=params
-        )
-        return [OandaInstrument.from_payload(item) for item in payload["instruments"]]
+        if instruments:
+            requested = tuple(dict.fromkeys(instrument.upper() for instrument in instruments))
+            missing = tuple(
+                instrument for instrument in requested if instrument not in self._instrument_cache
+            )
+            if missing:
+                payload = await self._request(
+                    "GET",
+                    f"/v3/accounts/{self.account_id}/instruments",
+                    params={"instruments": ",".join(missing)},
+                )
+                for item in payload["instruments"]:
+                    instrument = OandaInstrument.from_payload(item)
+                    self._instrument_cache[instrument.name.upper()] = instrument
+            return [
+                self._instrument_cache[instrument]
+                for instrument in requested
+                if instrument in self._instrument_cache
+            ]
+
+        if not self._all_instruments_cached:
+            payload = await self._request(
+                "GET", f"/v3/accounts/{self.account_id}/instruments"
+            )
+            for item in payload["instruments"]:
+                instrument = OandaInstrument.from_payload(item)
+                self._instrument_cache[instrument.name.upper()] = instrument
+            self._all_instruments_cached = True
+        return list(self._instrument_cache.values())
 
     @staticmethod
     def _normalize_time(value: str) -> str:
@@ -481,7 +497,7 @@ class OandaClient:
     async def create_market_order(
         self,
         instrument: str,
-        units: int,
+        units: int | Decimal,
         *,
         stop_loss_price: str | None = None,
         trailing_stop_loss_distance: str | None = None,
@@ -500,8 +516,12 @@ class OandaClient:
             broker_instrument,
             minimum_stop_distance=Decimal("0"),
         )
-        validator.validate_units(abs(units))
-        order_side = "long" if units > 0 else "short"
+        if not isinstance(units, int | Decimal):
+            raise ValueError("OANDA order units must be an integer or Decimal")
+        formatted_units = broker_instrument.format_units(units)
+        normalized_units = Decimal(formatted_units)
+        validator.validate_units(abs(normalized_units))
+        order_side = "long" if normalized_units > 0 else "short"
         entry_price = quote.price_for_side(order_side)
         try:
             trailing_distance = _validated_trailing_stop_distance(
@@ -526,16 +546,18 @@ class OandaClient:
         order: dict[str, Any] = {
             "type": "MARKET",
             "instrument": instrument,
-            "units": str(units),
+            "units": formatted_units,
             "timeInForce": "FOK",
             "positionFill": "DEFAULT",
         }
         if stop_loss_price is not None:
             order["stopLossOnFill"] = {"timeInForce": "GTC", "price": stop_loss_price}
         if trailing_stop_loss_distance is not None:
+            if trailing_distance is None:
+                raise ValueError("trailing_stop_loss_distance must be a positive number")
             order["trailingStopLossOnFill"] = {
                 "timeInForce": "GTC",
-                "distance": str(trailing_distance),
+                "distance": broker_instrument.format_trailing_stop_distance(trailing_distance),
             }
         if take_profit_price is not None:
             order["takeProfitOnFill"] = {"timeInForce": "GTC", "price": take_profit_price}

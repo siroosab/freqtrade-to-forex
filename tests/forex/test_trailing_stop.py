@@ -6,7 +6,7 @@ import pandas as pd
 import pytest
 
 from freqtrade.forex.backtest import ForexBacktester
-from freqtrade.forex.models import OandaEnvironment, OandaInstrument
+from freqtrade.forex.models import OandaEnvironment, OandaInstrument, OandaOrderResult
 from freqtrade.forex.oanda import OandaClient
 from freqtrade.forex.strategy_loop import EmaCrossStrategy, Signal
 
@@ -65,13 +65,57 @@ def test_backtest_trailing_stop_ratchets_and_closes_at_the_following_candle() ->
     assert fixed is None
 
 
+def test_trailing_distance_and_units_use_instrument_precision() -> None:
+    instrument = OandaInstrument(
+        name="USD_JPY",
+        display_name="USD/JPY",
+        pip_location=-2,
+        display_precision=3,
+        trade_units_precision=0,
+        minimum_trade_size=Decimal(1),
+    )
+
+    assert instrument.format_trailing_stop_distance(Decimal("0.05")) == "0.05"
+    assert instrument.format_trailing_stop_distance(Decimal("0.0502")) == "0.051"
+    assert instrument.format_units(303552) == "303552"
+    with pytest.raises(ValueError, match="exceed 0 decimal places"):
+        instrument.format_units(Decimal("303552.5"))
+
+    result = OandaOrderResult.from_payload(
+        {
+            "orderCreateTransaction": {"id": "order-1", "units": "303552"},
+            "orderFillTransaction": {
+                "id": "fill-1",
+                "units": "303555",
+                "price": "1.25000",
+            },
+            "lastTransactionID": "fill-1",
+        }
+    )
+    assert result.units == Decimal("303555")
+
+
 @pytest.mark.asyncio
-async def test_oanda_client_creates_market_order_with_native_trailing_stop_on_fill() -> None:
+@pytest.mark.parametrize(
+    ("distance", "minimum", "expected_distance"),
+    [
+        ("0.0005", "0.0002", "0.0005"),
+        ("0.000602", "0.0002", "0.00061"),
+        ("0.0005", "0.000605", "0.00061"),
+    ],
+)
+async def test_oanda_client_creates_market_order_with_native_trailing_stop_on_fill(
+    distance: str,
+    minimum: str,
+    expected_distance: str,
+) -> None:
     captured: httpx.Request | None = None
+    instrument_requests = 0
 
     async def handler(request: httpx.Request) -> httpx.Response:
-        nonlocal captured
+        nonlocal captured, instrument_requests
         if request.url.path.endswith("/instruments"):
+            instrument_requests += 1
             return httpx.Response(
                 200,
                 json={
@@ -83,7 +127,7 @@ async def test_oanda_client_creates_market_order_with_native_trailing_stop_on_fi
                             "displayPrecision": 5,
                             "tradeUnitsPrecision": 0,
                             "minimumTradeSize": "1",
-                            "minimumTrailingStopDistance": "0.0002",
+                            "minimumTrailingStopDistance": minimum,
                             "maximumTrailingStopDistance": "1.0",
                         }
                     ]
@@ -118,10 +162,11 @@ async def test_oanda_client_creates_market_order_with_native_trailing_stop_on_fi
         transport=httpx.MockTransport(handler),
     ) as http_client:
         async with OandaClient("ignored", "account", http_client=http_client) as client:
+            await client.get_instruments(("EUR_USD",))
             await client.create_market_order(
                 "EUR_USD",
                 1000,
-                trailing_stop_loss_distance="0.0005",
+                trailing_stop_loss_distance=distance,
                 client_order_id="trailing-entry-1",
             )
 
@@ -129,16 +174,17 @@ async def test_oanda_client_creates_market_order_with_native_trailing_stop_on_fi
     order = json.loads(captured.content)["order"]
     assert order["trailingStopLossOnFill"] == {
         "timeInForce": "GTC",
-        "distance": "0.0005",
+        "distance": expected_distance,
     }
+    assert order["units"] == "1000"
     assert "stopLossOnFill" not in order
+    assert instrument_requests == 1
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("distance", "message"),
     [
-        ("0.0001", "below OANDA's instrument minimum"),
         ("1.1", "exceeds OANDA's instrument maximum"),
     ],
 )

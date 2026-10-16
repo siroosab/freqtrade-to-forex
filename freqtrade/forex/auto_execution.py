@@ -395,7 +395,7 @@ class OandaAutoStrategyExecutor:
             "orderId": result.order_id,
             "transactionId": result.transaction_id,
             "fillPrice": str(result.fill_price),
-            "units": signed_units,
+            "units": _reported_units(result.units),
             "clientOrderId": client_order_id,
         }
 
@@ -927,19 +927,16 @@ def _depth_execution_price(price: OandaPrice, side: str, units: int) -> Decimal:
 
 
 def _oanda_trailing_distance(value: Decimal, instrument: OandaInstrument) -> Decimal:
-    if instrument.display_precision < 0:
-        raise AutoExecutionError("OANDA instrument precision is invalid")
-    distance_step = Decimal(1).scaleb(-instrument.display_precision)
-    distance = (value * instrument.pip_size).quantize(distance_step, rounding=ROUND_UP)
-    minimum = instrument.minimum_trailing_stop_distance
-    if minimum is not None:
-        distance = max(distance, minimum.quantize(distance_step, rounding=ROUND_UP))
-    maximum = instrument.maximum_trailing_stop_distance
-    if maximum is not None and distance > maximum:
-        raise AutoExecutionError(
-            "Approved trailing-stop distance exceeds OANDA's instrument maximum"
-        )
-    return distance
+    try:
+        return instrument.round_trailing_stop_distance(value * instrument.pip_size)
+    except ValueError as exc:
+        raise AutoExecutionError(str(exc)) from exc
+
+
+def _reported_units(units: Decimal) -> int | str:
+    if units == units.to_integral_value():
+        return int(units)
+    return format(units, "f")
 
 
 def _max_exposure_units(

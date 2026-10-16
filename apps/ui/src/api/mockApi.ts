@@ -405,7 +405,7 @@ export type AutoExecutionResult = {
   orderId?: string
   transactionId?: string
   fillPrice?: string
-  units?: number
+  units?: number | string
   clientOrderId?: string
 }
 
