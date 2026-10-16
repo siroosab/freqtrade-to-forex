@@ -411,6 +411,7 @@ export type AutoExecutionResult = {
 
 export type AutoExecutionStatus = {
   enabled: boolean
+  workerRunning: boolean
   environment: string
   lastCycleAt?: string | null
   lastError?: string | null

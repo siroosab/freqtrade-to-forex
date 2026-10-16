@@ -92,7 +92,9 @@ saved but automatic execution remains stopped; Setup displays the reason.
 After a successful save, Setup stays open and confirms that the configuration
 was saved and whether the executor was enabled. Its automatic-execution status
 refreshes while the page is open and shows the environment, last cycle time, and
-any cycle error; the same execution details are visible on the Dashboard.
+whether the background worker is still running. Dashboard results report the
+approved runtime strategy's actual per-pair signal and execution outcome; the
+separate strategy overview cards do not drive orders.
 Unchecking the start option only saves the account configuration.
 
 This automated lifecycle evaluates the approved `IStrategy` on completed

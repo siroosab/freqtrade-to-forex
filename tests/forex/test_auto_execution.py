@@ -21,7 +21,7 @@ from freqtrade.forex.models import (
     OandaPrice,
     OandaPricing,
 )
-from freqtrade.forex.oanda import OandaClient
+from freqtrade.forex.oanda import OandaAPIError, OandaClient
 from freqtrade.forex.state import OandaAccountState
 
 
@@ -414,6 +414,36 @@ async def test_signal_candle_is_processed_at_most_once(
 
     assert first[0]["status"] == "filled"
     assert second[0]["status"] == "already_processed"
+    assert len(client.orders) == 1
+
+
+@pytest.mark.asyncio
+async def test_oanda_quote_error_is_reported_and_same_candle_can_retry(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _strategy_directory(tmp_path, monkeypatch)
+    client = FakeOandaClient(_candles("long"))
+    get_prices = client.get_prices
+    calls = 0
+
+    async def fail_once(instruments: tuple[str, ...]) -> list[OandaPrice]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OandaAPIError("OANDA 400: temporary pricing error")
+        return await get_prices(instruments)
+
+    client.get_prices = fail_once
+    executor = _executor(client)
+
+    first = await executor.run_cycle()
+    assert executor.last_processed == {}
+    second = await executor.run_cycle()
+
+    assert first[0]["status"] == "blocked"
+    assert first[0]["reason"] == "OANDA 400: temporary pricing error"
+    assert second[0]["status"] == "filled"
     assert len(client.orders) == 1
 
 
@@ -895,6 +925,8 @@ def test_auto_execution_api_requires_approved_strategy_before_enable(
     assert active_status.json()["enabled"] is True
     assert active_status.json()["environment"] == "practice"
     assert active_status.json()["lastCycleAt"] == "2026-10-15T10:00:00Z"
+    assert active_status.json()["workerRunning"] is False
+    assert "worker is not running" in active_status.json()["lastError"]
 
 
 def test_auto_execution_reports_missing_stop_loss_for_all_configured_pairs(

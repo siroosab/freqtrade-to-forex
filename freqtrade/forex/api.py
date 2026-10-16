@@ -1099,7 +1099,17 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             try:
                 results = await auto_execution_cycle()
                 state = read_strategy_execution_state()
-                state["results"] = (results + list(state.get("results", [])))[:50]
+                visible_results = [
+                    result
+                    for result in results
+                    if result.get("status") != "already_processed"
+                ]
+                previous_results = [
+                    result
+                    for result in state.get("results", [])
+                    if isinstance(result, dict) and result.get("status") != "already_processed"
+                ]
+                state["results"] = (visible_results + previous_results)[:50]
                 state["lastError"] = None
                 state["lastCycleAt"] = datetime.now(timezone.utc).isoformat()
                 write_strategy_execution_state(state)
@@ -3964,17 +3974,27 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
     @app.get("/api/v1/strategy/auto-execution")
     async def strategy_auto_execution_status() -> dict:
         state = read_strategy_execution_state()
+        task = app.state.strategy_execution_task
+        worker_running = task is not None and not task.done()
+        last_error = state.get("lastError")
+        if state.get("enabled") is True and not worker_running:
+            last_error = last_error or "Automatic execution is enabled but its worker is not running"
+            if task is not None and not task.cancelled():
+                task_error = task.exception()
+                if task_error is not None:
+                    last_error = f"Automatic execution worker stopped: {task_error}"
         try:
             settings = OandaSettings.from_environment()
             environment = settings.environment.value
         except ValueError as exc:
             environment = "unconfigured"
-            state["lastError"] = str(exc)
+            last_error = str(exc)
         return {
             "enabled": state.get("enabled") is True,
+            "workerRunning": worker_running,
             "environment": environment,
             "lastCycleAt": state.get("lastCycleAt"),
-            "lastError": state.get("lastError"),
+            "lastError": last_error,
             "results": state.get("results", []),
         }
 
@@ -4118,6 +4138,10 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         )
         return {
             "enabled": enabled,
+            "workerRunning": (
+                app.state.strategy_execution_task is not None
+                and not app.state.strategy_execution_task.done()
+            ),
             "environment": settings.environment.value if enabled else None,
             "lastCycleAt": state.get("lastCycleAt"),
             "lastError": state.get("lastError"),

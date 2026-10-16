@@ -78,7 +78,7 @@ export function DashboardPage() {
       await queryClient.invalidateQueries({ queryKey: ['strategy-auto-execution'] })
     },
   })
-  const autoExecution = autoExecutionMutation.data ?? autoExecutionQuery.data
+  const autoExecution = autoExecutionQuery.data
 
   const toggleAutoExecution = () => {
     const enable = !autoExecution?.enabled
@@ -651,11 +651,15 @@ export function DashboardPage() {
                 <p className="eyebrow">Strategy engine</p>
                 <h3>Signals</h3>
               </div>
-              <span className={`pill ${autoExecution?.enabled ? 'positive' : 'neutral'}`}>
+              <span
+                className={`pill ${
+                  autoExecution?.enabled && autoExecution.workerRunning ? 'positive' : 'neutral'
+                }`}
+              >
                 {autoExecutionQuery.isError
                   ? 'Status unavailable'
                   : autoExecution?.enabled
-                    ? `Auto · ${autoExecution.environment.toUpperCase()}`
+                    ? `Auto · ${autoExecution.environment.toUpperCase()}${autoExecution.workerRunning ? '' : ' · Worker stopped'}`
                     : 'Auto off'}
               </span>
             </div>
@@ -664,6 +668,8 @@ export function DashboardPage() {
               <p>
                 Only approved pair strategies are considered. Risk budget, stop loss,
                 allowed side, OANDA tradeability and available depth are checked before entry.
+                The results below are from automatic execution; the strategy overview cards are
+                informational and do not drive orders.
               </p>
               <button
                 type="button"
@@ -702,7 +708,7 @@ export function DashboardPage() {
               {autoExecution?.lastCycleAt && (
                 <small>Last strategy cycle: {new Date(autoExecution.lastCycleAt).toLocaleString()}</small>
               )}
-              {autoExecution?.results.slice(0, 3).map((result) => (
+              {autoExecution?.results.slice(0, 5).map((result) => (
                 <small key={`${result.pair}-${result.candleTime}-${result.status}`}>
                   {result.pair} · {result.signal ?? '—'} · {result.status}
                   {result.units !== undefined ? ` · ${result.units} units` : ''}

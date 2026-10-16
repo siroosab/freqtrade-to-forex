@@ -323,7 +323,7 @@ export function SetupPage() {
                 <>
                   <span>
                     {autoExecutionQuery.data.enabled
-                      ? `Active · ${autoExecutionQuery.data.environment}`
+                      ? `Active · ${autoExecutionQuery.data.environment}${autoExecutionQuery.data.workerRunning ? '' : ' · Worker stopped'}`
                       : 'Not active'}
                   </span>
                   {autoExecutionQuery.data.lastCycleAt && (

@@ -113,7 +113,7 @@ class OandaAutoStrategyExecutor:
                     account,
                     open_trades,
                 )
-            except (AutoExecutionError, OSError, InvalidOperation, ValueError) as exc:
+            except (AutoExecutionError, OandaAPIError, OSError, InvalidOperation, ValueError) as exc:
                 result = {
                     "pair": pair,
                     "timeframe": timeframe,
@@ -228,9 +228,6 @@ class OandaAutoStrategyExecutor:
                 "candleTime": candle_time,
                 "status": "already_processed",
             }
-        self.last_processed[instrument] = candle_time
-        if self.checkpoint:
-            self.checkpoint()
 
         risk = self.risk_configs.get(pair, {})
         panel_stop_loss = risk.get("stopLoss")
@@ -270,11 +267,13 @@ class OandaAutoStrategyExecutor:
             automated_trades,
             open_trades,
             ignore_strategy_exits=take_profit_configured,
+            instrument=instrument,
         )
         if close_result:
             return close_result
 
         if signal not in {Signal.LONG, Signal.SHORT}:
+            self._mark_processed(instrument, candle_time)
             return {
                 "pair": pair,
                 "timeframe": timeframe,
@@ -283,6 +282,7 @@ class OandaAutoStrategyExecutor:
                 "status": "no_entry",
             }
         if manual_trades or any(trade.get("instrument") == instrument for trade in open_trades):
+            self._mark_processed(instrument, candle_time)
             return {
                 "pair": pair,
                 "timeframe": timeframe,
@@ -295,6 +295,7 @@ class OandaAutoStrategyExecutor:
         side = "long" if signal is Signal.LONG else "short"
         allowed_side = str(risk.get("side", "NONE")).upper()
         if allowed_side not in {"BOTH", side.upper()}:
+            self._mark_processed(instrument, candle_time)
             raise AutoExecutionError(f"{pair} risk policy does not allow {side} entries")
 
         approved_stop_loss = parameters.get("stopLoss")
@@ -308,6 +309,7 @@ class OandaAutoStrategyExecutor:
         )
         signed_units = units if side == "long" else -units
         client_order_id = _client_order_id(instrument, candle_time, side)
+        self._mark_processed(instrument, candle_time)
         result = await self.client.create_market_order(
             instrument,
             signed_units,
@@ -348,6 +350,11 @@ class OandaAutoStrategyExecutor:
             "units": signed_units,
             "clientOrderId": client_order_id,
         }
+
+    def _mark_processed(self, instrument: str, candle_time: str) -> None:
+        self.last_processed[instrument] = candle_time
+        if self.checkpoint:
+            self.checkpoint()
 
     async def _protected_order_size(
         self,
@@ -437,7 +444,7 @@ class OandaAutoStrategyExecutor:
             elif mode == "percent":
                 trailing_distance = entry_price * value / Decimal("100")
             elif mode == "money":
-                trailing_distance = value / (conversion * Decimal(units))
+                trailing_distance = value / (conversion.account_loss * Decimal(units))
             else:
                 raise AutoExecutionError(
                     "Approved trailing-stop mode must be pips, percent, or money"
@@ -459,6 +466,7 @@ class OandaAutoStrategyExecutor:
         open_trades: list[dict[str, Any]],
         *,
         ignore_strategy_exits: bool = False,
+        instrument: str,
     ) -> dict[str, object] | None:
         if not automated_trades:
             return None
@@ -486,6 +494,7 @@ class OandaAutoStrategyExecutor:
         if not should_exit and not opposite and not roi_exit:
             return None
 
+        self._mark_processed(instrument, candle_time)
         closed = await self._close_automated_trades(automated_trades)
         open_trades[:] = [trade for trade in open_trades if trade not in automated_trades]
         if not _filled_close(closed):
