@@ -81,6 +81,11 @@ in unsupported modes, including money, must be replaced with a pips or percent
 value in Risk controls before execution can start. The start check reports all
 pair-level blockers together, and keeps the last failed-start reason visible
 in Setup until the next start attempt or a later execution error replaces it.
+Automatic order sizing uses OANDA's account pricing endpoint with
+`includeHomeConversions=true` for account-home currency conversion factors;
+it does not infer conversions from inverse instrument names. If OANDA does not
+provide a valid factor for a required currency, the order remains blocked
+rather than being sized with an estimated rate.
 Live additionally requires an admin session and a second browser confirmation
 before the request is sent. If these checks fail, the account config remains
 saved but automatic execution remains stopped; Setup displays the reason.

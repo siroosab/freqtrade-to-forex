@@ -2,6 +2,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
@@ -14,10 +15,13 @@ from freqtrade.forex.config import OandaSettings
 from freqtrade.forex.models import (
     OandaCandle,
     OandaEnvironment,
+    OandaHomeConversion,
     OandaInstrument,
     OandaOrderResult,
     OandaPrice,
+    OandaPricing,
 )
+from freqtrade.forex.oanda import OandaClient
 from freqtrade.forex.state import OandaAccountState
 
 
@@ -213,6 +217,131 @@ def _executor(
 
 
 @pytest.mark.asyncio
+async def test_quote_to_account_conversion_uses_oanda_home_conversion_factors():
+    class ConversionClient:
+        async def get_pricing(
+            self,
+            instruments: tuple[str, ...],
+            *,
+            include_home_conversions: bool,
+        ):
+            assert instruments == ("GBP_USD",)
+            assert include_home_conversions is True
+            return OandaPricing(
+                prices=(),
+                home_conversions={
+                    "GBP": OandaHomeConversion(
+                        currency="GBP",
+                        account_gain=Decimal("1.24"),
+                        account_loss=Decimal("1.26"),
+                        position_value=Decimal("1.25"),
+                    )
+                }
+            )
+
+    executor = _executor(ConversionClient())
+
+    conversion = await executor._quote_to_account_conversion(
+        "GBP",
+        "USD",
+        preferred_instrument="GBP_USD",
+    )
+
+    assert conversion.account_gain == Decimal("1.24")
+    assert conversion.account_loss == Decimal("1.26")
+    assert conversion.position_value == Decimal("1.25")
+
+
+@pytest.mark.asyncio
+async def test_quote_to_account_conversion_discovers_supported_instrument_for_currency():
+    class ConversionClient:
+        async def get_instruments(self):
+            return [
+                OandaInstrument(
+                    name="EUR_USD",
+                    display_name="EUR/USD",
+                    pip_location=-4,
+                    display_precision=5,
+                    trade_units_precision=0,
+                    minimum_trade_size=Decimal(1),
+                ),
+                OandaInstrument(
+                    name="GBP_USD",
+                    display_name="GBP/USD",
+                    pip_location=-4,
+                    display_precision=5,
+                    trade_units_precision=0,
+                    minimum_trade_size=Decimal(1),
+                ),
+            ]
+
+        async def get_pricing(
+            self,
+            instruments: tuple[str, ...],
+            *,
+            include_home_conversions: bool,
+        ):
+            assert instruments == ("GBP_USD",)
+            assert include_home_conversions is True
+            return OandaPricing(
+                prices=(),
+                home_conversions={
+                    "GBP": OandaHomeConversion(
+                        currency="GBP",
+                        account_gain=Decimal("1.24"),
+                        account_loss=Decimal("1.26"),
+                        position_value=Decimal("1.25"),
+                    )
+                }
+            )
+
+    executor = _executor(ConversionClient())
+
+    conversion = await executor._quote_to_account_conversion("GBP", "USD")
+
+    assert conversion.position_value == Decimal("1.25")
+
+
+@pytest.mark.asyncio
+async def test_oanda_pricing_endpoint_returns_home_conversion_factors():
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "prices": [],
+                "homeConversions": [
+                    {
+                        "currency": "GBP",
+                        "accountGain": "1.24",
+                        "accountLoss": "1.26",
+                        "positionValue": "1.25",
+                    }
+                ],
+            },
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(
+        base_url=OandaEnvironment.PRACTICE.rest_url,
+        transport=transport,
+    ) as http_client:
+        async with OandaClient("token", "account", http_client=http_client) as client:
+            pricing = await client.get_pricing(
+                ("GBP_USD",),
+                include_home_conversions=True,
+            )
+
+    assert requests[0].url.params["instruments"] == "GBP_USD"
+    assert requests[0].url.params["includeHomeConversions"] == "true"
+    assert pricing.home_conversions["GBP"].account_gain == Decimal("1.24")
+    assert pricing.home_conversions["GBP"].account_loss == Decimal("1.26")
+    assert pricing.home_conversions["GBP"].position_value == Decimal("1.25")
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(("direction", "expected_units"), [("long", 1500), ("short", -1800)])
 async def test_approved_long_and_short_signals_submit_signed_protected_oanda_orders(
     direction: str,
@@ -354,12 +483,28 @@ async def test_automatic_order_uses_gbp_margin_cap_and_panel_stop_over_strategy_
     executor.risk_configs["EUR/USD"]["maxExposure"] = "1"
     executor.risk_configs["EUR/USD"]["maxExposureMode"] = "margin_gbp"
 
-    async def gbp_to_usd(source_currency: str | None, account_currency: str) -> Decimal:
+    async def gbp_to_usd(
+        source_currency: str | None,
+        account_currency: str,
+        *,
+        preferred_instrument: str | None = None,
+    ) -> OandaHomeConversion:
+        del preferred_instrument
         if source_currency == "GBP" and account_currency == "USD":
-            return Decimal("1.25")
-        return Decimal(1)
+            return OandaHomeConversion(
+                currency="GBP",
+                account_gain=Decimal("1.25"),
+                account_loss=Decimal("1.25"),
+                position_value=Decimal("1.25"),
+            )
+        return OandaHomeConversion(
+            currency=account_currency,
+            account_gain=Decimal(1),
+            account_loss=Decimal(1),
+            position_value=Decimal(1),
+        )
 
-    executor._quote_to_account_rate = gbp_to_usd
+    executor._quote_to_account_conversion = gbp_to_usd
 
     results = await executor.run_cycle()
 

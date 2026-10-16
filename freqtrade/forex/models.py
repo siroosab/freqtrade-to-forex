@@ -1,8 +1,9 @@
 """Domain models for OANDA v20 responses."""
 
 from dataclasses import dataclass
-from datetime import UTC, datetime, time as dt_time
-from decimal import Decimal, ROUND_DOWN
+from datetime import UTC, datetime
+from datetime import time as dt_time
+from decimal import ROUND_DOWN, Decimal
 from enum import StrEnum
 from typing import Any
 
@@ -272,6 +273,32 @@ class OandaPrice:
             ),
             units_available=payload.get("unitsAvailable"),
         )
+
+
+@dataclass(frozen=True)
+class OandaHomeConversion:
+    currency: str
+    account_gain: Decimal
+    account_loss: Decimal
+    position_value: Decimal
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "currency", self.currency.upper())
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any]) -> "OandaHomeConversion":
+        return cls(
+            currency=str(payload["currency"]),
+            account_gain=Decimal(str(payload["accountGain"])),
+            account_loss=Decimal(str(payload["accountLoss"])),
+            position_value=Decimal(str(payload["positionValue"])),
+        )
+
+
+@dataclass(frozen=True)
+class OandaPricing:
+    prices: tuple[OandaPrice, ...]
+    home_conversions: dict[str, OandaHomeConversion]
 
 
 @dataclass(frozen=True)

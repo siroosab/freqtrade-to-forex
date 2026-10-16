@@ -11,8 +11,8 @@ import pandas as pd
 
 from freqtrade.forex.conditions import normalize_approved_ema_trend_condition
 from freqtrade.forex.config import OandaSettings
-from freqtrade.forex.models import OandaInstrument, OandaPrice
-from freqtrade.forex.oanda import OandaClient
+from freqtrade.forex.models import OandaHomeConversion, OandaInstrument, OandaPrice
+from freqtrade.forex.oanda import OandaAPIError, OandaClient
 from freqtrade.forex.risk import units_for_fixed_risk
 from freqtrade.forex.strategy_execution import (
     FreqtradeStrategyAdapter,
@@ -87,8 +87,11 @@ class OandaAutoStrategyExecutor:
         self.risk_configs = risk_configs
         self.last_processed = last_processed if last_processed is not None else {}
         self.checkpoint = checkpoint
+        self._conversion_cache: dict[str, OandaHomeConversion] = {}
+        self._available_instruments: list[OandaInstrument] | None = None
 
     async def run_cycle(self) -> list[dict[str, object]]:
+        self._conversion_cache.clear()
         instruments = tuple(self.settings.instruments)
         if not instruments:
             raise AutoExecutionError("Setup must contain at least one instrument")
@@ -378,9 +381,10 @@ class OandaAutoStrategyExecutor:
             is_stop=False,
         )
         risk_fraction = _configured_risk_fraction(self.settings.risk_fraction)
-        conversion = await self._quote_to_account_rate(
+        conversion = await self._quote_to_account_conversion(
             metadata.quote_currency,
             account.currency,
+            preferred_instrument=metadata.name,
         )
         risk_units = units_for_fixed_risk(
             account_equity=account.nav,
@@ -388,11 +392,15 @@ class OandaAutoStrategyExecutor:
             entry_price=entry_price,
             stop_price=stop_price,
             instrument=metadata,
-            quote_to_account_rate=conversion,
+            quote_to_account_rate=conversion.account_loss,
         )
         gbp_to_account_rate = None
         if str(risk.get("maxExposureMode", "margin_percent")) == "margin_gbp":
-            gbp_to_account_rate = await self._quote_to_account_rate("GBP", account.currency)
+            gbp_conversion = await self._quote_to_account_conversion(
+                "GBP",
+                account.currency,
+            )
+            gbp_to_account_rate = gbp_conversion.position_value
         units = min(
             risk_units,
             _depth_available_units(price, side, metadata.trade_units_precision),
@@ -400,7 +408,7 @@ class OandaAutoStrategyExecutor:
                 risk.get("maxExposure"),
                 str(risk.get("maxExposureMode", "margin_percent")),
                 entry_price,
-                conversion,
+                conversion.position_value,
                 metadata.trade_units_precision,
                 account.nav,
                 margin_available=account.margin_available,
@@ -523,26 +531,81 @@ class OandaAutoStrategyExecutor:
             }
         )
 
-    async def _quote_to_account_rate(
+    async def _quote_to_account_conversion(
         self,
         quote_currency: str | None,
         account_currency: str,
-    ) -> Decimal:
+        *,
+        preferred_instrument: str | None = None,
+    ) -> OandaHomeConversion:
         if not quote_currency:
             raise AutoExecutionError("OANDA instrument has no quote currency")
-        if quote_currency.upper() == account_currency.upper():
-            return Decimal(1)
-        direct = f"{quote_currency}_{account_currency}"
-        inverse = f"{account_currency}_{quote_currency}"
-        direct_quotes = await self.client.get_prices((direct,))
-        if direct_quotes:
-            return direct_quotes[0].bid
-        inverse_quotes = await self.client.get_prices((inverse,))
-        if inverse_quotes:
-            return Decimal(1) / inverse_quotes[0].ask
-        raise AutoExecutionError(
-            f"Cannot convert {quote_currency} to account currency {account_currency}"
+        currency = quote_currency.upper()
+        account_home = account_currency.upper()
+        cached = self._conversion_cache.get(currency)
+        if cached is not None:
+            return cached
+        if currency == account_home:
+            conversion = OandaHomeConversion(
+                currency=currency,
+                account_gain=Decimal(1),
+                account_loss=Decimal(1),
+                position_value=Decimal(1),
+            )
+            self._conversion_cache[currency] = conversion
+            return conversion
+
+        instrument_name = preferred_instrument
+        if instrument_name is None:
+            if self._available_instruments is None:
+                try:
+                    self._available_instruments = await self.client.get_instruments()
+                except OandaAPIError as exc:
+                    raise AutoExecutionError(
+                        f"Could not discover OANDA instruments for {currency} conversion: {exc}"
+                    ) from exc
+            candidate = next(
+                (
+                    item
+                    for item in self._available_instruments
+                    if item.base_currency == currency or item.quote_currency == currency
+                ),
+                None,
+            )
+            if candidate is None:
+                raise AutoExecutionError(
+                    f"OANDA account has no available instrument containing {currency}; "
+                    "cannot obtain its home-currency conversion"
+                )
+            instrument_name = candidate.name
+
+        try:
+            pricing = await self.client.get_pricing(
+                (instrument_name,),
+                include_home_conversions=True,
+            )
+        except OandaAPIError as exc:
+            raise AutoExecutionError(
+                f"OANDA home-currency conversion request failed for {currency} "
+                f"using {instrument_name}: {exc}"
+            ) from exc
+        conversion = pricing.home_conversions.get(currency)
+        if conversion is None:
+            raise AutoExecutionError(
+                f"OANDA returned no home-currency conversion for {currency} "
+                f"using {instrument_name}"
+            )
+        factors = (
+            conversion.account_gain,
+            conversion.account_loss,
+            conversion.position_value,
         )
+        if any(not factor.is_finite() or factor <= 0 for factor in factors):
+            raise AutoExecutionError(
+                f"OANDA returned invalid home-currency conversion factors for {currency}"
+            )
+        self._conversion_cache[currency] = conversion
+        return conversion
 
 
 def _candle_frame(candles: list[Any]) -> pd.DataFrame:

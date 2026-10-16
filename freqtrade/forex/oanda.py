@@ -1,11 +1,10 @@
 """Small async client for the OANDA REST-v20 API."""
 
 import asyncio
-from collections.abc import Sequence
-from collections.abc import AsyncIterator
+import json
+from collections.abc import AsyncIterator, Sequence
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
-import json
 from typing import Any
 
 import httpx
@@ -13,10 +12,12 @@ import httpx
 from freqtrade.forex.models import (
     OandaCandle,
     OandaEnvironment,
+    OandaHomeConversion,
     OandaInstrument,
-    OandaOrderResult,
     OandaOrderActionResult,
+    OandaOrderResult,
     OandaPrice,
+    OandaPricing,
 )
 from freqtrade.forex.order_validation import BrokerOrderValidator
 from freqtrade.forex.state import OandaAccountState, OandaPosition
@@ -303,12 +304,31 @@ class OandaClient:
         return sorted(collected, key=lambda candle: candle.time)[-count:]
 
     async def get_prices(self, instruments: Sequence[str]) -> list[OandaPrice]:
+        pricing = await self.get_pricing(instruments)
+        return list(pricing.prices)
+
+    async def get_pricing(
+        self,
+        instruments: Sequence[str],
+        *,
+        include_home_conversions: bool = False,
+    ) -> OandaPricing:
+        params = {"instruments": ",".join(instruments)}
+        if include_home_conversions:
+            params["includeHomeConversions"] = "true"
         payload = await self._request(
             "GET",
             f"/v3/accounts/{self.account_id}/pricing",
-            params={"instruments": ",".join(instruments)},
+            params=params,
         )
-        return [OandaPrice.from_payload(item) for item in payload["prices"]]
+        conversions = {
+            item["currency"].upper(): OandaHomeConversion.from_payload(item)
+            for item in payload.get("homeConversions", [])
+        }
+        return OandaPricing(
+            prices=tuple(OandaPrice.from_payload(item) for item in payload["prices"]),
+            home_conversions=conversions,
+        )
 
     async def ensure_tradeable(self, instrument: str) -> OandaPrice:
         prices = await self.get_prices((instrument,))
