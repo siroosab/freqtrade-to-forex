@@ -866,11 +866,13 @@ class ForexBacktester:
             entry, direction, instrument, stop_distance_pips, stop=True
         )
         trailing_stop = stop
-        trailing_rule = (
-            TrailingStop(stop_distance_pips * instrument.pip_size)
-            if self.trailing_stop_loss
-            else None
-        )
+        trailing_rule = None
+        if self.trailing_stop_loss:
+            trailing_distance = instrument.round_trailing_stop_distance(
+                stop_distance_pips * instrument.pip_size
+            )
+            trailing_rule = TrailingStop(trailing_distance)
+        trailing_active = False
         target = None
         if self.take_profit_pips is not None:
             target = self._protection_price(
@@ -907,16 +909,35 @@ class ForexBacktester:
             if trailing_rule is not None:
                 side = "long" if direction is Signal.LONG else "short"
                 favorable_price = high if direction is Signal.LONG else low
-                candidate_stop = trailing_rule.stop_price(
-                    side=side,
-                    current_price=favorable_price,
-                    previous_stop=trailing_stop,
+                current_spread = self._spread_for(timestamp)
+                spread_buffer = current_spread + instrument.pip_size
+                executable_favorable_price = (
+                    favorable_price - current_spread / Decimal(2)
+                    if direction is Signal.LONG
+                    else favorable_price + current_spread / Decimal(2)
                 )
-                trailing_stop = self._round_price(
-                    candidate_stop,
-                    instrument,
-                    rounding=ROUND_FLOOR if direction is Signal.LONG else ROUND_CEILING,
+                activation_price = (
+                    entry + trailing_rule.distance + spread_buffer
+                    if direction is Signal.LONG
+                    else entry - trailing_rule.distance - spread_buffer
                 )
+                reached_activation = (
+                    executable_favorable_price >= activation_price
+                    if direction is Signal.LONG
+                    else executable_favorable_price <= activation_price
+                )
+                if trailing_active or reached_activation:
+                    trailing_active = True
+                    candidate_stop = trailing_rule.stop_price(
+                        side=side,
+                        current_price=executable_favorable_price,
+                        previous_stop=trailing_stop,
+                    )
+                    trailing_stop = self._round_price(
+                        candidate_stop,
+                        instrument,
+                        rounding=ROUND_FLOOR if direction is Signal.LONG else ROUND_CEILING,
+                    )
             if minimal_roi:
                 roi_trigger = self._roi_trigger(
                     position,

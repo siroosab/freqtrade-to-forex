@@ -51,6 +51,7 @@ class FakeOandaClient:
         self.open_trades: list[dict] = []
         self.close_result: dict = {"orderFillTransaction": {"id": "close-1"}}
         self.closed_trade_ids: list[str] = []
+        self.order_modifications: list[tuple[str, dict]] = []
 
     async def get_account_summary(self) -> OandaAccountState:
         return OandaAccountState(
@@ -68,6 +69,10 @@ class FakeOandaClient:
     async def close_trade(self, trade_id: str) -> dict:
         self.closed_trade_ids.append(trade_id)
         return self.close_result
+
+    async def modify_trade_orders(self, trade_id: str, **kwargs) -> dict:
+        self.order_modifications.append((trade_id, kwargs))
+        return {"trailingStopLossOrderTransaction": {"id": "trailing-1"}}
 
     async def get_candles(self, instrument: str, granularity: str, *, count: int):
         del instrument, granularity, count
@@ -213,6 +218,52 @@ def _executor(
         ),
         setup,
         risk,
+    )
+
+
+@pytest.mark.asyncio
+async def test_modified_oanda_trailing_stop_uses_instrument_precision_and_minimum() -> None:
+    requests: list[httpx.Request] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "instruments": [
+                        {
+                            "name": "GBP_USD",
+                            "displayName": "GBP/USD",
+                            "pipLocation": -4,
+                            "displayPrecision": 5,
+                            "tradeUnitsPrecision": 0,
+                            "minimumTradeSize": "1",
+                            "minimumTrailingStopDistance": "0.000605",
+                            "maximumTrailingStopDistance": "0.01",
+                        }
+                    ]
+                },
+            )
+        return httpx.Response(
+            200,
+            json={"trailingStopLossOrderTransaction": {"id": "trailing-1"}},
+        )
+
+    async with httpx.AsyncClient(
+        base_url=OandaEnvironment.PRACTICE.rest_url,
+        transport=httpx.MockTransport(handler),
+    ) as http_client:
+        async with OandaClient("ignored", "account", http_client=http_client) as client:
+            await client.modify_trade_orders(
+                "trade-1",
+                trailing_stop_loss_distance="0.000602",
+                instrument="GBP_USD",
+            )
+
+    assert len(requests) == 2
+    assert requests[1].content.decode() == (
+        '{"stopLoss":null,"trailingStopLoss":{"distance":"0.00061"}}'
     )
 
 
@@ -621,12 +672,26 @@ async def test_trailing_stop_is_rounded_up_to_oanda_precision_and_minimum(
         "trailingStopLoss": True,
     }
     executor.risk_configs["EUR/USD"]["stopLoss"] = None
+    client.open_trades = [
+        {
+            "id": "auto-trailing",
+            "instrument": "EUR_USD",
+            "currentUnits": "1000",
+            "price": "1.0990",
+            "tradeClientExtensions": {"tag": "auto"},
+        }
+    ]
 
     result = await executor.run_cycle()
 
-    assert result[0]["status"] == "filled"
-    assert client.orders[0][1]["trailing_stop_loss_distance"] == "0.00061"
-    assert client.orders[0][1]["stop_loss_price"] is None
+    assert result[0]["status"] == "trailing_activated"
+    assert client.order_modifications == [
+        (
+            "auto-trailing",
+            {"trailing_stop_loss_distance": "0.00061", "instrument": "EUR_USD"},
+        )
+    ]
+    assert client.orders == []
 
 
 @pytest.mark.asyncio
@@ -857,12 +922,102 @@ async def test_approved_optimized_stop_distance_overrides_risk_config(
     executor.setup["pair_approved_revisions"]["EUR_USD"]["hyperopt"] = {
         "stopLoss": {"mode": "pips", "value": "5.0", "optimized": True},
     }
-    executor.risk_configs["EUR/USD"]["stopLoss"] = None
+    executor.risk_configs["EUR/USD"]["stopLossSource"] = "approved-hyperopt"
 
     results = await executor.run_cycle()
 
     assert results[0]["status"] == "filled"
     assert Decimal(client.orders[0][1]["stop_loss_price"]) == Decimal("1.0997")
+
+
+@pytest.mark.asyncio
+async def test_trailing_stop_stays_unmodified_until_profit_covers_distance_and_buffer(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _strategy_directory(tmp_path, monkeypatch)
+    client = FakeOandaClient(_candles("long"))
+    client.open_trades = [
+        {
+            "id": "auto-trailing",
+            "instrument": "EUR_USD",
+            "currentUnits": "1000",
+            "price": "1.0999",
+            "tradeClientExtensions": {"tag": "auto"},
+        }
+    ]
+    executor = _executor(client)
+    executor.setup["pair_approved_revisions"]["EUR_USD"]["hyperopt"] = {
+        "stopLoss": {"mode": "pips", "value": "5.0", "optimized": True},
+        "trailingStopLoss": True,
+    }
+
+    results = await executor.run_cycle()
+
+    assert results[0]["status"] == "blocked"
+    assert client.order_modifications == []
+    assert client.open_trades[0]["price"] == "1.0999"
+
+
+@pytest.mark.asyncio
+async def test_short_trailing_stop_activates_using_ask_after_profitable_move(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _strategy_directory(tmp_path, monkeypatch)
+    client = FakeOandaClient(_candles("short"))
+    client.open_trades = [
+        {
+            "id": "auto-short-trailing",
+            "instrument": "EUR_USD",
+            "currentUnits": "-1000",
+            "price": "1.1011",
+            "tradeClientExtensions": {"tag": "auto"},
+        }
+    ]
+    executor = _executor(client)
+    executor.setup["pair_approved_revisions"]["EUR_USD"]["hyperopt"] = {
+        "stopLoss": {"mode": "pips", "value": "5.0", "optimized": True},
+        "trailingStopLoss": True,
+    }
+
+    results = await executor.run_cycle()
+
+    assert results[0]["status"] == "trailing_activated"
+    assert client.order_modifications == [
+        (
+            "auto-short-trailing",
+            {"trailing_stop_loss_distance": "0.0005", "instrument": "EUR_USD"},
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_existing_trailing_stop_is_not_replaced_or_reset(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _strategy_directory(tmp_path, monkeypatch)
+    client = FakeOandaClient(_candles("long"))
+    client.open_trades = [
+        {
+            "id": "auto-trailing",
+            "instrument": "EUR_USD",
+            "currentUnits": "1000",
+            "price": "1.0990",
+            "trailingStopLossOrder": {"id": "existing-trailing"},
+            "tradeClientExtensions": {"tag": "auto"},
+        }
+    ]
+    executor = _executor(client)
+    executor.setup["pair_approved_revisions"]["EUR_USD"]["hyperopt"] = {
+        "stopLoss": {"mode": "pips", "value": "5.0", "optimized": True},
+        "trailingStopLoss": True,
+    }
+
+    await executor.run_cycle()
+
+    assert client.order_modifications == []
 
 
 @pytest.mark.asyncio
@@ -884,12 +1039,8 @@ async def test_approved_trailing_stop_flag_controls_oanda_order_protection(
     results = await executor.run_cycle()
 
     assert results[0]["status"] == "filled"
-    if trailing_enabled:
-        assert client.orders[0][1]["stop_loss_price"] is None
-        assert client.orders[0][1]["trailing_stop_loss_distance"] == "0.00050"
-    else:
-        assert Decimal(client.orders[0][1]["stop_loss_price"]) == Decimal("1.0997")
-        assert client.orders[0][1]["trailing_stop_loss_distance"] is None
+    assert Decimal(client.orders[0][1]["stop_loss_price"]) == Decimal("1.0997")
+    assert client.orders[0][1]["trailing_stop_loss_distance"] is None
 
 
 @pytest.mark.asyncio

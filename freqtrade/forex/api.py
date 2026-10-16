@@ -3286,6 +3286,8 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     protection_updates["trailing_stop_loss_distance"] = str(
                         trailing_stop_loss_distance
                     )
+                if trailing_stop_loss_distance is not None:
+                    protection_updates["instrument"] = str(trade.get("instrument", ""))
                 result = await client.modify_trade_orders(trade_id, **protection_updates)
             record_audit_event(
                 "positions.manual.modify",
@@ -3354,6 +3356,8 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     protection_updates["trailing_stop_loss_distance"] = str(
                         trailing_stop_loss_distance
                     )
+                if trailing_stop_loss_distance is not None:
+                    protection_updates["instrument"] = str(trade.get("instrument", ""))
                 result = await client.modify_trade_orders(trade_id, **protection_updates)
             record_audit_event(
                 "positions.risk_protection.update",

@@ -9,7 +9,7 @@ from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
 from copy import deepcopy
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import ROUND_UP, Decimal
 
 import pandas as pd
 from joblib import cpu_count
@@ -322,6 +322,9 @@ def _sample_stop_distance_pips(
     candles: pd.DataFrame,
     instrument: OandaInstrument,
     rng: random.Random,
+    *,
+    spread: Decimal = Decimal(0),
+    slippage: Decimal = Decimal(0),
 ) -> Decimal:
     required = {"high", "low", "close"}
     if not required.issubset(candles.columns) or candles.empty:
@@ -342,10 +345,20 @@ def _sample_stop_distance_pips(
     if pd.isna(median_range) or median_range <= 0:
         raise ValueError("automatic stop distance could not be derived from candle volatility")
     median_pips = Decimal(str(median_range)) / instrument.pip_size
-    lower = max(Decimal("0.1"), median_pips * Decimal("0.5"))
+    if (
+        not spread.is_finite()
+        or spread < 0
+        or not slippage.is_finite()
+        or slippage < 0
+    ):
+        raise ValueError("automatic stop-distance costs must be finite and non-negative")
+    market_cost_clearance = (
+        (spread + slippage * Decimal(2)) / instrument.pip_size + Decimal(1)
+    )
+    lower = max(Decimal(1), market_cost_clearance, median_pips * Decimal("0.5"))
     upper = max(lower, median_pips * Decimal(3))
     sampled = rng.uniform(float(lower), float(upper))
-    return Decimal(str(sampled)).quantize(Decimal("0.01"))
+    return Decimal(str(sampled)).quantize(Decimal("0.01"), rounding=ROUND_UP)
 
 
 def _generate_roi_table(parameters: dict[str, int | float]) -> dict[str, float]:
@@ -731,7 +744,13 @@ def run_strategy_hyperopt(
         if should_stop is not None and should_stop():
             break
         candidate_stop_pips = (
-            _sample_stop_distance_pips(train, instrument, rng)
+            _sample_stop_distance_pips(
+                train,
+                instrument,
+                rng,
+                spread=spread,
+                slippage=slippage,
+            )
             if optimize_stop_distance
             else stop_pips
         )

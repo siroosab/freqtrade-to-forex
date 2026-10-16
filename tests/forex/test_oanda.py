@@ -4640,6 +4640,7 @@ async def test_oanda_client_creates_and_modifies_limit_orders_and_trade_protecti
                 "trade-2",
                 take_profit_price="1.0600",
                 trailing_stop_loss_distance="0.0015",
+                instrument="EUR_USD",
             )
             with pytest.raises(ValueError, match="cannot be set simultaneously"):
                 await client.modify_trade_orders(
@@ -4653,7 +4654,15 @@ async def test_oanda_client_creates_and_modifies_limit_orders_and_trade_protecti
     assert modified.transaction_id == "order-modify-tx"
     assert protection["lastTransactionID"] == "trade-modify-tx"
     assert trailing_protection["lastTransactionID"] == "trade-modify-tx"
-    assert [request.method for request in requests] == ["GET", "POST", "GET", "PUT", "PUT", "PUT"]
+    assert [request.method for request in requests] == [
+        "GET",
+        "POST",
+        "GET",
+        "PUT",
+        "PUT",
+        "GET",
+        "PUT",
+    ]
     assert '"type":"LIMIT"' in requests[1].content.decode()
     assert '"units":"-900"' in requests[3].content.decode()
     assert requests[4].url.path.endswith("/trades/trade-1/orders")
@@ -4661,8 +4670,8 @@ async def test_oanda_client_creates_and_modifies_limit_orders_and_trade_protecti
         '{"stopLoss":{"timeInForce":"GTC","price":"1.0900"},'
         '"takeProfit":{"timeInForce":"GTC","price":"1.0600"}}'
     )
-    assert requests[5].url.path.endswith("/trades/trade-2/orders")
-    assert json.loads(requests[5].content) == {
+    assert requests[6].url.path.endswith("/trades/trade-2/orders")
+    assert json.loads(requests[6].content) == {
         "takeProfit": {"timeInForce": "GTC", "price": "1.0600"},
         "stopLoss": None,
         "trailingStopLoss": {"distance": "0.0015"},

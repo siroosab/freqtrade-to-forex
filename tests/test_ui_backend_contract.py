@@ -1913,7 +1913,11 @@ def test_modify_endpoint_updates_manual_trade_protection_only(monkeypatch):
 
         async def get_open_trades(self):
             return [
-                {"id": "manual-1", "tradeClientExtensions": {"id": "manual-ui-1"}},
+                {
+                    "id": "manual-1",
+                    "instrument": "EUR_USD",
+                    "tradeClientExtensions": {"id": "manual-ui-1"},
+                },
                 {"id": "strategy-1", "clientExtensions": {"id": "strategy-entry-1"}},
             ]
 
@@ -1924,6 +1928,7 @@ def test_modify_endpoint_updates_manual_trade_protection_only(monkeypatch):
             stop_loss_price=None,
             take_profit_price=None,
             trailing_stop_loss_distance=None,
+            instrument=None,
         ):
             modified.append(
                 (
@@ -1931,6 +1936,7 @@ def test_modify_endpoint_updates_manual_trade_protection_only(monkeypatch):
                     stop_loss_price,
                     take_profit_price,
                     trailing_stop_loss_distance,
+                    instrument,
                 )
             )
             return {"lastTransactionID": "modify-tx"}
@@ -1990,8 +1996,8 @@ def test_modify_endpoint_updates_manual_trade_protection_only(monkeypatch):
     assert unauthorized.status_code == 401
     assert strategy.status_code == 403
     assert modified == [
-        ("manual-1", "1.0900", "1.1100", None),
-        ("manual-1", None, "1.1100", "0.0015"),
+        ("manual-1", "1.0900", "1.1100", None, None),
+        ("manual-1", None, "1.1100", "0.0015", "EUR_USD"),
     ]
     live_settings = type(
         "Settings",

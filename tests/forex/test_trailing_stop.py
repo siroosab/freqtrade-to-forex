@@ -8,6 +8,7 @@ import pytest
 from freqtrade.forex.backtest import ForexBacktester
 from freqtrade.forex.models import OandaEnvironment, OandaInstrument, OandaOrderResult
 from freqtrade.forex.oanda import OandaClient
+from freqtrade.forex.strategy_hyperopt import _sample_stop_distance_pips
 from freqtrade.forex.strategy_loop import EmaCrossStrategy, Signal
 
 
@@ -65,6 +66,47 @@ def test_backtest_trailing_stop_ratchets_and_closes_at_the_following_candle() ->
     assert fixed is None
 
 
+def test_trailing_stop_does_not_activate_before_profitable_threshold() -> None:
+    instrument = OandaInstrument(
+        name="EUR_USD",
+        display_name="EUR/USD",
+        pip_location=-4,
+        display_precision=5,
+        trade_units_precision=0,
+        minimum_trade_size=Decimal(1),
+        minimum_trailing_stop_distance=Decimal("0.0005"),
+    )
+    dates = pd.date_range("2026-01-01", periods=2, freq="5min", tz="UTC")
+    candles = pd.DataFrame(
+        {
+            "date": dates,
+            "open": [1.1002, 1.1003],
+            "high": [1.1005, 1.1005],
+            "low": [1.1001, 1.1002],
+            "close": [1.1003, 1.1003],
+            "volume": [0, 0],
+        }
+    )
+    result = ForexBacktester(
+        EmaCrossStrategy(),
+        instrument,
+        starting_balance=Decimal(10000),
+        risk_fraction=Decimal("0.01"),
+        stop_pips=Decimal(1),
+        spread=Decimal(0),
+        trailing_stop_loss=True,
+    )._intrabar_trigger(
+        (Signal.LONG, 1000, Decimal("1.1000"), dates[0], dates[0]),
+        candles,
+        pd.DatetimeIndex(dates),
+        start=dates[0],
+        end=dates[-1] + pd.Timedelta(minutes=5),
+        instrument=instrument,
+    )
+
+    assert result is None
+
+
 def test_trailing_distance_and_units_use_instrument_precision() -> None:
     instrument = OandaInstrument(
         name="USD_JPY",
@@ -80,6 +122,42 @@ def test_trailing_distance_and_units_use_instrument_precision() -> None:
     assert instrument.format_units(303552) == "303552"
     with pytest.raises(ValueError, match="exceed 0 decimal places"):
         instrument.format_units(Decimal("303552.5"))
+
+
+def test_automatic_hyperopt_stop_distance_clears_spread_and_slippage() -> None:
+    instrument = OandaInstrument(
+        name="EUR_USD",
+        display_name="EUR/USD",
+        pip_location=-4,
+        display_precision=5,
+        trade_units_precision=0,
+        minimum_trade_size=Decimal(1),
+    )
+    dates = pd.date_range("2026-01-01", periods=3, freq="5min", tz="UTC")
+    candles = pd.DataFrame(
+        {
+            "date": dates,
+            "high": [1.1001, 1.1001, 1.1001],
+            "low": [1.1000, 1.1000, 1.1000],
+            "close": [1.10005, 1.10005, 1.10005],
+        }
+    )
+
+    class LowestBoundRandom:
+        @staticmethod
+        def uniform(low: float, high: float) -> float:
+            assert high >= low
+            return low
+
+    distance = _sample_stop_distance_pips(
+        candles,
+        instrument,
+        LowestBoundRandom(),
+        spread=Decimal("0.0002"),
+        slippage=Decimal("0.0001"),
+    )
+
+    assert distance == Decimal("5.00")
 
     result = OandaOrderResult.from_payload(
         {

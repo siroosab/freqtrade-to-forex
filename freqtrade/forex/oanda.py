@@ -442,6 +442,7 @@ class OandaClient:
         stop_loss_price: str | None = None,
         take_profit_price: str | None = None,
         trailing_stop_loss_distance: str | None = None,
+        instrument: str | None = None,
     ) -> dict[str, Any]:
         if not trade_id:
             raise ValueError("trade_id is required")
@@ -449,6 +450,7 @@ class OandaClient:
             raise ValueError(
                 "A fixed stop loss and a trailing stop loss cannot be set simultaneously"
             )
+        formatted_trailing_distance: str | None = None
         if trailing_stop_loss_distance is not None:
             try:
                 distance = Decimal(trailing_stop_loss_distance)
@@ -460,14 +462,24 @@ class OandaClient:
                 raise ValueError(
                     "trailing_stop_loss_distance must be a positive number"
                 )
+            if not instrument:
+                raise ValueError("instrument is required to set a trailing stop loss")
+            metadata_values = await self.get_instruments((instrument,))
+            if not metadata_values:
+                raise OandaAPIError(f"OANDA instrument metadata is unavailable for {instrument}")
+            formatted_trailing_distance = metadata_values[0].format_trailing_stop_distance(
+                distance
+            )
         orders: dict[str, Any] = {}
         if stop_loss_price is not None:
             orders["stopLoss"] = {"timeInForce": "GTC", "price": stop_loss_price}
         if take_profit_price is not None:
             orders["takeProfit"] = {"timeInForce": "GTC", "price": take_profit_price}
         if trailing_stop_loss_distance is not None:
+            if formatted_trailing_distance is None:
+                raise ValueError("trailing stop distance could not be formatted")
             orders["stopLoss"] = None
-            orders["trailingStopLoss"] = {"distance": str(distance)}
+            orders["trailingStopLoss"] = {"distance": formatted_trailing_distance}
         if not orders:
             raise ValueError("at least one protective order is required")
         return await self._request(

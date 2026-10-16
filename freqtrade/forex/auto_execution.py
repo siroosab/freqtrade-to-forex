@@ -45,10 +45,13 @@ def _risk_with_approved_stop_loss(
             try:
                 value = Decimal(str(approved_stop_loss.get("value", "")))
             except (InvalidOperation, TypeError, ValueError) as exc:
-                raise AutoExecutionError("Approved trailing-stop distance is invalid") from exc
+                raise AutoExecutionError("Approved Hyperopt stop loss is invalid") from exc
             if not value.is_finite() or value <= 0:
-                raise AutoExecutionError("Approved trailing-stop distance must be positive")
+                raise AutoExecutionError("Approved Hyperopt stop loss must be positive")
             return {**risk, "stopLoss": str(value), "stopLossMode": str(mode)}
+        raise AutoExecutionError(
+            "Approved Hyperopt stop loss must use a positive pips or percent value"
+        )
     try:
         stop_pips = approved_stop_distance_pips(approved_stop_loss)
     except ValueError as exc:
@@ -220,30 +223,23 @@ class OandaAutoStrategyExecutor:
         signal = adapter.signal(candles)
         last_candle = candles.iloc[-1]
         candle_time = pd.Timestamp(last_candle["date"]).isoformat()
-        if self.last_processed.get(instrument) == candle_time:
-            return {
-                "pair": pair,
-                "timeframe": timeframe,
-                "signal": signal.value,
-                "candleTime": candle_time,
-                "status": "already_processed",
-            }
-
         risk = self.risk_configs.get(pair, {})
         panel_stop_loss = risk.get("stopLoss")
         trailing_stop_loss = (
             parameters.get("trailingStopLoss") is True
-            and (
-                risk.get("stopLossSource") == "approved-hyperopt"
-                or panel_stop_loss is None
-                or not str(panel_stop_loss).strip()
-            )
         )
-        if panel_stop_loss is None or not str(panel_stop_loss).strip():
+        if (
+            panel_stop_loss is None
+            or not str(panel_stop_loss).strip()
+            or (
+                risk.get("stopLossOverride") is not True
+                and risk.get("stopLossSource") in {"approved-hyperopt", "default-policy"}
+            )
+        ):
             risk = _risk_with_approved_stop_loss(
                 risk,
                 parameters.get("stopLoss"),
-                use_approved_setting=trailing_stop_loss,
+                use_approved_setting=True,
             )
         price_values = await self.client.get_prices((instrument,))
         if not price_values:
@@ -255,21 +251,43 @@ class OandaAutoStrategyExecutor:
         automated_trades = [trade for trade in strategy_trades if _is_automated_trade(trade)]
         take_profit_configured = bool(str(risk.get("takeProfit") or "").strip())
 
-        close_result = await self._close_on_strategy_exit(
-            pair,
-            timeframe,
-            candle_time,
-            candles,
-            adapter,
-            signal,
-            price,
-            automated_trades,
-            open_trades,
-            ignore_strategy_exits=take_profit_configured,
-            instrument=instrument,
-        )
+        close_result = None
+        if self.last_processed.get(instrument) != candle_time:
+            close_result = await self._close_on_strategy_exit(
+                pair,
+                timeframe,
+                candle_time,
+                candles,
+                adapter,
+                signal,
+                price,
+                automated_trades,
+                open_trades,
+                ignore_strategy_exits=take_profit_configured,
+                instrument=instrument,
+            )
         if close_result:
             return close_result
+
+        trailing_result = await self._activate_profit_trailing_stop(
+            pair,
+            timeframe,
+            instrument,
+            candle_time,
+            [trade for trade in automated_trades if trade in open_trades],
+            price,
+            parameters,
+        )
+        if trailing_result is not None:
+            return trailing_result
+        if self.last_processed.get(instrument) == candle_time:
+            return {
+                "pair": pair,
+                "timeframe": timeframe,
+                "signal": signal.value,
+                "candleTime": candle_time,
+                "status": "already_processed",
+            }
 
         if signal not in {Signal.LONG, Signal.SHORT}:
             self._mark_processed(instrument, candle_time)
@@ -328,7 +346,7 @@ class OandaAutoStrategyExecutor:
     ) -> dict[str, object]:
         approved_stop_loss = parameters.get("stopLoss")
         try:
-            stop_price, take_profit, units, trailing_distance = await self._protected_order_size(
+            stop_price, take_profit, units, _ = await self._protected_order_size(
                 pair,
                 side,
                 risk,
@@ -352,12 +370,8 @@ class OandaAutoStrategyExecutor:
             result = await self.client.create_market_order(
                 instrument,
                 signed_units,
-                stop_loss_price=None if trailing_stop_loss else str(stop_price),
-                trailing_stop_loss_distance=(
-                    str(trailing_distance)
-                    if trailing_stop_loss and trailing_distance is not None
-                    else None
-                ),
+                stop_loss_price=str(stop_price),
+                trailing_stop_loss_distance=None,
                 take_profit_price=str(take_profit) if take_profit is not None else None,
                 client_order_id=client_order_id,
                 trade_client_extensions={
@@ -398,6 +412,86 @@ class OandaAutoStrategyExecutor:
             "units": _reported_units(result.units),
             "clientOrderId": client_order_id,
         }
+
+    async def _activate_profit_trailing_stop(
+        self,
+        pair: str,
+        timeframe: str,
+        instrument: str,
+        candle_time: str,
+        automated_trades: list[dict[str, Any]],
+        price: OandaPrice,
+        parameters: dict[str, Any],
+    ) -> dict[str, object] | None:
+        if not automated_trades or parameters.get("trailingStopLoss") is not True:
+            return None
+        trailing = parameters.get("stopLoss")
+        if not isinstance(trailing, dict) or trailing.get("mode") != "pips":
+            raise AutoExecutionError(
+                f"Approved trailing stop for {pair} must use the Hyperopt pips distance"
+            )
+        try:
+            trailing_pips = Decimal(str(trailing.get("value", "")))
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise AutoExecutionError(
+                f"Approved trailing-stop settings for {pair} are invalid"
+            ) from exc
+        if not trailing_pips.is_finite() or trailing_pips <= 0:
+            raise AutoExecutionError(f"Approved trailing-stop distance for {pair} must be positive")
+
+        metadata_values = await self.client.get_instruments((instrument,))
+        if not metadata_values:
+            raise AutoExecutionError(f"OANDA instrument metadata is unavailable for {pair}")
+        metadata = metadata_values[0]
+        distance = _oanda_trailing_distance(trailing_pips, metadata)
+        for trade in automated_trades:
+            if trade.get("trailingStopLossOrder"):
+                continue
+            try:
+                entry = Decimal(str(trade.get("price", "")))
+            except (InvalidOperation, TypeError, ValueError) as exc:
+                raise AutoExecutionError(
+                    f"OANDA returned an invalid entry price for {pair}"
+                ) from exc
+            if not entry.is_finite() or entry <= 0:
+                raise AutoExecutionError(f"OANDA returned an invalid entry price for {pair}")
+            side = _trade_side(trade)
+            executable_price = price.bid if side == "long" else price.ask
+            activation_buffer = price.spread + metadata.pip_size
+            activation_distance = distance + activation_buffer
+            is_in_profit = (
+                executable_price >= entry + activation_distance
+                if side == "long"
+                else executable_price <= entry - activation_distance
+            )
+            if not is_in_profit:
+                continue
+            try:
+                await self.client.modify_trade_orders(
+                    str(trade.get("id", "")),
+                    trailing_stop_loss_distance=metadata.format_trailing_stop_distance(distance),
+                    instrument=instrument,
+                )
+            except (OandaAPIError, OSError, InvalidOperation, ValueError) as exc:
+                return {
+                    "pair": pair,
+                    "timeframe": timeframe,
+                    "signal": "—",
+                    "candleTime": candle_time,
+                    "status": "trailing_update_failed",
+                    "reason": str(exc),
+                }
+            return {
+                "pair": pair,
+                "timeframe": timeframe,
+                "signal": "—",
+                "candleTime": candle_time,
+                "status": "trailing_activated",
+                "tradeId": trade.get("id"),
+                "trailingStopLossDistance": metadata.format_trailing_stop_distance(distance),
+                "activationBuffer": str(activation_buffer),
+            }
+        return None
 
     def _mark_processed(self, instrument: str, candle_time: str) -> None:
         self.last_processed[instrument] = candle_time
@@ -539,35 +633,6 @@ class OandaAutoStrategyExecutor:
             if mode != "pips":
                 raise AutoExecutionError("OANDA trailing stops must be configured in pips")
             trailing_distance = _oanda_trailing_distance(value, metadata)
-            stop_price = (
-                entry_price - trailing_distance
-                if side == "long"
-                else entry_price + trailing_distance
-            )
-            risk_units = units_for_fixed_risk(
-                account_equity=account.nav,
-                risk_fraction=risk_fraction,
-                entry_price=entry_price,
-                stop_price=stop_price,
-                instrument=metadata,
-                quote_to_account_rate=conversion.account_loss,
-            )
-            units = min(
-                units,
-                risk_units,
-                _max_exposure_units(
-                    risk.get("maxExposure"),
-                    str(risk.get("maxExposureMode", "margin_percent")),
-                    entry_price,
-                    conversion.position_value,
-                    metadata.trade_units_precision,
-                    account.nav,
-                    margin_available=account.margin_available,
-                    margin_rate=metadata.margin_rate,
-                    gbp_to_account_rate=gbp_to_account_rate,
-                ),
-            )
-            units = int(units)
         if units < int(metadata.minimum_trade_size):
             raise AutoExecutionError(
                 f"{pair} risk size or available market depth is below OANDA's minimum trade size"
@@ -615,10 +680,10 @@ class OandaAutoStrategyExecutor:
         if not should_exit and not opposite and not roi_exit:
             return None
 
-        self._mark_processed(instrument, candle_time)
         closed = await self._close_automated_trades(automated_trades)
         open_trades[:] = [trade for trade in open_trades if trade not in automated_trades]
         if not _filled_close(closed):
+            self._mark_processed(instrument, candle_time)
             return {
                 "pair": pair,
                 "timeframe": timeframe,
@@ -630,6 +695,9 @@ class OandaAutoStrategyExecutor:
         same_direction_signal = (signal is Signal.LONG and automated_side == "long") or (
             signal is Signal.SHORT and automated_side == "short"
         )
+        if signal in {Signal.LONG, Signal.SHORT} and not same_direction_signal:
+            return None
+        self._mark_processed(instrument, candle_time)
         if signal not in {Signal.LONG, Signal.SHORT} or same_direction_signal:
             return {
                 "pair": pair,
