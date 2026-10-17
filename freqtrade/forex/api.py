@@ -44,6 +44,7 @@ from freqtrade.forex.config import (
 from freqtrade.forex.health import OandaHealthCheck
 from freqtrade.forex.historical import HistoricalCandleStore
 from freqtrade.forex.ledger import PaperLedger
+from freqtrade.forex.market_hours import market_schedule
 from freqtrade.forex.models import OandaEnvironment, OandaInstrument
 from freqtrade.forex.oanda import (
     ORDER_REJECTION_TRANSACTION_TYPES,
@@ -1850,6 +1851,58 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     "detail": "Client order ID confirmed and idempotency check passed.",
                 },
             ],
+        }
+
+    @app.get("/api/v1/markets/status")
+    async def market_status() -> dict:
+        schedule = market_schedule()
+        broker_tradeable: bool | None = None
+        try:
+            settings = OandaSettings.from_environment()
+            if settings.instruments:
+                async with OandaClient(
+                    settings.token,
+                    settings.account_id,
+                    environment=settings.environment,
+                ) as client:
+                    prices = await client.get_prices((settings.instruments[0],))
+                if prices:
+                    broker_tradeable = any(price.tradeable for price in prices)
+                else:
+                    logger.warning("OANDA returned no prices for market status")
+            else:
+                logger.warning("No OANDA instruments are configured for market status")
+        except (OandaAPIError, ValueError) as exc:
+            logger.warning("Could not read OANDA market status: %s", exc)
+
+        scheduled_open = bool(schedule["scheduledOpen"])
+        broker_closed = scheduled_open and broker_tradeable is False
+        is_open = scheduled_open and broker_tradeable is True
+        closure_reason = (
+            "broker_closed" if broker_closed else "weekend" if not scheduled_open else None
+        )
+        state = (
+            "broker_closed"
+            if broker_closed
+            else "open"
+            if is_open
+            else "closed_weekly"
+            if not scheduled_open
+            else "unknown"
+        )
+        return {
+            "state": state,
+            "isOpen": is_open,
+            "scheduledOpen": scheduled_open,
+            "brokerTradeable": broker_tradeable,
+            "brokerStatusKnown": broker_tradeable is not None,
+            "closureReason": closure_reason,
+            "updatedAt": datetime.now(UTC).isoformat(),
+            "nextTransition": None if broker_closed else schedule["nextTransition"],
+            "nextTransitionAt": None if broker_closed else schedule["nextTransitionAt"],
+            "timezone": schedule["timezone"],
+            "schedule": schedule["schedule"],
+            "source": "OANDA pricing and New York FX weekly session",
         }
 
     @app.get("/api/v1/markets/quote")

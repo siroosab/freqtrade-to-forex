@@ -122,6 +122,69 @@ def test_market_summary_endpoint_exists():
     assert "strategySignals" in payload
 
 
+@pytest.mark.parametrize(
+    ("tradeable", "expected_state", "expected_transition_at"),
+    [
+        (True, "open", "2026-10-17T21:00:00+00:00"),
+        (False, "broker_closed", None),
+    ],
+)
+def test_market_status_uses_oanda_tradeability_for_market_state(
+    monkeypatch, tradeable, expected_state, expected_transition_at
+):
+    class FakePrice:
+        def __init__(self):
+            self.tradeable = tradeable
+
+    class FakeClient:
+        def __init__(self, token, account_id, environment):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+        async def get_prices(self, instruments):
+            assert instruments == ("EUR_USD",)
+            return [FakePrice()]
+
+    environment = type("Env", (), {"value": "practice"})()
+    settings = type(
+        "Settings",
+        (),
+        {
+            "token": "token",
+            "account_id": "account",
+            "environment": environment,
+            "instruments": ("EUR_USD",),
+        },
+    )()
+    monkeypatch.setattr("freqtrade.forex.api.OandaClient", FakeClient)
+    monkeypatch.setattr("freqtrade.forex.api.OandaSettings.from_environment", lambda: settings)
+    monkeypatch.setattr(
+        "freqtrade.forex.api.market_schedule",
+        lambda: {
+            "scheduledOpen": True,
+            "nextTransition": "close",
+            "nextTransitionAt": "2026-10-17T21:00:00+00:00",
+            "timezone": "America/New_York",
+            "schedule": "Sunday 17:00 - Friday 17:00 New York time",
+        },
+    )
+
+    response = client.get("/api/v1/markets/status")
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["state"] == expected_state
+    assert payload["isOpen"] is tradeable
+    assert payload["brokerStatusKnown"] is True
+    assert payload["closureReason"] == ("broker_closed" if not tradeable else None)
+    assert payload["nextTransitionAt"] == expected_transition_at
+
+
 def test_oanda_instrument_reads_broker_type():
     instrument = OandaInstrument.from_payload(
         {

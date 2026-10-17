@@ -29,6 +29,20 @@ export type ServerExecutionStatus = {
   executionMode: 'backtest' | 'hyperopt' | 'dry_run' | 'practice' | 'live'
   executionModeSource: 'environment' | 'config' | 'default'
 }
+export type MarketStatus = {
+  state: 'open' | 'closed_weekly' | 'broker_closed' | 'unknown'
+  isOpen: boolean | null
+  scheduledOpen: boolean
+  brokerTradeable: boolean | null
+  brokerStatusKnown: boolean
+  closureReason: 'broker_closed' | 'weekend' | null
+  updatedAt: string
+  nextTransition: 'open' | 'close' | null
+  nextTransitionAt: string | null
+  timezone: string
+  schedule: string
+  source: string
+}
 
 const browserOrigin = typeof window !== 'undefined' ? window.location.origin : 'http://127.0.0.1:8090'
 const browserWebSocketOrigin = typeof window !== 'undefined'
@@ -750,6 +764,16 @@ export async function getServerExecutionStatus(): Promise<ServerExecutionStatus>
 
 export async function getMarketSummary(): Promise<MarketSummary> {
   return safeFetchWithFallback<MarketSummary>('/api/v1/markets/summary', 'market')
+}
+
+export async function getMarketStatus(): Promise<MarketStatus> {
+  const response = await fetch(buildApiUrl('/api/v1/markets/status'))
+  if (!response.ok) {
+    let detail = `HTTP ${response.status}`
+    try { detail = ((await response.json()) as { detail?: string }).detail ?? detail } catch { /* status is enough */ }
+    throw new Error(`Market status unavailable: ${detail}`)
+  }
+  return response.json() as Promise<MarketStatus>
 }
 
 export async function getMarketQuote(pair: string): Promise<LiveQuote> {

@@ -3,10 +3,23 @@ import { useEffect, useMemo, useState } from 'react'
 import { ForexChart } from '../components/ForexChart'
 import { ChartDataControls } from '../components/ChartDataControls'
 import { chartCandleCount, chartTimeframeFromStrategy } from '../components/chartOptions'
-import { closeManualPosition, createManualClientOrderId, getAccountSummary, getAutoExecutionStatus, getBrokerPendingOrders, getBrokerPositions, getMarketQuote, getMarketSummary, getOrdersChart, getRiskSummary, getSetupStatus, modifyManualPosition, modifyPendingOrder, setAutoExecution, submitLimitOrder, submitMarketOrder, type BrokerPendingOrder, type BrokerTrade } from '../api/mockApi'
+import { closeManualPosition, createManualClientOrderId, getAccountSummary, getAutoExecutionStatus, getBrokerPendingOrders, getBrokerPositions, getMarketQuote, getMarketStatus, getMarketSummary, getOrdersChart, getRiskSummary, getSetupStatus, modifyManualPosition, modifyPendingOrder, setAutoExecution, submitLimitOrder, submitMarketOrder, type BrokerPendingOrder, type BrokerTrade } from '../api/mockApi'
 import { convertTrailingStopPipsToDistance, validateTrailingStopInput } from '../utils/trailingStopLoss'
 import { useForexSocket } from '../hooks/useForexSocket'
 import { useUiStore } from '../store/useUiStore'
+
+function formatMarketCountdown(transitionAt: string | null | undefined, now: number): string | null {
+  if (!transitionAt) return null
+  const remaining = Date.parse(transitionAt) - now
+  if (!Number.isFinite(remaining) || remaining < 0) return null
+  const totalMinutes = Math.ceil(remaining / 60_000)
+  const days = Math.floor(totalMinutes / 1440)
+  const hours = Math.floor((totalMinutes % 1440) / 60)
+  const minutes = totalMinutes % 60
+  if (days > 0) return `${days}d ${hours}h`
+  if (hours > 0) return `${hours}h ${minutes}m`
+  return `${minutes}m`
+}
 
 export function DashboardPage() {
   useForexSocket()
@@ -40,6 +53,7 @@ export function DashboardPage() {
 
   const accountQuery = useQuery({ queryKey: ['account'], queryFn: getAccountSummary })
   const marketQuery = useQuery({ queryKey: ['market'], queryFn: getMarketSummary })
+  const marketStatusQuery = useQuery({ queryKey: ['market-status'], queryFn: getMarketStatus, refetchInterval: 30000, retry: 1 })
   const quoteQuery = useQuery({ queryKey: ['market-quote', instrument], queryFn: () => getMarketQuote(instrument), refetchInterval: 2500, retry: false })
   const modifyPositionQuoteQuery = useQuery({
     queryKey: ['manual-modify-quote', modifyPositionTarget?.symbol],
@@ -97,6 +111,7 @@ export function DashboardPage() {
 
   const account = liveAccount ?? accountQuery.data
   const market = liveMarket ?? marketQuery.data
+  const marketStatus = marketStatusQuery.data
   const riskSummary = riskQuery.data
   const brokerQuote = quoteQuery.data
   const displayQuote = brokerQuote ?? market?.instruments.find((item) => item.pair === instrument)
@@ -341,6 +356,14 @@ export function DashboardPage() {
 
   const visiblePositions = positionsQuery.data?.[positionView] ?? []
   const isLiveFeedConnected = connectionState === 'online' && Boolean(liveMarket || liveAccount)
+  const marketClock = marketStatusQuery.dataUpdatedAt
+  const marketCountdown = formatMarketCountdown(marketStatus?.nextTransitionAt, marketClock)
+  const marketTransitionMs = marketStatus?.nextTransitionAt ? Date.parse(marketStatus.nextTransitionAt) - marketClock : null
+  const isClosingSoon = marketStatus?.state === 'open'
+    && marketStatus.nextTransition === 'close'
+    && marketTransitionMs !== null
+    && marketTransitionMs >= 0
+    && marketTransitionMs <= 60 * 60 * 1000
 
   return (
     <>
@@ -353,6 +376,35 @@ export function DashboardPage() {
         <div className="topbar-actions">
           <div className={`status-pill ${connectionState === 'offline' ? 'offline' : isLiveFeedConnected ? 'online' : 'neutral'}`}>
             {connectionState === 'offline' ? '⚠️ Feed offline' : isLiveFeedConnected ? '🟢 Broker feed live' : '🔄 Connecting to broker'}
+          </div>
+          <div
+            className={`status-pill market-status-pill ${
+              marketStatus?.state === 'open'
+                ? isClosingSoon ? 'market-closing' : 'market-open'
+                : marketStatus?.state === 'closed_weekly'
+                  ? 'market-closed'
+                  : marketStatus?.state === 'broker_closed'
+                    ? 'market-holiday'
+                    : 'neutral'
+            }`}
+            title={marketStatusQuery.isError
+              ? marketStatusQuery.error instanceof Error ? marketStatusQuery.error.message : 'Market status unavailable'
+              : `${marketStatus?.schedule ?? 'FX market session'} · ${marketStatus?.timezone ?? 'New York time'} · ${marketStatus?.source ?? ''}`}
+            aria-live="polite"
+          >
+            {marketStatusQuery.isError
+              ? '⚠️ Market status unavailable'
+              : marketStatus?.state === 'open'
+                ? isClosingSoon
+                  ? `⚠️ FX closing soon · ${marketCountdown ?? 'under 1m'}`
+                  : `🟢 FX market open · closes in ${marketCountdown ?? '—'}`
+                : marketStatus?.state === 'closed_weekly'
+                  ? `🌙 FX market closed · opens in ${marketCountdown ?? '—'}`
+                  : marketStatus?.state === 'broker_closed'
+                    ? '🏖️ Broker closed · holiday or halt possible'
+                    : marketStatus?.scheduledOpen
+                      ? `🟡 Broker status unknown · scheduled close in ${marketCountdown ?? '—'}`
+                      : `🌙 FX market closed · opens in ${marketCountdown ?? '—'}`}
           </div>
         </div>
       </header>
