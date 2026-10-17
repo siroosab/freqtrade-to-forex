@@ -70,6 +70,7 @@ export function DashboardPage() {
   })
   const liveAccount = useUiStore((state) => state.accountFeed)
   const liveMarket = useUiStore((state) => state.marketFeed)
+  const connectionState = useUiStore((state) => state.connectionState)
   const userRole = useUiStore((state) => state.userRole)
   const setOrdersFeed = useUiStore((state) => state.setOrdersFeed)
   const autoExecutionMutation = useMutation({
@@ -297,69 +298,49 @@ export function DashboardPage() {
     }
   }
 
-  const metrics = [
-    { label: 'Account Equity', value: account?.equity ?? '$0.00', delta: '+1.84%', tone: 'positive' },
-    { label: 'Open Exposure', value: account?.exposure ?? '$0.00', delta: '-0.42%', tone: 'negative' },
-    { label: 'Net P/L', value: account?.netPnl ?? '$0.00', delta: '+3.12%', tone: 'positive' },
-    { label: 'Margin Used', value: account?.marginUsed ?? '0%', delta: 'Healthy', tone: 'neutral' },
-  ]
-
   const parseAmountValue = (value: string | undefined) => {
     if (!value) return 0
-    const cleaned = value.replace(/[$,%\s]/g, '').replace(/k/gi, '000').replace(/m/gi, '000000')
+    const cleaned = value.replace(/,/g, '').replace(/[$,%\s]/g, '')
     const parsed = Number.parseFloat(cleaned)
-    return Number.isFinite(parsed) ? parsed : 0
+    if (!Number.isFinite(parsed)) return 0
+    if (/m/i.test(cleaned)) return parsed * 1_000_000
+    if (/k/i.test(cleaned)) return parsed * 1_000
+    return parsed
   }
 
-  const statCards = [
-    { label: 'Net P/L', value: account?.netPnl ?? '$0.00', delta: '+3.12%', tone: 'emerald' },
-    { label: 'Margin level', value: riskSummary?.marginLevel ?? account?.marginUsed ?? '0%', delta: account?.marginUsed ?? '0%', tone: 'cyan' },
-    { label: 'Daily risk', value: riskSummary?.dailyLoss ?? account?.dailyRisk ?? '0%', delta: 'Policy', tone: 'violet' },
-    { label: 'Drawdown', value: account?.drawdown ?? '0%', delta: 'Max DD', tone: 'amber' },
-  ]
-
+  const totalExposureValue = (riskSummary?.exposureByPair ?? []).reduce((sum, item) => sum + parseAmountValue(item.value), 0)
   const marginBreakdown = (riskSummary?.exposureByPair ?? []).map((item, index) => {
-    const colors = ['#67e8f9', '#a78bfa', '#34d399', '#fbbf24']
-    const total = riskSummary?.exposureByPair.reduce((sum, entry) => sum + parseAmountValue(entry.value), 0) ?? 0
-    const share = total > 0 ? Math.round((parseAmountValue(item.value) / total) * 100) : 0
-    return { pair: item.pair, value: item.value, share, color: colors[index % colors.length] }
+    const colors = ['#22d3ee', '#a78bfa', '#34d399', '#fbbf24', '#fb7185', '#60a5fa']
+    const portion = totalExposureValue > 0 ? (parseAmountValue(item.value) / totalExposureValue) * 100 : 0
+    return { pair: item.pair, value: item.value, share: Math.round(portion), portion, color: colors[index % colors.length] }
   })
 
-  const totalMargin = riskSummary ? `${(riskSummary.exposureByPair.reduce((sum, item) => sum + parseAmountValue(item.value), 0) / 1000).toFixed(1)}k` : '$0.0k'
-  const usedPercent = account?.marginUsed ? Number.parseFloat(account.marginUsed.replace('%', '')) || 0 : 0
-  const usedMargin = account?.marginUsed ?? '0%'
+  const totalExposure = totalExposureValue.toLocaleString(undefined, { maximumFractionDigits: 0 })
+  const usedPercent = account?.marginUsed ? Number.parseFloat(account.marginUsed.replace('%', '')) || 0 : null
+  const usedMargin = account?.marginUsed ?? '—'
   const donutStyle = {
-    background: marginBreakdown.length
+    background: totalExposureValue > 0
       ? `conic-gradient(${marginBreakdown.map((item, index) => {
-          const start = marginBreakdown.slice(0, index).reduce((sum, current) => sum + current.share, 0)
-          return `${item.color} ${start}% ${start + item.share}%`
+          const start = marginBreakdown.slice(0, index).reduce((sum, current) => sum + current.portion, 0)
+          return `${item.color} ${start}% ${start + item.portion}%`
         }).join(', ')})`
-      : 'conic-gradient(#67e8f9 0 100%)',
+      : 'conic-gradient(#334155 0 100%)',
   }
 
   const riskHeatmap = (riskSummary?.exposureByPair ?? []).map((item) => {
-    const value = Math.min(100, Math.max(20, parseAmountValue(item.value) / 1000))
-    const level = value >= 80 ? 'high' : value >= 55 ? 'mid' : 'safe'
-    return { pair: item.pair, value: Math.round(value), level }
+    const share = totalExposureValue > 0 ? Math.round((parseAmountValue(item.value) / totalExposureValue) * 100) : 0
+    const level = share >= 60 ? 'high' : share >= 30 ? 'mid' : 'safe'
+    return { pair: item.pair, value: item.value, share, level }
   })
 
   const pairLeaderboard = (riskSummary?.exposureByPair ?? []).map((item, index) => ({
     pair: item.pair,
-    pnl: `${item.value}`,
-    value: `${index + 1}. ${item.value}`,
+    share: marginBreakdown[index]?.share ?? 0,
+    value: item.value,
   }))
 
-  const chartCandles = chartQuery.data?.candles ?? []
-  const equityTrendValues = chartCandles.slice(-12).map((candle) => Number(candle.close))
-  const sparklineValues = equityTrendValues.length
-    ? equityTrendValues.map((value, _, values) => {
-        const min = Math.min(...values)
-        const max = Math.max(...values)
-        const spread = max - min || 1
-        return ((value - min) / spread) * 100
-      })
-    : [20, 26, 32, 28, 35, 38, 44, 56, 52, 61, 58, 66]
   const visiblePositions = positionsQuery.data?.[positionView] ?? []
+  const isLiveFeedConnected = connectionState === 'online' && Boolean(liveMarket || liveAccount)
 
   return (
     <>
@@ -370,41 +351,25 @@ export function DashboardPage() {
         </div>
 
         <div className="topbar-actions">
-          <div className="search-pill">Search instrument</div>
-          <div className="status-pill online">System online</div>
-          <div className="avatar">AD</div>
+          <div className={`status-pill ${connectionState === 'offline' ? 'offline' : isLiveFeedConnected ? 'online' : 'neutral'}`}>
+            {connectionState === 'offline' ? '⚠️ Feed offline' : isLiveFeedConnected ? '🟢 Broker feed live' : '🔄 Connecting to broker'}
+          </div>
         </div>
       </header>
 
-      <section className="metrics-grid">
-        {metrics.map((metric) => (
-          <article key={metric.label} className="metric-card">
-            <div className="metric-head">
-              <span>{metric.label}</span>
-              <span className={`delta ${metric.tone}`}>{metric.delta}</span>
-            </div>
-            <strong>{metric.value}</strong>
-          </article>
-        ))}
-      </section>
-
-      <section className="stat-card-row">
-        {statCards.map((card) => (
-          <article key={card.label} className={`mini-stat-card tone-${card.tone}`}>
-            <span>{card.label}</span>
-            <strong>{card.value}</strong>
-            <small>{card.delta}</small>
-          </article>
-        ))}
-      </section>
-
-      <section className="content-grid">
+      <section className="dashboard-parent-grid">
+        <div className="panel dashboard-parent dashboard-parent--market">
+          <div className="dashboard-parent-heading">
+            <div><p className="eyebrow">Market & execution</p><h3>📈 Trading desk</h3></div>
+            <span className="dashboard-parent-count">{positionsQuery.data?.open.length ?? '—'} open trades</span>
+          </div>
+          <section className="content-grid">
         <div className="main-column">
           <div className="panel chart-panel">
             <div className="panel-header compact">
               <div>
-                <p className="eyebrow">Trend</p>
-                <h3>Equity trend</h3>
+                <p className="eyebrow">Live chart</p>
+                <h3>📊 {instrument} price action</h3>
               </div>
               <ChartDataControls timeframe={chartTimeframe} countMultiplier={chartCountMultiplier} onTimeframeChange={setChartTimeframeOverride} onCountMultiplierChange={setChartCountMultiplier} />
             </div>
@@ -422,21 +387,18 @@ export function DashboardPage() {
             <div className="panel-header">
               <div>
                 <p className="eyebrow">Live feed</p>
-                <h3>Market watchlist</h3>
+                <h3>🌍 Market watchlist</h3>
               </div>
-              <div className="segmented">
-                <button className="segment active">M1</button>
-                <button className="segment">M5</button>
-                <button className="segment">H1</button>
-              </div>
+              <span className="muted-cell">{market?.instruments.length ?? 0} instruments</span>
             </div>
 
             <div className="watchlist">
+              {marketQuery.isError && <p className="inline-error">Market data unavailable. Check the API connection.</p>}
               {market?.instruments.map((item) => (
                 <div key={item.pair} className="watch-row">
                   <div className="pair-block">
                     <span className="pair-name">{item.pair}</span>
-                    <span className="pair-change positive">{item.change}</span>
+                    <span className={`pair-change ${item.change.trim().startsWith('-') ? 'negative' : 'positive'}`}>{item.change}</span>
                   </div>
                   <div className="price-block">
                     <span>Bid</span>
@@ -459,7 +421,7 @@ export function DashboardPage() {
             <div className="panel-header">
               <div>
                 <p className="eyebrow">Broker positions</p>
-                <h3>Trade monitor</h3>
+                <h3>💹 Trade monitor</h3>
               </div>
               <div className="segmented" role="tablist" aria-label="Trade status">
                 <button type="button" role="tab" aria-selected={positionView === 'open'} className={positionView === 'open' ? 'segment active' : 'segment'} onClick={() => setPositionView('open')}>Open</button>
@@ -499,7 +461,7 @@ export function DashboardPage() {
 
           <div className="panel">
             <div className="panel-header compact">
-              <div><p className="eyebrow">Broker orders</p><h3>Pending orders</h3></div>
+              <div><p className="eyebrow">Broker orders</p><h3>🧾 Pending orders</h3></div>
               <span className="muted-cell">Live OANDA data</span>
             </div>
             {pendingOrdersQuery.isError && <p className="inline-error">Broker pending orders could not be loaded.</p>}
@@ -524,17 +486,18 @@ export function DashboardPage() {
             <div className="panel-header compact">
               <div>
                 <p className="eyebrow">Exposure</p>
-                <h3>Risk heatmap</h3>
+                <h3>🔥 Exposure heatmap</h3>
               </div>
             </div>
 
             <div className="heatmap-grid">
               {riskHeatmap.map((cell) => (
                 <div key={cell.pair} className={`heatmap-card ${cell.level}`}>
-                  <span>{cell.pair}</span>
+                  <span>{cell.pair} · {cell.share}% of exposure</span>
                   <strong>{cell.value}</strong>
                 </div>
               ))}
+              {!riskQuery.isLoading && riskHeatmap.length === 0 && <p className="empty-cell">No exposure data available.</p>}
             </div>
           </div>
 
@@ -542,7 +505,7 @@ export function DashboardPage() {
             <div className="panel-header compact">
               <div>
                 <p className="eyebrow">Alerts</p>
-                <h3>Risk & events</h3>
+                <h3>🚨 Risk & events</h3>
               </div>
             </div>
 
@@ -556,6 +519,7 @@ export function DashboardPage() {
                   </div>
                 </div>
               ))}
+              {!marketQuery.isLoading && (market?.alerts.length ?? 0) === 0 && <p className="empty-cell">No active market alerts.</p>}
             </div>
           </div>
         </div>
@@ -564,23 +528,23 @@ export function DashboardPage() {
           <div className="panel chart-panel">
             <div className="panel-header compact">
               <div>
-                <p className="eyebrow">Margin overview</p>
-                <h3>Portfolio allocation</h3>
+                <p className="eyebrow">Exposure mix</p>
+                <h3>🍩 Portfolio allocation</h3>
               </div>
-              <span className="pill neutral">{usedPercent}% used</span>
+              <span className="pill neutral">{usedPercent === null ? 'Margin —' : `${usedPercent}% margin`}</span>
             </div>
 
             <div className="margin-donut-shell">
-              <div className="margin-donut" style={donutStyle} aria-label="Margin allocation donut chart">
+              <div className="margin-donut" style={donutStyle} aria-label="Portfolio exposure by pair">
                 <div className="margin-donut-center">
-                  <span>Total margin</span>
-                  <strong>{totalMargin}</strong>
-                  <small>{usedMargin} used</small>
+                  <span>Total exposure</span>
+                  <strong>{riskSummary ? totalExposure : '—'}</strong>
+                  <small>{usedMargin} margin used</small>
                 </div>
               </div>
             </div>
 
-            <div className="margin-breakdown" aria-label="Margin breakdown by pair">
+            <div className="margin-breakdown" aria-label="Exposure breakdown by pair">
               {marginBreakdown.map((item) => (
                 <div key={item.pair} className="margin-breakdown-row">
                   <div className="margin-meta">
@@ -593,33 +557,26 @@ export function DashboardPage() {
                   </div>
                 </div>
               ))}
+              {!riskQuery.isLoading && marginBreakdown.length === 0 && <p className="empty-cell">Exposure distribution will appear when live risk data is available.</p>}
             </div>
           </div>
 
-          <div className="panel chart-panel">
+          <div className="panel account-snapshot-panel">
             <div className="panel-header compact">
               <div>
-                <p className="eyebrow">Balance curve</p>
-                <h3>Equity</h3>
+                <p className="eyebrow">Live account</p>
+                <h3>💎 Account snapshot</h3>
               </div>
-              <span className="pill positive">+3.12%</span>
+              {riskSummary && <span className={`pill ${riskSummary.killSwitch ? 'negative' : 'positive'}`}>{riskSummary.killSwitch ? 'Kill switch active' : 'Risk controls ready'}</span>}
             </div>
-
-            <div className="sparkline" aria-label="Equity sparkline">
-              {sparklineValues.map((height, index) => (
-                <span key={`${height}-${index}`} style={{ height: `${Math.max(16, Math.min(100, height))}%` }} />
-              ))}
-            </div>
-
-            <div className="risk-summary">
-              <div>
-                <span>Daily risk</span>
-                <strong>{account?.dailyRisk ?? '0.72%'}</strong>
-              </div>
-              <div>
-                <span>Max drawdown</span>
-                <strong>{account?.drawdown ?? '4.10%'}</strong>
-              </div>
+            <div className="account-snapshot-grid">
+              <div className="snapshot-tile snapshot-tile--cyan"><span>Equity</span><strong>{account?.equity ?? '—'}</strong></div>
+              <div className={`snapshot-tile ${parseAmountValue(account?.netPnl) < 0 ? 'snapshot-tile--pink' : 'snapshot-tile--green'}`}><span>Net P/L</span><strong>{account?.netPnl ?? '—'}</strong></div>
+              <div className="snapshot-tile snapshot-tile--violet"><span>Open exposure</span><strong>{account?.exposure ?? '—'}</strong></div>
+              <div className="snapshot-tile snapshot-tile--amber"><span>Open trades</span><strong>{positionsQuery.data?.open.length ?? '—'}</strong></div>
+              <div className="snapshot-tile snapshot-tile--pink"><span>Daily risk</span><strong>{riskSummary?.dailyLoss ?? account?.dailyRisk ?? '—'}</strong></div>
+              <div className="snapshot-tile snapshot-tile--blue"><span>Max drawdown</span><strong>{account?.drawdown ?? '—'}</strong></div>
+              <div className="snapshot-tile snapshot-tile--cyan"><span>Margin level</span><strong>{riskSummary?.marginLevel ?? '—'}</strong></div>
             </div>
           </div>
 
@@ -627,7 +584,7 @@ export function DashboardPage() {
             <div className="panel-header compact">
               <div>
                 <p className="eyebrow">Leaderboard</p>
-                <h3>Pairs by exposure</h3>
+                <h3>🏆 Pairs by exposure</h3>
               </div>
             </div>
 
@@ -637,11 +594,12 @@ export function DashboardPage() {
                   <span className="leaderboard-rank">#{index + 1}</span>
                   <div className="leaderboard-meta">
                     <strong>{item.pair}</strong>
-                    <span>{item.value}</span>
+                    <span>{item.value} · {item.share}%</span>
                   </div>
-                  <span className={item.pnl.startsWith('+') ? 'leaderboard-pnl positive' : 'leaderboard-pnl negative'}>{item.pnl}</span>
+                  <span className="leaderboard-pnl">{item.share}%</span>
                 </div>
               ))}
+              {!riskQuery.isLoading && pairLeaderboard.length === 0 && <p className="empty-cell">No pair exposure data available.</p>}
             </div>
           </div>
 
@@ -649,7 +607,7 @@ export function DashboardPage() {
             <div className="panel-header compact">
               <div>
                 <p className="eyebrow">Strategy engine</p>
-                <h3>Signals</h3>
+                <h3>🤖 Signals & automation</h3>
               </div>
               <span
                 className={`pill ${
@@ -735,12 +693,18 @@ export function DashboardPage() {
         </div>
       </section>
 
+        </div>
+        <div className="panel dashboard-parent dashboard-parent--account">
+          <div className="dashboard-parent-heading">
+            <div><p className="eyebrow">Account & execution</p><h3>🧭 Portfolio cockpit</h3></div>
+            <span className="dashboard-parent-count">{usedPercent === null ? 'Margin —' : `Margin ${usedPercent}%`}</span>
+          </div>
       <section className="lower-grid">
         <div className="panel order-panel">
           <div className="panel-header compact">
             <div>
               <p className="eyebrow">Execution controls</p>
-              <h3>Order ticket</h3>
+              <h3>⚡ Order ticket</h3>
             </div>
           </div>
 
@@ -903,42 +867,7 @@ export function DashboardPage() {
           </div>
         </div>
 
-        <div className="panel execution-panel">
-          <div className="panel-header compact">
-            <div>
-              <p className="eyebrow">Operations log</p>
-              <h3>Execution timeline</h3>
-            </div>
-          </div>
-
-          <div className="timeline">
-            <div className="timeline-item">
-              <span className="dot success" />
-              <div>
-                <strong>Order validated</strong>
-                <p>Client order ID confirmed and risk policy accepted.</p>
-              </div>
-              <time>09:14:22</time>
-            </div>
-
-            <div className="timeline-item">
-              <span className="dot warning" />
-              <div>
-                <strong>Market event</strong>
-                <p>London session opened with a higher volatility band.</p>
-              </div>
-              <time>09:20:05</time>
-            </div>
-
-            <div className="timeline-item">
-              <span className="dot neutral" />
-              <div>
-                <strong>Trade snapshot</strong>
-                <p>Position net exposure and margin usage were recalculated.</p>
-              </div>
-              <time>09:26:11</time>
-            </div>
-          </div>
+      </section>
         </div>
       </section>
 
