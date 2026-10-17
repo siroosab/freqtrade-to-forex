@@ -351,69 +351,33 @@ export function RiskPage() {
         {chartQuery.data && <ForexChart data={chartQuery.data} onPriceSelect={setChartPrice} />}
       </section>
 
-      <section className="content-grid">
-        <div className="panel">
-          <div className="panel-header compact"><div><p className="eyebrow">Post-trade / OANDA live</p><h3>{selectedPair} trade status</h3></div><span className="pill neutral">{trades.length} open</span></div>
-          {positionsQuery.isLoading && <p>Loading open trades from OANDA…</p>}
-          {positionsQuery.isError && <p role="alert">{positionsQuery.error instanceof Error ? positionsQuery.error.message : 'Could not load live OANDA trades.'}</p>}
-          {!positionsQuery.isLoading && !positionsQuery.isError && !trades.length && <p>No open OANDA trade for {selectedPair}; live market data remains available.</p>}
-          {trades.length > 0 && <>
-            {trades.length > 1 && <label className="field-block"><span>Trade to control</span><select value={selectedTrade?.id ?? ''} onChange={(event) => setSelectedTradeId(event.target.value)}>{trades.map((trade) => <option key={trade.id} value={trade.id}>{trade.id} · {trade.side} · {trade.units} units</option>)}</select></label>}
-            {selectedTrade && <div className="risk-summary">
-              <div><span>Side / units</span><strong>{selectedTrade.side} · {Number(selectedTrade.units).toLocaleString()}</strong></div>
-              <div><span>Entry / current</span><strong>{Number(selectedTrade.entryPrice).toFixed(precision)} / {selectedTrade.currentPrice ? Number(selectedTrade.currentPrice).toFixed(precision) : '—'}</strong></div>
-              <div><span>Selected trade P/L</span><strong className={Number(selectedTrade.pnl) < 0 ? 'negative' : 'positive'}>{Number(selectedTrade.pnl) > 0 ? '+' : ''}{selectedTrade.pnl} {accountCurrency}</strong></div>
-              <div><span>Pair net P/L</span><strong className={pairProfitLoss < 0 ? 'negative' : 'positive'}>{pairProfitLoss > 0 ? '+' : ''}{pairProfitLoss.toFixed(2)} {accountCurrency}</strong></div>
-            </div>}
-          </>}
-          <div className="risk-summary">
-            <div><span>OANDA bid / ask</span><strong>{quote ? `${Number(quote.bid).toFixed(precision)} / ${Number(quote.ask).toFixed(precision)}` : '—'}</strong></div>
-            <div><span>Instrument pip</span><strong>{quote?.pipSize ? `${quote.pipSize} ${quote.quoteCurrency ?? ''}` : 'Unavailable'}</strong></div>
-          </div>
-          {quoteQuery.isError && <p role="alert">OANDA live quote unavailable; broker controls are disabled.</p>}
-          {quote && <small>Quote updated {new Date(quote.time).toLocaleTimeString()} · {quote.environment}</small>}
-        </div>
-
-        <div className="panel">
-          <div className="panel-header compact"><div><p className="eyebrow">Market range / OANDA</p><h3>Daily volatility estimate</h3></div><span className="pill neutral">D1 · 7 days</span></div>
-          {volatilityQuery.isLoading && <p>Loading daily candles from OANDA…</p>}
-          {volatilityQuery.isError && <p role="alert">{volatilityQuery.error instanceof Error ? volatilityQuery.error.message : 'Daily OANDA candles unavailable.'}</p>}
-          {!volatilityQuery.isLoading && !volatilityQuery.isError && (Number.isFinite(volatilityPercent)
-            ? <>
-              <div
-                className="volatility-range-visual"
-                role="meter"
-                aria-label={`${selectedPair} latest price relative to its seven-day high and low`}
-                aria-valuemin={volatilityLow}
-                aria-valuemax={volatilityHigh}
-                aria-valuenow={Number.isFinite(latestPrice)
-                  ? Math.min(volatilityHigh, Math.max(volatilityLow, latestPrice))
-                  : undefined}
-                aria-valuetext={`${Number.isFinite(latestPrice) ? latestPrice.toFixed(precision) : 'Price unavailable'}; ${priceRangeStatus}`}
-              >
-                <strong className="volatility-range-price" style={{ left: `${rangeLabelPosition}%` }}>
-                  {Number.isFinite(latestPrice) ? latestPrice.toFixed(precision) : 'Price unavailable'}
-                </strong>
-                <div className="volatility-range-track">
-                  <span className="volatility-range-midpoint" />
-                  {Number.isFinite(latestPrice) && <span className="volatility-range-marker" style={{ left: `${rangeMarkerPosition}%` }} />}
-                </div>
-                <div className="volatility-range-labels">
-                  <span>7-day low · {volatilityLow.toFixed(precision)}</span>
-                  <span>7-day high · {volatilityHigh.toFixed(precision)}</span>
-                </div>
-                <small className={`volatility-range-status ${pricePositionPercent < 0 || pricePositionPercent > 100 ? 'outside' : ''}`}>
-                  {priceRangeStatus}
-                </small>
+      <section className="content-grid risk-parent-grid">
+        <div className="panel risk-parent-panel">
+          <div className="panel-header compact"><div><p className="eyebrow">Trade workflow</p><h3>Position &amp; policy</h3></div></div>
+          <div className="risk-parent-stack">
+            <div className="panel">
+              <div className="panel-header compact"><div><p className="eyebrow">Post-trade / OANDA live</p><h3>{selectedPair} trade status</h3></div><span className="pill neutral">{trades.length} open</span></div>
+              {positionsQuery.isLoading && <p>Loading open trades from OANDA…</p>}
+              {positionsQuery.isError && <p role="alert">{positionsQuery.error instanceof Error ? positionsQuery.error.message : 'Could not load live OANDA trades.'}</p>}
+              {!positionsQuery.isLoading && !positionsQuery.isError && !trades.length && <p>No open OANDA trade for {selectedPair}; live market data remains available.</p>}
+              {trades.length > 0 && <>
+                {trades.length > 1 && <label className="field-block"><span>Trade to control</span><select value={selectedTrade?.id ?? ''} onChange={(event) => setSelectedTradeId(event.target.value)}>{trades.map((trade) => <option key={trade.id} value={trade.id}>{trade.id} · {trade.side} · {trade.units} units</option>)}</select></label>}
+                {selectedTrade && <div className="risk-summary">
+                  <div><span>Side / units</span><strong>{selectedTrade.side} · {Number(selectedTrade.units).toLocaleString()}</strong></div>
+                  <div><span>Entry / current</span><strong>{Number(selectedTrade.entryPrice).toFixed(precision)} / {selectedTrade.currentPrice ? Number(selectedTrade.currentPrice).toFixed(precision) : '—'}</strong></div>
+                  <div><span>Selected trade P/L</span><strong className={Number(selectedTrade.pnl) < 0 ? 'negative' : 'positive'}>{Number(selectedTrade.pnl) > 0 ? '+' : ''}{selectedTrade.pnl} {accountCurrency}</strong></div>
+                  <div><span>Pair net P/L</span><strong className={pairProfitLoss < 0 ? 'negative' : 'positive'}>{pairProfitLoss > 0 ? '+' : ''}{pairProfitLoss.toFixed(2)} {accountCurrency}</strong></div>
+                </div>}
+              </>}
+              <div className="risk-summary">
+                <div><span>OANDA bid / ask</span><strong>{quote ? `${Number(quote.bid).toFixed(precision)} / ${Number(quote.ask).toFixed(precision)}` : '—'}</strong></div>
+                <div><span>Instrument pip</span><strong>{quote?.pipSize ? `${quote.pipSize} ${quote.quoteCurrency ?? ''}` : 'Unavailable'}</strong></div>
               </div>
-              <div className="risk-summary"><div><span>High-low range</span><strong>{volatilityPercent.toFixed(2)}%</strong></div><div><span>Daily candles</span><strong>{volatilityCandles.length} / 7</strong></div></div>
-            </>
-            : <p>Not enough OANDA daily candles to calculate the 7-day range.</p>)}
-        </div>
-      </section>
+              {quoteQuery.isError && <p role="alert">OANDA live quote unavailable; broker controls are disabled.</p>}
+              {quote && <small>Quote updated {new Date(quote.time).toLocaleTimeString()} · {quote.environment}</small>}
+            </div>
 
-      <section className="content-grid">
-        <div className="panel risk-controls-panel">
+            <div className="panel risk-controls-panel">
           <div className="panel-header compact">
             <div><p className="eyebrow">Pre-trade · Priority policy</p><h3>Before order controls</h3><p className="risk-panel-intro">Saved here, these controls take priority over strategy risk settings on every automatic order sent to OANDA.</p></div>
             <div className="chart-controls">
@@ -481,14 +445,110 @@ export function RiskPage() {
               The % mode caps the share of current available margin; GBP mode limits required margin. Leverage is determined by OANDA.
             </small>
           </>}
+              </div>
+          </div>
         </div>
-      </section>
 
-      <section className="content-grid risk-post-trade-grid">
-        <div className="panel">
+        <div className="panel risk-parent-panel">
+          <div className="panel-header compact"><div><p className="eyebrow">Market &amp; execution</p><h3>Market data &amp; trade actions</h3></div></div>
+          <div className="risk-parent-stack">
+              <div className="panel">
+                <div className="panel-header compact"><div><p className="eyebrow">Market range / OANDA</p><h3>Daily volatility estimate</h3></div><span className="pill neutral">D1 · 7 days</span></div>
+                {volatilityQuery.isLoading && <p>Loading daily candles from OANDA…</p>}
+                {volatilityQuery.isError && <p role="alert">{volatilityQuery.error instanceof Error ? volatilityQuery.error.message : 'Daily OANDA candles unavailable.'}</p>}
+                {!volatilityQuery.isLoading && !volatilityQuery.isError && (Number.isFinite(volatilityPercent)
+                  ? <>
+                    <div
+                      className="volatility-range-visual"
+                      role="meter"
+                      aria-label={`${selectedPair} latest price relative to its seven-day high and low`}
+                      aria-valuemin={volatilityLow}
+                      aria-valuemax={volatilityHigh}
+                      aria-valuenow={Number.isFinite(latestPrice)
+                        ? Math.min(volatilityHigh, Math.max(volatilityLow, latestPrice))
+                        : undefined}
+                      aria-valuetext={`${Number.isFinite(latestPrice) ? latestPrice.toFixed(precision) : 'Price unavailable'}; ${priceRangeStatus}`}
+                    >
+                      <strong className="volatility-range-price" style={{ left: `${rangeLabelPosition}%` }}>
+                        {Number.isFinite(latestPrice) ? latestPrice.toFixed(precision) : 'Price unavailable'}
+                      </strong>
+                      <div className="volatility-range-track">
+                        <span className="volatility-range-midpoint" />
+                        {Number.isFinite(latestPrice) && <span className="volatility-range-marker" style={{ left: `${rangeMarkerPosition}%` }} />}
+                      </div>
+                      <div className="volatility-range-labels">
+                        <span>7-day low · {volatilityLow.toFixed(precision)}</span>
+                        <span>7-day high · {volatilityHigh.toFixed(precision)}</span>
+                      </div>
+                      <small className={`volatility-range-status ${pricePositionPercent < 0 || pricePositionPercent > 100 ? 'outside' : ''}`}>
+                        {priceRangeStatus}
+                      </small>
+                    </div>
+                    <div className="risk-summary"><div><span>High-low range</span><strong>{volatilityPercent.toFixed(2)}%</strong></div><div><span>Daily candles</span><strong>{volatilityCandles.length} / 7</strong></div></div>
+                  </>
+                  : <p>Not enough OANDA daily candles to calculate the 7-day range.</p>)}
+              </div>
+
+              <div className="panel">
+                <div className="panel-header compact">
+                  <div><p className="eyebrow">Post-trade · Average entry</p><h3>Place average-entry limit on OANDA</h3></div>
+                  <span className="pill neutral">Separate order</span>
+                </div>
+                <p className="risk-helper">This creates a separate linked limit order; only populated stop-loss and take-profit values are attached to it.</p>
+                {form && <>
+                  <div className="settings-grid">
+                    <label className="field-block">
+                      <span>Average-entry target</span>
+                      <div className="value-mode"><input value={form.averageEntry ?? ''} placeholder="Chart or value" onChange={(event) => update('averageEntry', event.target.value || null)} />{modeOptions(form.averageEntryMode, (value) => update('averageEntryMode', value))}</div>
+                      {renderValues(averageValues)}
+                      <small className="risk-hyperopt-reference">Average-entry targets are not tuned by Hyperopt for this pair.</small>
+                    </label>
+                    <label className="field-block">
+                      <span>Average-entry order units</span>
+                      <input type="number" min="1" step="1" value={averageUnits} onChange={(event) => selectedTrade && setAverageUnitsByTrade((current) => ({ ...current, [selectedTrade.id]: event.target.value }))} />
+                      <small className="calculated-price">Suggested from the selected open trade; editable independently.</small>
+                    </label>
+                    <label className="field-block">
+                      <span>Max averaging adds</span>
+                      <input value={form.maxAdds} onChange={(event) => update('maxAdds', event.target.value)} />
+                      <small className="risk-hyperopt-reference">Averaging-add limits are not tuned by Hyperopt.</small>
+                    </label>
+                  </div>
+                  <div className="chart-controls risk-click-controls">
+                    <button type="button" onClick={() => {
+                      if (!selectedTrade || !averagePrice) {
+                        setExecutionFeedback({ message: 'Select an open trade and enter a valid average-entry target.', error: true, kind: 'average' })
+                        return
+                      }
+                      if (averageEntryInvalid || stopLossInvalid || takeProfitInvalid) {
+                        setExecutionFeedback({ message: 'Enter valid average-entry, stop-loss, and take-profit values in the selected units.', error: true, kind: 'average' })
+                        return
+                      }
+                      if (!/^[1-9]\d*$/.test(averageUnits)) {
+                        setExecutionFeedback({ message: 'Average-entry order units must be a positive whole number.', error: true, kind: 'average' })
+                        return
+                      }
+                      setExecutionFeedback(null)
+                      averageMutation.mutate({
+                        tradeId: selectedTrade.id,
+                        payload: {
+                          units: averageUnits,
+                          price: averagePrice,
+                          ...(stopPrice ? { stopLoss: stopPrice } : {}),
+                          ...(takeProfitPrice ? { takeProfit: takeProfitPrice } : {}),
+                        },
+                      })
+                    }} disabled={!selectedTrade || !quote?.tradeable || averageMutation.isPending}>{averageMutation.isPending ? 'Placing OANDA order…' : 'Place average-entry limit on OANDA'}</button>
+                  </div>
+                </>}
+                {executionFeedback?.kind === 'average' && <p className="risk-save-feedback" role={executionFeedback.error ? 'alert' : 'status'}>{executionFeedback.message}</p>}
+                {!selectedTrade && <p className="risk-helper">An open OANDA trade for {selectedPair} is required to create a linked average-entry order.</p>}
+              </div>
+
+              <div className="panel">
           <div className="panel-header compact">
-            <div><p className="eyebrow">Post-trade · Live protection</p><h3>Apply protections on OANDA</h3></div>
-            <span className="pill neutral">{selectedTrade ? `${selectedTrade.side} · ${selectedTrade.id}` : 'No open trade'}</span>
+              <div><p className="eyebrow">Post-trade · Live protection</p><h3>Apply protections on OANDA</h3></div>
+              <span className="pill neutral">{selectedTrade ? `${selectedTrade.side} · ${selectedTrade.id}` : 'No open trade'}</span>
           </div>
           <p className="risk-helper">Only protection fields with values are sent to the selected open trade. Blank fields are left unchanged.</p>
           {setupQuery.isError && <p className="risk-helper" role="alert">Could not load the configured strategy for Hyperopt comparison: {setupQuery.error instanceof Error ? setupQuery.error.message : 'setup unavailable'}</p>}
@@ -563,69 +623,14 @@ export function RiskPage() {
           </>}
           {executionFeedback?.kind === 'protection' && <p className="risk-save-feedback" role={executionFeedback.error ? 'alert' : 'status'}>{executionFeedback.message}</p>}
           {!selectedTrade && <p className="risk-helper">Select an open OANDA trade for {selectedPair} before applying protection values.</p>}
-        </div>
-
-        <div className="panel">
-          <div className="panel-header compact">
-            <div><p className="eyebrow">Post-trade · Average entry</p><h3>Place average-entry limit on OANDA</h3></div>
-            <span className="pill neutral">Separate order</span>
+            </div>
           </div>
-          <p className="risk-helper">This creates a separate linked limit order; only populated stop-loss and take-profit values are attached to it.</p>
-          {form && <>
-            <div className="settings-grid">
-              <label className="field-block">
-                <span>Average-entry target</span>
-                <div className="value-mode"><input value={form.averageEntry ?? ''} placeholder="Chart or value" onChange={(event) => update('averageEntry', event.target.value || null)} />{modeOptions(form.averageEntryMode, (value) => update('averageEntryMode', value))}</div>
-                {renderValues(averageValues)}
-                <small className="risk-hyperopt-reference">Average-entry targets are not tuned by Hyperopt for this pair.</small>
-              </label>
-              <label className="field-block">
-                <span>Average-entry order units</span>
-                <input type="number" min="1" step="1" value={averageUnits} onChange={(event) => selectedTrade && setAverageUnitsByTrade((current) => ({ ...current, [selectedTrade.id]: event.target.value }))} />
-                <small className="calculated-price">Suggested from the selected open trade; editable independently.</small>
-              </label>
-              <label className="field-block">
-                <span>Max averaging adds</span>
-                <input value={form.maxAdds} onChange={(event) => update('maxAdds', event.target.value)} />
-                <small className="risk-hyperopt-reference">Averaging-add limits are not tuned by Hyperopt.</small>
-              </label>
-            </div>
-            <div className="chart-controls risk-click-controls">
-              <button type="button" onClick={() => {
-                if (!selectedTrade || !averagePrice) {
-                  setExecutionFeedback({ message: 'Select an open trade and enter a valid average-entry target.', error: true, kind: 'average' })
-                  return
-                }
-                if (averageEntryInvalid || stopLossInvalid || takeProfitInvalid) {
-                  setExecutionFeedback({ message: 'Enter valid average-entry, stop-loss, and take-profit values in the selected units.', error: true, kind: 'average' })
-                  return
-                }
-                if (!/^[1-9]\d*$/.test(averageUnits)) {
-                  setExecutionFeedback({ message: 'Average-entry order units must be a positive whole number.', error: true, kind: 'average' })
-                  return
-                }
-                setExecutionFeedback(null)
-                averageMutation.mutate({
-                  tradeId: selectedTrade.id,
-                  payload: {
-                    units: averageUnits,
-                    price: averagePrice,
-                    ...(stopPrice ? { stopLoss: stopPrice } : {}),
-                    ...(takeProfitPrice ? { takeProfit: takeProfitPrice } : {}),
-                  },
-                })
-              }} disabled={!selectedTrade || !quote?.tradeable || averageMutation.isPending}>{averageMutation.isPending ? 'Placing OANDA order…' : 'Place average-entry limit on OANDA'}</button>
-            </div>
-          </>}
-          {executionFeedback?.kind === 'average' && <p className="risk-save-feedback" role={executionFeedback.error ? 'alert' : 'status'}>{executionFeedback.message}</p>}
-          {!selectedTrade && <p className="risk-helper">An open OANDA trade for {selectedPair} is required to create a linked average-entry order.</p>}
         </div>
       </section>
 
       {configQuery.isError && <div className="panel page-panel"><p role="alert">Risk config could not be loaded from the backend.</p></div>}
       {isLoading && <div className="panel page-panel"><p>Loading risk data from backend…</p></div>}
       {isError && <div className="panel page-panel"><p>Backend risk endpoint unavailable; fallback data is being used.</p></div>}
-      {!isLoading && data && <section className="content-grid"><div className="panel"><div className="panel-header compact"><div><p className="eyebrow">Policy</p><h3>Current limits</h3></div></div><div className="risk-summary"><div><span>Daily loss</span><strong>{data.dailyLoss}</strong></div><div><span>Max exposure</span><strong>{data.maxExposure}</strong></div><div><span>Margin level</span><strong>{data.marginLevel}</strong></div><div><span>Kill switch</span><strong>{data.killSwitch ? 'Active' : 'Clear'}</strong></div></div></div><div className="panel"><div className="panel-header compact"><div><p className="eyebrow">Exposure</p><h3>By symbol</h3></div></div><div className="strategy-stack">{data.exposureByPair.map((item) => <div key={item.pair} className="strategy-card"><div className="strategy-row"><strong>{item.pair}</strong><span className="pill neutral">{item.value}</span></div></div>)}</div></div></section>}
     </>
   )
 }

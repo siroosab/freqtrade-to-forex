@@ -503,6 +503,18 @@
   align-items: start;
 }
 
+.risk-parent-panel,
+.risk-parent-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.risk-parent-stack > .panel {
+  width: 100%;
+}
+
 .main-column,
 .side-column {
   display: flex;
