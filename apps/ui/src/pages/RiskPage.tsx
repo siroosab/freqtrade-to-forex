@@ -303,6 +303,22 @@ export function RiskPage() {
     : Number.NaN
   const pairProfitLoss = trades.reduce((total, trade) => total + Number(trade.pnl || 0), 0)
   const accountCurrency = positionsQuery.data?.accountCurrency ?? quote?.accountCurrency ?? ''
+  const getTradeActionDisabledMessage = (isPending: boolean): string | null => {
+    if (!selectedTrade) {
+      if (positionsQuery.isLoading) return 'در حال دریافت معاملات باز از OANDA؛ پس از بارگذاری، معامله‌ای برای این نماد انتخاب کنید.'
+      if (positionsQuery.isError) return 'دریافت معاملات باز از OANDA ناموفق بود؛ اتصال را بررسی و صفحه را دوباره بارگذاری کنید.'
+      return `برای استفاده از این دکمه، ابتدا باید یک معاملهٔ باز OANDA برای ${selectedPair} داشته باشید.`
+    }
+    if (!quote) {
+      if (quoteQuery.isLoading) return 'در انتظار دریافت قیمت زنده از OANDA؛ دکمه پس از دریافت قیمت فعال می‌شود.'
+      return 'قیمت زندهٔ OANDA در دسترس نیست؛ اتصال بروکر را بررسی کنید.'
+    }
+    if (!quote.tradeable) return `OANDA در حال حاضر ${selectedPair} را غیرقابل‌معامله اعلام کرده است؛ ممکن است بازار بسته یا متوقف باشد.`
+    if (isPending) return 'درخواست در حال ارسال به OANDA است؛ لطفاً صبر کنید.'
+    return null
+  }
+  const averageActionDisabledMessage = getTradeActionDisabledMessage(averageMutation.isPending)
+  const protectionActionDisabledMessage = getTradeActionDisabledMessage(protectionMutation.isPending)
 
   const setChartPrice = (price: number) => {
     if (!form) return
@@ -540,9 +556,9 @@ export function RiskPage() {
                       })
                     }} className="risk-action-button" disabled={!selectedTrade || !quote?.tradeable || averageMutation.isPending}>{averageMutation.isPending ? '⏳ Placing order…' : '➕ Place average-entry order'}</button>
                   </div>
+                  {averageActionDisabledMessage && <p className="risk-action-prerequisite" role="status">{averageActionDisabledMessage}</p>}
                 </>}
                 {executionFeedback?.kind === 'average' && <p className="risk-save-feedback" role={executionFeedback.error ? 'alert' : 'status'}>{executionFeedback.message}</p>}
-                {!selectedTrade && <p className="risk-helper">An open OANDA trade for {selectedPair} is required to create a linked average-entry order.</p>}
               </div>
 
               <div className="panel risk-child-panel risk-child-panel--protection">
@@ -620,9 +636,9 @@ export function RiskPage() {
                 })
               }} className="risk-action-button" disabled={!selectedTrade || !quote?.tradeable || protectionMutation.isPending}>{protectionMutation.isPending ? '⏳ Updating OANDA…' : '🔐 Apply protections on OANDA'}</button>
             </div>
+            {protectionActionDisabledMessage && <p className="risk-action-prerequisite" role="status">{protectionActionDisabledMessage}</p>}
           </>}
           {executionFeedback?.kind === 'protection' && <p className="risk-save-feedback" role={executionFeedback.error ? 'alert' : 'status'}>{executionFeedback.message}</p>}
-          {!selectedTrade && <p className="risk-helper">Select an open OANDA trade for {selectedPair} before applying protection values.</p>}
             </div>
           </div>
         </div>

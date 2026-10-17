@@ -589,6 +589,19 @@
   margin-top: 18px;
 }
 
+.risk-action-prerequisite {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(251, 191, 36, 0.24);
+  border-radius: 10px;
+  background: rgba(120, 83, 9, 0.14);
+  color: #fcd98b;
+  direction: rtl;
+  font-size: 0.78rem;
+  line-height: 1.6;
+  text-align: right;
+}
+
 .risk-action-button {
   display: inline-flex;
   width: 100%;
