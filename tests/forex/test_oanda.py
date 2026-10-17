@@ -4508,6 +4508,7 @@ async def test_oanda_client_reads_account_and_open_positions() -> None:
                         "currency": "USD",
                         "balance": "10000.00",
                         "NAV": "10100.00",
+                        "marginUsed": "1100.00",
                         "marginAvailable": "9000.00",
                         "unrealizedPL": "100.00",
                     }
@@ -4536,6 +4537,7 @@ async def test_oanda_client_reads_account_and_open_positions() -> None:
             positions = await client.get_open_positions()
 
     assert account.margin_available == Decimal("9000.00")
+    assert account.margin_used == Decimal("1100.00")
     assert positions[0].net_units == Decimal("750")
     assert positions[0].long_units == Decimal("1000")
     assert positions[0].short_units == Decimal("-250")

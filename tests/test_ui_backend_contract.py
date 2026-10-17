@@ -171,6 +171,7 @@ def test_market_quote_endpoint_reads_current_broker_price(monkeypatch):
     class FakeAccount:
         currency = "GBP"
         margin_available = Decimal("9000.00")
+        margin_used = Decimal("3000.00")
 
     class FakeClient:
         def __init__(self, token, account_id, environment):
@@ -231,6 +232,7 @@ def test_market_quote_endpoint_reads_current_broker_price(monkeypatch):
         "unitsAvailable": {"default": {"long": "200000", "short": "180000"}},
         "accountCurrency": "GBP",
         "marginAvailable": "9000.00",
+        "marginUsed": "3000.00",
         "marginAvailableGbp": "9000.00",
         "marginConversionError": None,
         "quoteToAccountRate": "0.7800",

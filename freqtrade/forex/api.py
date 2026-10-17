@@ -1937,6 +1937,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "unitsAvailable": price.units_available,
                 "accountCurrency": account_currency,
                 "marginAvailable": str(account.margin_available),
+                "marginUsed": (
+                    str(account.margin_used) if account.margin_used is not None else None
+                ),
                 "marginAvailableGbp": margin_available_gbp,
                 "marginConversionError": margin_conversion_error,
                 "quoteToAccountRate": quote_to_account_rate,

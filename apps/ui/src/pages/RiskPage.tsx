@@ -238,6 +238,20 @@ export function RiskPage() {
     Number.isFinite(availableShortUnits) ? availableShortUnits : 0,
   )
   const liveMarginLimitGbp = Number(quote?.marginAvailableGbp)
+  const marginAvailableValue = quote?.marginAvailable !== undefined && quote.marginAvailable !== null
+    ? Number(quote.marginAvailable)
+    : Number.NaN
+  const marginUsedValue = quote?.marginUsed !== undefined && quote.marginUsed !== null
+    ? Number(quote.marginUsed)
+    : Number.NaN
+  const marginTotal = marginAvailableValue + marginUsedValue
+  const marginBreakdownAvailable = Number.isFinite(marginAvailableValue) && marginAvailableValue >= 0
+    && Number.isFinite(marginUsedValue) && marginUsedValue >= 0
+    && marginTotal > 0
+  const marginUsedPercent = marginBreakdownAvailable ? marginUsedValue / marginTotal * 100 : 0
+  const marginDonutStyle = {
+    background: `conic-gradient(#fb7185 0 ${marginUsedPercent}%, #34d399 ${marginUsedPercent}% 100%)`,
+  }
   const exposureSliderMaximum = form?.maxExposureMode === 'units'
     ? liveUnitsLimit
     : form?.maxExposureMode === 'margin_gbp'
@@ -427,16 +441,57 @@ export function RiskPage() {
                 />
                 <div className="risk-slider-labels"><small>0</small><small>{form.maxExposureMode === 'units' ? `${liveUnitsLimit.toLocaleString()} units available` : form.maxExposureMode === 'margin_gbp' ? `£${Number.isFinite(liveMarginLimitGbp) ? liveMarginLimitGbp.toLocaleString(undefined, { maximumFractionDigits: 2 }) : '—'} available` : form.maxExposureMode === 'margin_percent' ? '100% available margin' : 'Select one of the live modes to use the slider'}</small></div>
               </div>
-              <label className="field-block"><span>Allowed side</span><select value={form.side} onChange={(event) => update('side', event.target.value as RiskConfig['side'])}><option value="NONE">NONE — no new entries</option><option value="LONG">LONG only</option><option value="SHORT">SHORT only</option><option value="BOTH">LONG and SHORT</option></select></label>
+              <fieldset className="risk-side-field">
+                <legend>Allowed side</legend>
+                <div className="risk-side-options" role="radiogroup" aria-label="Allowed side">
+                  {([
+                    { value: 'BOTH', label: 'Both directions', icon: '↕️', detail: 'LONG + SHORT' },
+                    { value: 'LONG', label: 'Long only', icon: '🟢', detail: 'Buy / LONG' },
+                    { value: 'SHORT', label: 'Short only', icon: '🔴', detail: 'Sell / SHORT' },
+                    { value: 'NONE', label: 'Pause entries', icon: '⏸️', detail: 'No new trades' },
+                  ] as const).map((option) => (
+                    <button
+                      key={option.value}
+                      type="button"
+                      role="radio"
+                      aria-checked={form.side === option.value}
+                      className={`risk-side-option ${form.side === option.value ? 'selected' : ''} risk-side-option--${option.value.toLowerCase()}`}
+                      onClick={() => update('side', option.value)}
+                    >
+                      <span className="risk-side-icon" aria-hidden="true">{option.icon}</span>
+                      <span className="risk-side-label">{option.label}</span>
+                      <small>{option.detail}</small>
+                    </button>
+                  ))}
+                </div>
+              </fieldset>
             </div>
             <p className="risk-helper">ℹ️ Position sizing uses the risk fraction already configured in Setup. These controls independently enforce the exposure, direction, and protection limits before an automatic order reaches OANDA.</p>
-            <div className="risk-summary">
-              <div><span>OANDA available · LONG</span><strong>{availableUnits?.long ? Number(availableUnits.long).toLocaleString() : 'Unavailable'}</strong></div>
-              <div><span>OANDA available · SHORT</span><strong>{availableUnits?.short ? Number(availableUnits.short).toLocaleString() : 'Unavailable'}</strong></div>
-              <div><span>Broker margin rate</span><strong>{quote?.marginRate ? `${(Number(quote.marginRate) * 100).toFixed(2)}%` : 'Unavailable'}</strong><small>Set by OANDA for this account and instrument</small></div>
-              <div><span>Margin available</span><strong>{quote?.marginAvailable ? `${Number(quote.marginAvailable).toLocaleString()} ${quote.accountCurrency ?? ''}` : 'Unavailable'}</strong><small>From OANDA account summary</small></div>
-              <div><span>Margin available · GBP</span><strong>{quote?.marginAvailableGbp ? `£${Number(quote.marginAvailableGbp).toLocaleString(undefined, { maximumFractionDigits: 2 })}` : 'Unavailable'}</strong><small>{quote?.marginConversionError ?? 'Converted using live OANDA prices'}</small></div>
-            </div>
+            <section className="risk-margin-panel" aria-label="OANDA margin usage">
+              <div className="risk-margin-heading">
+                <div><span>Account margin</span><small>Live OANDA account · {quote?.accountCurrency ?? '—'}</small></div>
+                {marginBreakdownAvailable && <strong>{marginUsedPercent.toFixed(1)}% used</strong>}
+              </div>
+              {marginBreakdownAvailable ? (
+                <div className="risk-margin-breakdown">
+                  <div
+                    className="risk-margin-donut"
+                    style={marginDonutStyle}
+                    role="img"
+                    aria-label={`Margin used ${marginUsedValue.toLocaleString()} ${quote?.accountCurrency ?? ''}; remaining ${marginAvailableValue.toLocaleString()} ${quote?.accountCurrency ?? ''}`}
+                  >
+                    <div className="risk-margin-donut-center">
+                      <strong>{marginUsedPercent.toFixed(0)}%</strong>
+                      <small>used</small>
+                    </div>
+                  </div>
+                  <div className="risk-margin-legend">
+                    <div><span className="risk-margin-dot used" /><span>Used</span><strong>{marginUsedValue.toLocaleString(undefined, { maximumFractionDigits: 2 })} {quote?.accountCurrency ?? ''}</strong></div>
+                    <div><span className="risk-margin-dot remaining" /><span>Remaining</span><strong>{marginAvailableValue.toLocaleString(undefined, { maximumFractionDigits: 2 })} {quote?.accountCurrency ?? ''}</strong></div>
+                  </div>
+                </div>
+              ) : <p className="risk-helper">OANDA margin-used and available values are not both available; the usage chart cannot be calculated.</p>}
+            </section>
             <small className="calculated-price">
               Available units and margin are indicative and can change before the order reaches OANDA
               {quote?.time ? ` · quote ${new Date(quote.time).toLocaleTimeString()}` : ''}.
