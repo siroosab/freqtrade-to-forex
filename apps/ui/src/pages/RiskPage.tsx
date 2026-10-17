@@ -352,11 +352,11 @@ export function RiskPage() {
       </section>
 
       <section className="content-grid risk-parent-grid">
-        <div className="panel risk-parent-panel">
-          <div className="panel-header compact"><div><p className="eyebrow">Trade workflow</p><h3>Position &amp; policy</h3></div></div>
+        <div className="panel risk-parent-panel risk-parent-panel--policy">
+          <div className="panel-header compact"><div><p className="eyebrow">🧭 TRADE WORKFLOW</p><h3>Position &amp; policy</h3></div></div>
           <div className="risk-parent-stack">
-            <div className="panel">
-              <div className="panel-header compact"><div><p className="eyebrow">Post-trade / OANDA live</p><h3>{selectedPair} trade status</h3></div><span className="pill neutral">{trades.length} open</span></div>
+            <div className="panel risk-child-panel risk-child-panel--trade">
+              <div className="panel-header compact"><div><p className="eyebrow">💹 POST-TRADE · OANDA LIVE</p><h3>{selectedPair} trade status</h3></div><span className="pill neutral">{trades.length} open</span></div>
               {positionsQuery.isLoading && <p>Loading open trades from OANDA…</p>}
               {positionsQuery.isError && <p role="alert">{positionsQuery.error instanceof Error ? positionsQuery.error.message : 'Could not load live OANDA trades.'}</p>}
               {!positionsQuery.isLoading && !positionsQuery.isError && !trades.length && <p>No open OANDA trade for {selectedPair}; live market data remains available.</p>}
@@ -377,29 +377,11 @@ export function RiskPage() {
               {quote && <small>Quote updated {new Date(quote.time).toLocaleTimeString()} · {quote.environment}</small>}
             </div>
 
-            <div className="panel risk-controls-panel">
+            <div className="panel risk-controls-panel risk-child-panel risk-child-panel--policy">
           <div className="panel-header compact">
-            <div><p className="eyebrow">Pre-trade · Priority policy</p><h3>Before order controls</h3><p className="risk-panel-intro">Saved here, these controls take priority over strategy risk settings on every automatic order sent to OANDA.</p></div>
-            <div className="chart-controls">
-              <span className="pill neutral">🛡️ {form?.source ?? 'default-policy'}</span>
-              <button
-                type="button"
-                className="primary-action"
-                onClick={() => {
-                  if (!form) return
-                  setSaveFeedback(null)
-                  saveMutation.mutate(form, {
-                    onSuccess: () => setSaveFeedback('Risk policy saved and connected to automatic execution.'),
-                    onError: (error) => setSaveFeedback(error instanceof Error ? error.message : 'Risk policy was rejected by the backend.'),
-                  })
-                }}
-                disabled={!form || saveMutation.isPending}
-              >
-                {saveMutation.isPending ? 'Saving…' : 'Save risk policy'}
-              </button>
-            </div>
+            <div><p className="eyebrow">🛡️ PRE-TRADE · PRIORITY POLICY</p><h3>Before order controls</h3><p className="risk-panel-intro">Saved here, these controls take priority over strategy risk settings on every automatic order sent to OANDA.</p></div>
+            <span className="pill neutral">🛡️ {form?.source ?? 'default-policy'}</span>
           </div>
-          {saveFeedback && <p className="risk-save-feedback" role="status">{saveFeedback}</p>}
           {form && <>
             <div className="settings-grid risk-settings-grid">
               <label className="field-block">
@@ -445,15 +427,33 @@ export function RiskPage() {
               The % mode caps the share of current available margin; GBP mode limits required margin. Leverage is determined by OANDA.
             </small>
           </>}
+          {saveFeedback && <p className="risk-save-feedback" role="status">{saveFeedback}</p>}
+          <div className="risk-action-row">
+            <button
+              type="button"
+              className="risk-action-button"
+              onClick={() => {
+                if (!form) return
+                setSaveFeedback(null)
+                saveMutation.mutate(form, {
+                  onSuccess: () => setSaveFeedback('Risk policy saved and connected to automatic execution.'),
+                  onError: (error) => setSaveFeedback(error instanceof Error ? error.message : 'Risk policy was rejected by the backend.'),
+                })
+              }}
+              disabled={!form || saveMutation.isPending}
+            >
+              {saveMutation.isPending ? '⏳ Saving…' : '💾 Save risk policy'}
+            </button>
+          </div>
               </div>
           </div>
         </div>
 
-        <div className="panel risk-parent-panel">
-          <div className="panel-header compact"><div><p className="eyebrow">Market &amp; execution</p><h3>Market data &amp; trade actions</h3></div></div>
+        <div className="panel risk-parent-panel risk-parent-panel--market">
+          <div className="panel-header compact"><div><p className="eyebrow">📊 MARKET &amp; EXECUTION</p><h3>Market data &amp; trade actions</h3></div></div>
           <div className="risk-parent-stack">
-              <div className="panel">
-                <div className="panel-header compact"><div><p className="eyebrow">Market range / OANDA</p><h3>Daily volatility estimate</h3></div><span className="pill neutral">D1 · 7 days</span></div>
+              <div className="panel risk-child-panel risk-child-panel--market">
+                <div className="panel-header compact"><div><p className="eyebrow">🌡️ MARKET RANGE · OANDA</p><h3>Daily volatility estimate</h3></div><span className="pill neutral">D1 · 7 days</span></div>
                 {volatilityQuery.isLoading && <p>Loading daily candles from OANDA…</p>}
                 {volatilityQuery.isError && <p role="alert">{volatilityQuery.error instanceof Error ? volatilityQuery.error.message : 'Daily OANDA candles unavailable.'}</p>}
                 {!volatilityQuery.isLoading && !volatilityQuery.isError && (Number.isFinite(volatilityPercent)
@@ -489,9 +489,9 @@ export function RiskPage() {
                   : <p>Not enough OANDA daily candles to calculate the 7-day range.</p>)}
               </div>
 
-              <div className="panel">
+              <div className="panel risk-child-panel risk-child-panel--average">
                 <div className="panel-header compact">
-                  <div><p className="eyebrow">Post-trade · Average entry</p><h3>Place average-entry limit on OANDA</h3></div>
+                  <div><p className="eyebrow">➕ POST-TRADE · AVERAGE ENTRY</p><h3>Place average-entry limit on OANDA</h3></div>
                   <span className="pill neutral">Separate order</span>
                 </div>
                 <p className="risk-helper">This creates a separate linked limit order; only populated stop-loss and take-profit values are attached to it.</p>
@@ -514,7 +514,7 @@ export function RiskPage() {
                       <small className="risk-hyperopt-reference">Averaging-add limits are not tuned by Hyperopt.</small>
                     </label>
                   </div>
-                  <div className="chart-controls risk-click-controls">
+                  <div className="risk-action-row">
                     <button type="button" onClick={() => {
                       if (!selectedTrade || !averagePrice) {
                         setExecutionFeedback({ message: 'Select an open trade and enter a valid average-entry target.', error: true, kind: 'average' })
@@ -538,16 +538,16 @@ export function RiskPage() {
                           ...(takeProfitPrice ? { takeProfit: takeProfitPrice } : {}),
                         },
                       })
-                    }} disabled={!selectedTrade || !quote?.tradeable || averageMutation.isPending}>{averageMutation.isPending ? 'Placing OANDA order…' : 'Place average-entry limit on OANDA'}</button>
+                    }} className="risk-action-button" disabled={!selectedTrade || !quote?.tradeable || averageMutation.isPending}>{averageMutation.isPending ? '⏳ Placing order…' : '➕ Place average-entry order'}</button>
                   </div>
                 </>}
                 {executionFeedback?.kind === 'average' && <p className="risk-save-feedback" role={executionFeedback.error ? 'alert' : 'status'}>{executionFeedback.message}</p>}
                 {!selectedTrade && <p className="risk-helper">An open OANDA trade for {selectedPair} is required to create a linked average-entry order.</p>}
               </div>
 
-              <div className="panel">
+              <div className="panel risk-child-panel risk-child-panel--protection">
           <div className="panel-header compact">
-              <div><p className="eyebrow">Post-trade · Live protection</p><h3>Apply protections on OANDA</h3></div>
+              <div><p className="eyebrow">🔐 POST-TRADE · LIVE PROTECTION</p><h3>Apply protections on OANDA</h3></div>
               <span className="pill neutral">{selectedTrade ? `${selectedTrade.side} · ${selectedTrade.id}` : 'No open trade'}</span>
           </div>
           <p className="risk-helper">Only protection fields with values are sent to the selected open trade. Blank fields are left unchanged.</p>
@@ -590,7 +590,7 @@ export function RiskPage() {
                 <small className="risk-hyperopt-reference">Approved Hyperopt trailing stop: {approvedHyperopt?.trailingStopLoss === true ? 'enabled' : approvedHyperopt?.trailingStopLoss === false ? 'disabled' : 'not specified'}{approvedHyperopt?.stopLoss ? ` · distance: ${approvedHyperopt.stopLoss.value} ${approvedHyperopt.stopLoss.unit ?? approvedHyperopt.stopLoss.mode}` : ''}</small>
               </label>
             </div>
-            <div className="chart-controls risk-click-controls">
+            <div className="risk-action-row">
               <button type="button" onClick={() => {
                 if (!selectedTrade) return
                 if (trailingStopPips.trim() && stopLossConfigured) {
@@ -618,7 +618,7 @@ export function RiskPage() {
                     ...(trailingDistance ? { trailingStopLossDistance: trailingDistance } : {}),
                   },
                 })
-              }} disabled={!selectedTrade || !quote?.tradeable || protectionMutation.isPending}>{protectionMutation.isPending ? 'Updating OANDA…' : 'Apply filled protection fields to this trade'}</button>
+              }} className="risk-action-button" disabled={!selectedTrade || !quote?.tradeable || protectionMutation.isPending}>{protectionMutation.isPending ? '⏳ Updating OANDA…' : '🔐 Apply protections on OANDA'}</button>
             </div>
           </>}
           {executionFeedback?.kind === 'protection' && <p className="risk-save-feedback" role={executionFeedback.error ? 'alert' : 'status'}>{executionFeedback.message}</p>}
