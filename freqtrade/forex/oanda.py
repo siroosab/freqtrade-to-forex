@@ -319,8 +319,16 @@ class OandaClient:
                 page_from = self._normalize_time(filtered[-1].time)
         return sorted(collected, key=lambda candle: candle.time)[-count:]
 
-    async def get_prices(self, instruments: Sequence[str]) -> list[OandaPrice]:
-        pricing = await self.get_pricing(instruments)
+    async def get_prices(
+        self,
+        instruments: Sequence[str],
+        *,
+        include_units_available: bool = False,
+    ) -> list[OandaPrice]:
+        pricing = await self.get_pricing(
+            instruments,
+            include_units_available=include_units_available,
+        )
         return list(pricing.prices)
 
     async def get_pricing(
@@ -328,10 +336,13 @@ class OandaClient:
         instruments: Sequence[str],
         *,
         include_home_conversions: bool = False,
+        include_units_available: bool = False,
     ) -> OandaPricing:
         params = {"instruments": ",".join(instruments)}
         if include_home_conversions:
             params["includeHomeConversions"] = "true"
+        if include_units_available:
+            params["includeUnitsAvailable"] = "true"
         payload = await self._request(
             "GET",
             f"/v3/accounts/{self.account_id}/pricing",

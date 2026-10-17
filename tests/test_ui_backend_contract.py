@@ -183,9 +183,11 @@ def test_market_quote_endpoint_reads_current_broker_price(monkeypatch):
         async def __aexit__(self, exc_type, exc, traceback):
             return None
 
-        async def get_prices(self, instruments):
+        async def get_prices(self, instruments, *, include_units_available=False):
             if instruments == ("EUR_USD",):
+                assert include_units_available is True
                 return [FakePrice()]
+            assert include_units_available is False
             assert instruments == ("USD_GBP",)
             return [FakeConversionPrice()]
 

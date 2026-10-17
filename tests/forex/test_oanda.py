@@ -4277,7 +4277,10 @@ async def test_oanda_client_reads_instruments_prices_and_candles() -> None:
     ) as http_client:
         async with OandaClient("ignored", "account", http_client=http_client) as client:
             instruments = await client.get_instruments(["EUR_USD"])
-            prices = await client.get_prices(["EUR_USD"])
+            prices = await client.get_prices(
+                ["EUR_USD"],
+                include_units_available=True,
+            )
             candles = await client.get_candles("EUR_USD", "M5", count=1)
 
     assert instruments[0].pip_size == Decimal("0.0001")
@@ -4286,6 +4289,7 @@ async def test_oanda_client_reads_instruments_prices_and_candles() -> None:
     assert prices[0].bids[0] == (Decimal("1.10000"), Decimal("100000"))
     assert prices[0].asks[1] == (Decimal("1.10020"), Decimal("180000"))
     assert prices[0].units_available == {"default": {"long": "200000", "short": "190000"}}
+    assert requests[1].url.params["includeUnitsAvailable"] == "true"
     assert candles[0].close == Decimal("1.10050")
     assert requests[0].headers["Authorization"] == "Bearer test-token"
     assert requests[2].url.params["granularity"] == "M5"

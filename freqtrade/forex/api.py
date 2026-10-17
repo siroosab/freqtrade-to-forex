@@ -1860,7 +1860,10 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             async with OandaClient(
                 settings.token, settings.account_id, environment=settings.environment
             ) as client:
-                prices = await client.get_prices((instrument,))
+                prices = await client.get_prices(
+                    (instrument,),
+                    include_units_available=True,
+                )
                 if not prices:
                     raise HTTPException(
                         status_code=502,
