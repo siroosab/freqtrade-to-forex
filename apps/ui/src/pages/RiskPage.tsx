@@ -233,6 +233,28 @@ export function RiskPage() {
   const availableUnits = quote?.unitsAvailable?.default
   const availableLongUnits = Number(availableUnits?.long)
   const availableShortUnits = Number(availableUnits?.short)
+  const pairLongUnits = trades
+    .filter((trade) => trade.side === 'BUY')
+    .reduce((total, trade) => total + Math.abs(Number(trade.units)), 0)
+  const pairShortUnits = trades
+    .filter((trade) => trade.side === 'SELL')
+    .reduce((total, trade) => total + Math.abs(Number(trade.units)), 0)
+  const pairUsedUnits = pairLongUnits + pairShortUnits
+  const pairVolumeBreakdownAvailable = !positionsQuery.isLoading
+    && !positionsQuery.isError
+    && Number.isFinite(availableLongUnits) && availableLongUnits >= 0
+    && Number.isFinite(availableShortUnits) && availableShortUnits >= 0
+    && Number.isFinite(pairUsedUnits) && pairUsedUnits >= 0
+  const pairRemainingUnits = pairVolumeBreakdownAvailable
+    ? availableLongUnits + availableShortUnits
+    : 0
+  const pairTotalCapacityUnits = pairUsedUnits + pairRemainingUnits
+  const pairUsedPercent = pairVolumeBreakdownAvailable && pairTotalCapacityUnits > 0
+    ? pairUsedUnits / pairTotalCapacityUnits * 100
+    : 0
+  const pairVolumeDonutStyle = {
+    background: `conic-gradient(#fb7185 0 ${pairUsedPercent}%, #60a5fa ${pairUsedPercent}% 100%)`,
+  }
   const liveUnitsLimit = Math.max(
     Number.isFinite(availableLongUnits) ? availableLongUnits : 0,
     Number.isFinite(availableShortUnits) ? availableShortUnits : 0,
@@ -386,25 +408,58 @@ export function RiskPage() {
           <div className="panel-header compact"><div><p className="eyebrow">🧭 TRADE WORKFLOW</p><h3>Position &amp; policy</h3></div></div>
           <div className="risk-parent-stack">
             <div className="panel risk-child-panel risk-child-panel--trade">
-              <div className="panel-header compact"><div><p className="eyebrow">💹 POST-TRADE · OANDA LIVE</p><h3>{selectedPair} trade status</h3></div><span className="pill neutral">{trades.length} open</span></div>
-              {positionsQuery.isLoading && <p>Loading open trades from OANDA…</p>}
-              {positionsQuery.isError && <p role="alert">{positionsQuery.error instanceof Error ? positionsQuery.error.message : 'Could not load live OANDA trades.'}</p>}
-              {!positionsQuery.isLoading && !positionsQuery.isError && !trades.length && <p>No open OANDA trade for {selectedPair}; live market data remains available.</p>}
+              <div className="panel-header compact"><div><p className="eyebrow">💹 POST-TRADE · OANDA LIVE</p><h3>{selectedPair} trade status</h3></div><span className={`pill ${trades.length ? 'risk-trade-open-pill' : 'neutral'}`}>{trades.length ? '🟢' : '💤'} {trades.length} open</span></div>
+              {positionsQuery.isLoading && <p className="risk-trade-status"><span aria-hidden="true">⏳</span> Loading open trades from OANDA…</p>}
+              {positionsQuery.isError && <p className="risk-trade-status risk-trade-status--error" role="alert"><span aria-hidden="true">⚠️</span> {positionsQuery.error instanceof Error ? positionsQuery.error.message : 'Could not load live OANDA trades.'}</p>}
+              {!positionsQuery.isLoading && !positionsQuery.isError && !trades.length && <p className="risk-trade-status"><span aria-hidden="true">📭</span> No open OANDA trade for {selectedPair}; live market data remains available.</p>}
               {trades.length > 0 && <>
-                {trades.length > 1 && <label className="field-block"><span>Trade to control</span><select value={selectedTrade?.id ?? ''} onChange={(event) => setSelectedTradeId(event.target.value)}>{trades.map((trade) => <option key={trade.id} value={trade.id}>{trade.id} · {trade.side} · {trade.units} units</option>)}</select></label>}
+                {trades.length > 1 && <label className="field-block"><span>🎯 Trade to control</span><select value={selectedTrade?.id ?? ''} onChange={(event) => setSelectedTradeId(event.target.value)}>{trades.map((trade) => <option key={trade.id} value={trade.id}>{trade.id} · {trade.side === 'BUY' ? '🟢 LONG' : '🔴 SHORT'} · {trade.units} units</option>)}</select></label>}
                 {selectedTrade && <div className="risk-summary">
-                  <div><span>Side / units</span><strong>{selectedTrade.side} · {Number(selectedTrade.units).toLocaleString()}</strong></div>
-                  <div><span>Entry / current</span><strong>{Number(selectedTrade.entryPrice).toFixed(precision)} / {selectedTrade.currentPrice ? Number(selectedTrade.currentPrice).toFixed(precision) : '—'}</strong></div>
-                  <div><span>Selected trade P/L</span><strong className={Number(selectedTrade.pnl) < 0 ? 'negative' : 'positive'}>{Number(selectedTrade.pnl) > 0 ? '+' : ''}{selectedTrade.pnl} {accountCurrency}</strong></div>
-                  <div><span>Pair net P/L</span><strong className={pairProfitLoss < 0 ? 'negative' : 'positive'}>{pairProfitLoss > 0 ? '+' : ''}{pairProfitLoss.toFixed(2)} {accountCurrency}</strong></div>
+                  <div><span>↕️ Side / units</span><strong>{selectedTrade.side === 'BUY' ? '🟢 LONG' : '🔴 SHORT'} · {Number(selectedTrade.units).toLocaleString()}</strong></div>
+                  <div><span>🎯 Entry / current</span><strong>{Number(selectedTrade.entryPrice).toFixed(precision)} / {selectedTrade.currentPrice ? Number(selectedTrade.currentPrice).toFixed(precision) : '—'}</strong></div>
+                  <div><span>{Number(selectedTrade.pnl) > 0 ? '📈' : Number(selectedTrade.pnl) < 0 ? '📉' : '➖'} Selected trade P/L</span><strong className={Number(selectedTrade.pnl) < 0 ? 'negative' : Number(selectedTrade.pnl) > 0 ? 'positive' : 'risk-pnl-neutral'}>{Number(selectedTrade.pnl) > 0 ? '+' : ''}{selectedTrade.pnl} {accountCurrency}</strong></div>
+                  <div><span>{pairProfitLoss > 0 ? '📈' : pairProfitLoss < 0 ? '📉' : '➖'} Pair net P/L</span><strong className={pairProfitLoss < 0 ? 'negative' : pairProfitLoss > 0 ? 'positive' : 'risk-pnl-neutral'}>{pairProfitLoss > 0 ? '+' : ''}{pairProfitLoss.toFixed(2)} {accountCurrency}</strong></div>
                 </div>}
               </>}
               <div className="risk-summary">
-                <div><span>OANDA bid / ask</span><strong>{quote ? `${Number(quote.bid).toFixed(precision)} / ${Number(quote.ask).toFixed(precision)}` : '—'}</strong></div>
-                <div><span>Instrument pip</span><strong>{quote?.pipSize ? `${quote.pipSize} ${quote.quoteCurrency ?? ''}` : 'Unavailable'}</strong></div>
+                <div><span>💱 OANDA bid / ask</span><strong>{quote ? `${Number(quote.bid).toFixed(precision)} / ${Number(quote.ask).toFixed(precision)}` : '—'}</strong></div>
+                <div><span>📏 Instrument pip</span><strong>{quote?.pipSize ? `${quote.pipSize} ${quote.quoteCurrency ?? ''}` : 'Unavailable'}</strong></div>
               </div>
-              {quoteQuery.isError && <p role="alert">OANDA live quote unavailable; broker controls are disabled.</p>}
-              {quote && <small>Quote updated {new Date(quote.time).toLocaleTimeString()} · {quote.environment}</small>}
+              {quoteQuery.isError && <p className="risk-trade-status risk-trade-status--error" role="alert"><span aria-hidden="true">⚠️</span> OANDA live quote unavailable; broker controls are disabled.</p>}
+              {quote && <small className="risk-trade-updated">🟢 Quote updated {new Date(quote.time).toLocaleTimeString()} · {quote.environment}</small>}
+              <section className="risk-pair-volume" aria-label={`${selectedPair} trade volume`}>
+                <div className="risk-pair-volume-heading">
+                  <div><span>📊 {selectedPair} volume usage</span><small>Open pair volume compared with remaining OANDA capacity</small></div>
+                  {pairVolumeBreakdownAvailable && pairTotalCapacityUnits > 0 && <strong>{pairUsedPercent.toFixed(1)}% used</strong>}
+                </div>
+                {pairVolumeBreakdownAvailable && pairTotalCapacityUnits > 0 ? (
+                  <div className="risk-pair-volume-content">
+                    <div
+                      className="risk-pair-volume-donut"
+                      style={pairVolumeDonutStyle}
+                      role="img"
+                      aria-label={`${selectedPair}: ${pairUsedUnits.toLocaleString()} units used in open trades; ${pairRemainingUnits.toLocaleString()} units remaining across OANDA long and short capacity`}
+                    >
+                      <div className="risk-pair-volume-donut-center">
+                        <strong>{pairUsedPercent.toFixed(0)}%</strong>
+                        <small>used</small>
+                      </div>
+                    </div>
+                    <div className="risk-pair-volume-legend">
+                      <div><span className="risk-pair-volume-dot used" /><span>🔴 Open trade volume</span><strong>{pairUsedUnits.toLocaleString()} units</strong></div>
+                      <div><span className="risk-pair-volume-dot remaining" /><span>🔵 Remaining OANDA capacity</span><strong>{pairRemainingUnits.toLocaleString()} units</strong></div>
+                    </div>
+                  </div>
+                ) : <p className="risk-trade-status">{positionsQuery.isLoading
+                  ? '⏳ Waiting for open trades and OANDA unit limits…'
+                  : positionsQuery.isError
+                    ? '⚠️ Open trade data is unavailable; volume usage cannot be calculated.'
+                    : !quote
+                      ? '⏳ Waiting for live OANDA unit limits…'
+                      : pairVolumeBreakdownAvailable
+                        ? 'ℹ️ OANDA reports no remaining unit capacity for this pair.'
+                        : 'ℹ️ OANDA did not return complete LONG/SHORT unit limits; volume usage cannot be calculated.'}</p>}
+              </section>
             </div>
 
             <div className="panel risk-controls-panel risk-child-panel risk-child-panel--policy">
