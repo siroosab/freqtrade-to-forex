@@ -3152,6 +3152,119 @@
     flex: 1 1 auto;
     text-align: center;
   }
+
+  .dashboard-parent-grid,
+  .dashboard-parent,
+  .dashboard-parent > .content-grid,
+  .dashboard-parent .main-column,
+  .dashboard-parent .side-column,
+  .dashboard-parent .lower-grid,
+  .dashboard-parent .panel {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .dashboard-parent-heading {
+    width: 100%;
+  }
+
+  .dashboard-parent-count {
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .dashboard-parent .panel-header {
+    width: 100%;
+  }
+
+  .dashboard-parent .panel-header > *,
+  .dashboard-parent .panel-header h3 {
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
+
+  .dashboard-parent .pill {
+    max-width: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    text-align: center;
+    line-height: 1.35;
+  }
+
+  .dashboard-parent .chart-controls {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .dashboard-parent .chart-controls select {
+    flex: 1 1 120px;
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .watch-row > *,
+  .leaderboard-meta,
+  .margin-meta,
+  .margin-values {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .quote-strip-heading,
+  .quote-values {
+    flex-wrap: wrap;
+  }
+
+  .quote-strip-heading > * {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .dashboard-parent .actions-row {
+    flex-wrap: wrap;
+  }
+
+  .dashboard-parent .actions-row > button {
+    flex: 1 1 140px;
+  }
+}
+
+@media (max-width: 420px) {
+  .dashboard-parent {
+    padding: 11px;
+    border-radius: 19px;
+  }
+
+  .dashboard-parent .main-column > .panel,
+  .dashboard-parent .side-column > .panel {
+    padding: 14px 12px;
+  }
+
+  .dashboard-parent-heading h3 {
+    font-size: 1rem;
+  }
+
+  .account-snapshot-grid {
+    gap: 7px;
+  }
+
+  .snapshot-tile {
+    padding: 10px 8px;
+  }
+
+  .margin-donut {
+    width: 156px;
+    height: 156px;
+  }
+
+  .margin-donut::before {
+    inset: 17px;
+  }
+
+  .dashboard-parent .live-order-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .setup-shell {
