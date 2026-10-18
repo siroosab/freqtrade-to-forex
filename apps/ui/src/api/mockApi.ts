@@ -175,6 +175,7 @@ export type StrategyReview = {
       emaTrendCondition?: EmaTrendConditionSettings
       runSettings?: {
         emaTrendCondition?: EmaTrendConditionSettings
+        emaTrendTimeperiodMode?: 'fixed' | 'automatic'
       }
       stopLoss?: {
         mode: 'pips' | 'percent' | 'money'
@@ -197,6 +198,7 @@ export type HyperoptCandidateRow = {
   trailingStopLoss?: boolean
   optimizeRoi?: boolean
   useExitSignal?: boolean
+  emaTrendCondition?: EmaTrendConditionSettings
   parameters: Record<string, string | number | boolean>
   minimal_roi?: Record<string, number>
   stopLoss?: {
@@ -242,6 +244,9 @@ export type HyperoptReport = {
   optimizeRoi?: boolean
   useExitSignal?: boolean
   emaTrendCondition?: EmaTrendConditionSettings
+  runSettings?: {
+    emaTrendTimeperiodMode?: 'fixed' | 'automatic'
+  }
   positionSizing?: {
     mode: 'risk' | 'units' | 'account_amount'
     value: string | null
@@ -470,7 +475,7 @@ async function throwApiError(response: Response, message: string): Promise<never
   throw new Error(`${message}: ${detail}`)
 }
 
-export async function startHyperopt(payload: { pair: string; timeframe: string; strategyClass: string; steps: number; attempts: number; workers: number; historyMode?: 'candles' | 'days' | 'date_range'; historyValue?: number; startDate?: string; endDate?: string; hyperoptLoss?: string; spread?: string; slippage?: string; financingRatePerDayPercent?: string; commissionRatePercent?: string; positionSizeMode?: 'risk' | 'units' | 'account_amount'; positionSize?: string; stopDistanceMode?: 'static' | 'automatic'; stopLossMode?: 'pips' | 'percent' | 'money'; stopLossValue?: string; trailingStopLoss?: boolean; optimizeRoi?: boolean; useExitSignal?: boolean; emaTrendCondition?: EmaTrendConditionSettings }): Promise<{ pair: string; status: string; attemptsTotal: number; workers: number }> {
+export async function startHyperopt(payload: { pair: string; timeframe: string; strategyClass: string; steps: number; attempts: number; workers: number; historyMode?: 'candles' | 'days' | 'date_range'; historyValue?: number; startDate?: string; endDate?: string; hyperoptLoss?: string; spread?: string; slippage?: string; financingRatePerDayPercent?: string; commissionRatePercent?: string; positionSizeMode?: 'risk' | 'units' | 'account_amount'; positionSize?: string; stopDistanceMode?: 'static' | 'automatic'; stopLossMode?: 'pips' | 'percent' | 'money'; stopLossValue?: string; trailingStopLoss?: boolean; optimizeRoi?: boolean; useExitSignal?: boolean; optimizeEmaTrendTimeperiod?: boolean; emaTrendCondition?: EmaTrendConditionSettings }): Promise<{ pair: string; status: string; attemptsTotal: number; workers: number }> {
   const response = await fetch(buildApiUrl('/api/v1/hyperopt/start'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

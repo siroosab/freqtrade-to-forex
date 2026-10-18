@@ -4397,6 +4397,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         optimize_stop_distance: bool,
         optimize_roi: bool,
         use_exit_signal: bool,
+        optimize_ema_trend_timeperiod: bool,
         trailing_stop_loss: bool,
         ema_trend_condition: dict[str, object],
         position_size_mode: str,
@@ -4434,6 +4435,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 optimize_stop_distance=optimize_stop_distance,
                 optimize_roi=optimize_roi,
                 use_exit_signal=use_exit_signal,
+                optimize_ema_trend_timeperiod=optimize_ema_trend_timeperiod,
                 trailing_stop_loss=trailing_stop_loss,
                 ema_trend_condition=ema_trend_condition,
                 max_attempts=attempts,
@@ -4449,6 +4451,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 should_stop=stop_event.is_set,
             )
             best = candidates[0]
+            best_ema_trend_condition = dict(
+                best.get("emaTrendCondition") or ema_trend_condition
+            )
             completed_at = datetime.now(timezone.utc).isoformat()
             scope_key = hyperopt_scope(pair, strategy_class, timeframe)
             best_stop_loss = dict(
@@ -4488,7 +4493,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "optimizeRoi": optimize_roi,
                 "useExitSignal": use_exit_signal,
                 "runSettings": dict(job.get("runSettings") or {}),
-                "emaTrendCondition": dict(ema_trend_condition),
+                "emaTrendCondition": best_ema_trend_condition,
                 "parameters": best.get("parameters", {}),
                 "minimal_roi": best.get("minimal_roi"),
                 "stopLoss": best_stop_loss,
@@ -4521,7 +4526,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "optimizeRoi": optimize_roi,
                 "useExitSignal": use_exit_signal,
                 "runSettings": dict(job.get("runSettings") or {}),
-                "emaTrendCondition": dict(ema_trend_condition),
+                "emaTrendCondition": best_ema_trend_condition,
                 "stopLoss": best_stop_loss,
                 "trailingStopLoss": trailing_stop_loss,
                 "costSettings": {
@@ -5475,6 +5480,22 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        optimize_ema_trend_timeperiod = payload.get(
+            "optimizeEmaTrendTimeperiod", False
+        )
+        if not isinstance(optimize_ema_trend_timeperiod, bool):
+            raise HTTPException(
+                status_code=400,
+                detail="optimizeEmaTrendTimeperiod must be a boolean",
+            )
+        if optimize_ema_trend_timeperiod and not ema_trend_condition["enabled"]:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "EMA chain timeperiod can only be optimized when the EMA trend condition "
+                    "is enabled"
+                ),
+            )
         try:
             position_size = Decimal(str(payload.get("positionSize", "1000")))
             stop_distance_mode = str(payload.get("stopDistanceMode", "static")).lower()
@@ -5539,6 +5560,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             not parameters
             and not optimize_roi
             and stop_distance_mode != "automatic"
+            and not optimize_ema_trend_timeperiod
         ):
             raise HTTPException(
                 status_code=400,
@@ -5640,7 +5662,12 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                             strategy,
                             informative_timeframe,
                             len(candles),
-                            ema_trend_condition,
+                            (
+                                {**ema_trend_condition, "timeperiod": 13}
+                                if optimize_ema_trend_timeperiod
+                                and informative_timeframe == ema_trend_condition["timeframe"]
+                                else ema_trend_condition
+                            ),
                         ),
                     )
                     informative_frame = await provider.fetch_latest(
@@ -5685,6 +5712,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             "trailingStopLoss": trailing_stop_loss,
             "optimizeRoi": optimize_roi,
             "useExitSignal": use_exit_signal,
+            "emaTrendTimeperiodMode": (
+                "automatic" if optimize_ema_trend_timeperiod else "fixed"
+            ),
             "emaTrendCondition": dict(ema_trend_condition),
             "hyperoptLoss": hyperopt_loss,
             "spread": str(spread),
@@ -5740,6 +5770,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 optimize_stop_distance=stop_distance_mode == "automatic",
                 optimize_roi=optimize_roi,
                 use_exit_signal=use_exit_signal,
+                optimize_ema_trend_timeperiod=optimize_ema_trend_timeperiod,
                 trailing_stop_loss=trailing_stop_loss,
                 ema_trend_condition=ema_trend_condition,
                 position_size_mode=position_size_mode,

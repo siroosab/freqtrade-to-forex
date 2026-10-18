@@ -5249,3 +5249,162 @@
     font-size: 0.92rem;
   }
 }
+
+.hyperopt-optimization-panel {
+  min-width: 0;
+  overflow: hidden;
+  border-color: rgba(167, 139, 250, 0.28);
+  background:
+    radial-gradient(circle at 100% 0, rgba(124, 58, 237, 0.12), transparent 32%),
+    linear-gradient(155deg, rgba(18, 26, 48, 0.96), rgba(11, 18, 32, 0.94));
+  box-shadow: inset 0 1px 0 rgba(196, 181, 253, 0.08), 0 16px 36px rgba(2, 6, 23, 0.18);
+}
+
+.hyperopt-results-panel {
+  min-width: 0;
+  border-color: rgba(56, 189, 248, 0.2);
+  background:
+    radial-gradient(circle at 100% 0, rgba(14, 165, 233, 0.1), transparent 34%),
+    linear-gradient(155deg, rgba(14, 25, 42, 0.96), rgba(10, 17, 30, 0.94));
+}
+
+.hyperopt-approval-panel {
+  grid-column: 1 / -1;
+}
+
+.hyperopt-approval-panel .summary-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  max-width: 560px;
+}
+
+.hyperopt-panel-header {
+  align-items: flex-start;
+  padding-bottom: 15px;
+  border-bottom: 1px solid rgba(167, 139, 250, 0.16);
+}
+
+.hyperopt-panel-header h3 {
+  margin-top: 4px;
+}
+
+.hyperopt-panel-header .pill {
+  flex: none;
+  border: 1px solid rgba(167, 139, 250, 0.24);
+  background: rgba(124, 58, 237, 0.12);
+  color: #ddd6fe;
+}
+
+.hyperopt-panel-intro {
+  margin: 6px 0 0;
+  color: #a5b4c9;
+  font-size: 0.78rem;
+}
+
+.hyperopt-optimization-panel .settings-grid {
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  align-items: start;
+  gap: 16px;
+}
+
+.hyperopt-optimization-panel .field-block {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid rgba(148, 163, 184, 0.1);
+  border-radius: 13px;
+  background: rgba(2, 6, 23, 0.24);
+}
+
+.hyperopt-optimization-panel .field-block > span {
+  color: #c4b5fd;
+}
+
+.hyperopt-optimization-panel .field-block small {
+  line-height: 1.5;
+}
+
+.hyperopt-action-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  margin: 8px 0 20px;
+  padding: 16px;
+  border: 1px solid rgba(56, 189, 248, 0.22);
+  border-radius: 16px;
+  background:
+    linear-gradient(110deg, rgba(14, 165, 233, 0.1), rgba(124, 58, 237, 0.1)),
+    rgba(2, 6, 23, 0.42);
+}
+
+.hyperopt-action-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.hyperopt-action-copy strong {
+  color: #e0f2fe;
+  font-size: 0.95rem;
+}
+
+.hyperopt-action-copy small {
+  color: #94a3b8;
+  font-size: 0.75rem;
+}
+
+.hyperopt-action-buttons {
+  display: flex;
+  flex: none;
+  gap: 10px;
+}
+
+.hyperopt-action-buttons > button {
+  min-width: 168px;
+  min-height: 52px;
+  padding: 12px 18px;
+  font-size: 0.9rem;
+}
+
+.hyperopt-start-action {
+  background: linear-gradient(135deg, #34d399, #22d3ee);
+  box-shadow: 0 10px 24px rgba(34, 211, 238, 0.2);
+}
+
+.hyperopt-stop-action {
+  border: 1px solid rgba(248, 113, 113, 0.26);
+  background: linear-gradient(145deg, rgba(127, 29, 29, 0.44), rgba(69, 10, 10, 0.32));
+  color: #fecaca;
+}
+
+.hyperopt-action-buttons > button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+  transform: none;
+}
+
+@media (max-width: 760px) {
+  .hyperopt-action-bar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .hyperopt-action-buttons {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .hyperopt-action-buttons > button {
+    min-width: 0;
+    width: 100%;
+  }
+}
+
+@media (max-width: 520px) {
+  .hyperopt-panel-header .pill {
+    align-self: flex-start;
+  }
+
+  .hyperopt-action-buttons {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

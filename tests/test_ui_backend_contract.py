@@ -1251,6 +1251,23 @@ def test_hyperopt_rejects_invalid_cost_settings(tmp_path):
             headers=headers,
             json={"optimizeRoi": "false"},
         )
+        invalid_ema_toggle = scoped_client.post(
+            "/api/v1/hyperopt/start",
+            headers=headers,
+            json={"optimizeEmaTrendTimeperiod": "true"},
+        )
+        disabled_ema_optimization = scoped_client.post(
+            "/api/v1/hyperopt/start",
+            headers=headers,
+            json={
+                "emaTrendCondition": {
+                    "enabled": False,
+                    "timeframe": "1h",
+                    "timeperiod": 4,
+                },
+                "optimizeEmaTrendTimeperiod": True,
+            },
+        )
         invalid_workers = scoped_client.post(
             "/api/v1/hyperopt/start",
             headers=headers,
@@ -1267,6 +1284,12 @@ def test_hyperopt_rejects_invalid_cost_settings(tmp_path):
     assert "trailingStopLoss must be a boolean" in invalid_trailing_stop.json()["detail"]
     assert invalid_roi_toggle.status_code == 400
     assert "optimizeRoi and useExitSignal must be booleans" in invalid_roi_toggle.json()["detail"]
+    assert invalid_ema_toggle.status_code == 400
+    assert "optimizeEmaTrendTimeperiod must be a boolean" in invalid_ema_toggle.json()["detail"]
+    assert disabled_ema_optimization.status_code == 400
+    assert "only be optimized when the EMA trend condition is enabled" in (
+        disabled_ema_optimization.json()["detail"]
+    )
     assert invalid_workers.status_code == 400
     assert "workers must be an integer" in invalid_workers.json()["detail"]
 

@@ -88,6 +88,7 @@ _HyperoptTask = tuple[
     dict[str, int | float],
     dict[str, float],
     Decimal,
+    int,
 ]
 
 
@@ -109,7 +110,14 @@ def _evaluate_hyperopt_candidate(
         context = _HYPEROPT_WORKER_CONTEXT
     if context is None:
         raise RuntimeError("Hyperopt worker context was not initialized")
-    attempt, values, roi_parameters, minimal_roi, candidate_stop_pips = task
+    (
+        attempt,
+        values,
+        roi_parameters,
+        minimal_roi,
+        candidate_stop_pips,
+        candidate_ema_timeperiod,
+    ) = task
     evaluate = _create_candidate_evaluator(
         candidate_values=values,
         candidate_minimal_roi=minimal_roi,
@@ -118,7 +126,10 @@ def _evaluate_hyperopt_candidate(
         timeframe=context.timeframe,
         pair=context.pair,
         informative_candles=context.informative_candles,
-        ema_trend_condition=context.ema_trend_condition,
+        ema_trend_condition={
+            **context.ema_trend_condition,
+            "timeperiod": candidate_ema_timeperiod,
+        },
         instrument=context.instrument,
         starting_balance=context.starting_balance,
         risk_fraction=context.risk_fraction,
@@ -151,6 +162,10 @@ def _evaluate_hyperopt_candidate(
         "trailingStopLoss": context.trailing_stop_loss,
         "optimizeRoi": context.optimize_roi,
         "useExitSignal": context.use_exit_signal,
+        "emaTrendCondition": {
+            **context.ema_trend_condition,
+            "timeperiod": candidate_ema_timeperiod,
+        },
         "stopLoss": {
             "mode": "pips" if context.optimize_stop_distance else context.stop_loss_mode,
             "value": str(
@@ -639,6 +654,7 @@ def run_strategy_hyperopt(
     optimize_stop_distance: bool = False,
     optimize_roi: bool = True,
     use_exit_signal: bool = True,
+    optimize_ema_trend_timeperiod: bool = False,
     trailing_stop_loss: bool = False,
     slippage: Decimal = Decimal(0),
     financing_rate_per_day: Decimal = Decimal(0),
@@ -667,12 +683,21 @@ def run_strategy_hyperopt(
         raise ValueError(
             f"workers must be an integer between 1 and the {available_workers} available CPUs"
         )
-    if not isinstance(optimize_roi, bool) or not isinstance(use_exit_signal, bool):
-        raise ValueError("optimize_roi and use_exit_signal must be booleans")
+    if (
+        not isinstance(optimize_roi, bool)
+        or not isinstance(use_exit_signal, bool)
+        or not isinstance(optimize_ema_trend_timeperiod, bool)
+    ):
+        raise ValueError(
+            "optimize_roi, use_exit_signal, and optimize_ema_trend_timeperiod must be booleans"
+        )
     condition_settings = (
         normalize_ema_trend_condition(ema_trend_condition)
         if ema_trend_condition is not None
         else {"enabled": False, "timeframe": "1h", "timeperiod": 4}
+    )
+    optimize_ema_trend_timeperiod = (
+        optimize_ema_trend_timeperiod and condition_settings["enabled"] is True
     )
     strategy = load_strategy(strategy_class, timeframe, pair)
     class_attributes: dict[str, object] = {}
@@ -708,6 +733,9 @@ def run_strategy_hyperopt(
     train = candles.iloc[:split_index]
     validation = candles.iloc[split_index:]
     rng = random.Random()  # noqa: S311
+    ema_timeperiods = list(range(2, 14)) if optimize_ema_trend_timeperiod else []
+    if ema_timeperiods:
+        rng.shuffle(ema_timeperiods)
     worker_context = _HyperoptWorkerContext(
         parameters=parameters,
         strategy_class=strategy_class,
@@ -761,7 +789,21 @@ def run_strategy_hyperopt(
             else {}
         )
         minimal_roi = _generate_roi_table(roi_parameters) if optimize_roi else {}
-        tasks.append((attempt, values, roi_parameters, minimal_roi, candidate_stop_pips))
+        candidate_ema_timeperiod = (
+            ema_timeperiods[(attempt - 1) % len(ema_timeperiods)]
+            if optimize_ema_trend_timeperiod
+            else int(condition_settings["timeperiod"])
+        )
+        tasks.append(
+            (
+                attempt,
+                values,
+                roi_parameters,
+                minimal_roi,
+                candidate_stop_pips,
+                candidate_ema_timeperiod,
+            )
+        )
 
     rows = _evaluate_hyperopt_tasks(
         tasks,

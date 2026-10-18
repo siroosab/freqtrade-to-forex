@@ -299,6 +299,106 @@ def test_precomputed_ema_backtest_matches_prefix_only_signals() -> None:
             )
 
 
+def test_hyperopt_automatically_searches_ema_chain_timeperiods(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    strategy_directory = tmp_path / "strategies"
+    strategy_directory.mkdir()
+    (strategy_directory / "EmaConditionStrategy.py").write_text(
+        """from freqtrade.strategy import IStrategy
+
+class EmaConditionStrategy(IStrategy):
+    timeframe = "15m"
+    startup_candle_count = 2
+    minimal_roi = {}
+
+    def populate_indicators(self, dataframe, metadata):
+        return dataframe
+
+    def populate_entry_trend(self, dataframe, metadata):
+        dataframe["enter_long"] = False
+        dataframe["enter_short"] = False
+        return dataframe
+
+    def populate_exit_trend(self, dataframe, metadata):
+        dataframe["exit_long"] = False
+        dataframe["exit_short"] = False
+        return dataframe
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("FOREX_STRATEGIES_DIR", str(strategy_directory))
+    dates = pd.date_range("2026-01-01", periods=60, freq="15min", tz="UTC")
+    candles = pd.DataFrame({
+        "date": dates,
+        "open": [1.1] * len(dates),
+        "high": [1.101] * len(dates),
+        "low": [1.099] * len(dates),
+        "close": [1.1] * len(dates),
+        "volume": [0.0] * len(dates),
+    })
+    informative_dates = pd.date_range(
+        "2025-12-31", periods=120, freq="1h", tz="UTC"
+    )
+    informative = pd.DataFrame({
+        "date": informative_dates,
+        "open": [1.1] * len(informative_dates),
+        "high": [1.101] * len(informative_dates),
+        "low": [1.099] * len(informative_dates),
+        "close": [1.1] * len(informative_dates),
+        "volume": [0.0] * len(informative_dates),
+    })
+    tested_periods: list[int] = []
+    result = SimpleNamespace(
+        net_pl=Decimal(0),
+        max_drawdown=Decimal(0),
+        max_drawdown_rate=Decimal(0),
+        win_rate=Decimal(0),
+        total_costs=Decimal(0),
+        starting_balance=Decimal(10000),
+        trades=(),
+    )
+
+    def fake_candidate_evaluator(*, ema_trend_condition, **kwargs):
+        tested_periods.append(int(ema_trend_condition["timeperiod"]))
+        return lambda data, *, indicator_context=None: result
+
+    monkeypatch.setattr(
+        "freqtrade.forex.strategy_hyperopt._create_candidate_evaluator",
+        fake_candidate_evaluator,
+    )
+
+    candidates = run_strategy_hyperopt(
+        candles,
+        {"1h": informative},
+        OandaInstrument(
+            name="EUR_USD",
+            display_name="EUR/USD",
+            pip_location=-4,
+            display_precision=5,
+            trade_units_precision=0,
+            minimum_trade_size=Decimal(1),
+        ),
+        pair="EUR/USD",
+        strategy_class="EmaConditionStrategy",
+        timeframe="15m",
+        starting_balance=Decimal(10000),
+        risk_fraction=Decimal("0.01"),
+        spread=Decimal("0.0001"),
+        max_attempts=12,
+        hyperopt_loss="ProfitDrawDownHyperOptLoss",
+        optimize_roi=False,
+        ema_trend_condition={"enabled": True, "timeframe": "1h", "timeperiod": 4},
+        optimize_ema_trend_timeperiod=True,
+    )
+
+    assert set(tested_periods) == set(range(2, 14))
+    assert {candidate["emaTrendCondition"]["timeperiod"] for candidate in candidates} == set(
+        range(2, 14)
+    )
+
+
 def test_builtin_ema_strategy_exposes_optimizer_parameters() -> None:
     dates = pd.date_range("2026-01-01", periods=60, freq="5min", tz="UTC")
     closes = [1.1 + ((index % 12) - 6) * 0.0002 for index in range(len(dates))]

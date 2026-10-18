@@ -140,7 +140,8 @@ export function HyperoptPage() {
   const [useExitSignal, setUseExitSignal] = useState(true)
   const [emaTrendEnabled, setEmaTrendEnabled] = useState(true)
   const [emaTrendTimeframe, setEmaTrendTimeframe] = useState<'1h' | '4h'>('1h')
-  const [emaTrendTimeperiod, setEmaTrendTimeperiod] = useState(2)
+  const [emaTrendTimeperiod, setEmaTrendTimeperiod] = useState(4)
+  const [emaTrendTimeperiodMode, setEmaTrendTimeperiodMode] = useState<'fixed' | 'automatic'>('fixed')
   const [stopLossPips, setStopLossPips] = useState('0.5')
   const [backtestStopLossPipsOverride, setBacktestStopLossPipsOverride] = useState<{
     scope: string
@@ -244,6 +245,7 @@ export function HyperoptPage() {
     setEmaTrendEnabled(condition.enabled)
     setEmaTrendTimeframe(condition.timeframe)
     setEmaTrendTimeperiod(condition.timeperiod)
+    setEmaTrendTimeperiodMode(runSettings?.emaTrendTimeperiodMode === 'automatic' ? 'automatic' : 'fixed')
   }, [pair, reviewQuery.data?.approvedRevision, strategyClass, timeframe])
   const backtestQuery = useQuery({
     queryKey: ['backtest-job', backtestJobId],
@@ -427,6 +429,7 @@ export function HyperoptPage() {
       trailingStopLoss,
       optimizeRoi,
       useExitSignal,
+      optimizeEmaTrendTimeperiod: emaTrendEnabled && emaTrendTimeperiodMode === 'automatic',
       emaTrendCondition,
       stopLossMode: stopDistanceMode === 'automatic' ? 'pips' : stopLossMode,
       stopLossValue: stopDistanceMode === 'automatic' ? stopLossPips : stopLossValue,
@@ -794,17 +797,14 @@ export function HyperoptPage() {
           {backtestQuery.error && <p role="alert">Backtest status failed: {backtestQuery.error.message}</p>}
         </div>
 
-        <div className="panel research-panel">
-          <div className="panel-header compact">
-            <div><p className="eyebrow">02 · Manual Hyperopt</p><h3>🧠 Optimize strategy parameters</h3></div>
-            <div className="summary-grid">
-              <button className="primary-action" type="button" onClick={runOptimization} disabled={!scopeEnabled || !dateRangeValid || !costSettingsValid || !positionSizeValid || !hyperoptStopLossValid || !emaTrendTimeframeValid || quoteQuery.isPending || quoteQuery.isError || setupQuery.isPending || setupQuery.isError || researchBusy || !strategies.length}>
-                {running || hyperoptMutation.isPending ? 'Optimizing…' : 'Run hyperopt'}
-              </button>
-              <button className="secondary-action" type="button" onClick={() => stopMutation.mutate()} disabled={!running || stopMutation.isPending}>
-                Stop
-              </button>
+        <div className="panel research-panel hyperopt-optimization-panel">
+          <div className="panel-header compact hyperopt-panel-header">
+            <div>
+              <p className="eyebrow">⚙️ Research · 02</p>
+              <h3>🧠 Optimize strategy parameters</h3>
+              <p className="hyperopt-panel-intro">Find stronger settings using historical market data and your selected objective.</p>
             </div>
+            <span className="pill neutral">✨ Manual Hyperopt</span>
           </div>
           <div className="settings-grid">
             <label className="field-block">
@@ -920,16 +920,28 @@ export function HyperoptPage() {
                   <small>The condition timeframe must be higher than the strategy timeframe.</small>
                 </label>
                 <label className="field-block">
-                  <span>EMA chain timeperiod</span>
+                  <span>🔗 EMA chain timeperiod</span>
                   <select
-                    value={emaTrendTimeperiod}
-                    onChange={(event) => setEmaTrendTimeperiod(Number(event.target.value))}
+                    value={emaTrendTimeperiodMode === 'automatic' ? 'automatic' : String(emaTrendTimeperiod)}
+                    onChange={(event) => {
+                      if (event.target.value === 'automatic') {
+                        setEmaTrendTimeperiodMode('automatic')
+                      } else {
+                        setEmaTrendTimeperiodMode('fixed')
+                        setEmaTrendTimeperiod(Number(event.target.value))
+                      }
+                    }}
                   >
+                    <option value="automatic">✨ Automatic — optimize with Hyperopt</option>
                     {Array.from({ length: 12 }, (_, index) => index + 2).map((period) => (
                       <option key={period} value={period}>{period}</option>
                     ))}
                   </select>
-                  <small>Fixed for this Hyperopt run; it controls the chained higher-timeframe EMA ending at ema_x_9. EMA 7 is calculated from the strategy timeframe candles.</small>
+                  <small>
+                    {emaTrendTimeperiodMode === 'automatic'
+                      ? 'Hyperopt cycles through periods 2–13; 12 or more attempts test every value and select the best-performing higher-timeframe EMA chain period.'
+                      : 'Fixed for this run. It controls the higher-timeframe EMA chain ending at ema_x_9; EMA 7 uses strategy-timeframe candles.'}
+                  </small>
                 </label>
               </>
             )}
@@ -1012,6 +1024,44 @@ export function HyperoptPage() {
           {hyperoptMutation.error && <p role="alert">Hyperopt request failed: {hyperoptMutation.error.message}</p>}
           {statusQuery.error && <p role="alert">Hyperopt status failed: {statusQuery.error.message}</p>}
           {stopMutation.error && <p role="alert">Stop request failed: {stopMutation.error.message}</p>}
+          <div className="hyperopt-action-bar">
+            <div className="hyperopt-action-copy">
+              <strong>{running ? '🔄 Optimization in progress' : '🚀 Ready to optimize?'}</strong>
+              <small>
+                {running
+                  ? 'Stop the current run if you need to change course.'
+                  : 'Start a run with the selected settings, or stop an active run.'}
+              </small>
+            </div>
+            <div className="hyperopt-action-buttons">
+              <button
+                className="primary-action hyperopt-start-action"
+                type="button"
+                onClick={runOptimization}
+                disabled={!scopeEnabled || !dateRangeValid || !costSettingsValid || !positionSizeValid || !hyperoptStopLossValid || !emaTrendTimeframeValid || quoteQuery.isPending || quoteQuery.isError || setupQuery.isPending || setupQuery.isError || researchBusy || !strategies.length}
+              >
+                {running || hyperoptMutation.isPending ? '⏳ Optimizing…' : '🚀 Start Hyperopt'}
+              </button>
+              <button
+                className="secondary-action hyperopt-stop-action"
+                type="button"
+                onClick={() => stopMutation.mutate()}
+                disabled={!running || stopMutation.isPending}
+              >
+                {stopMutation.isPending ? '⏳ Stopping…' : '🛑 Stop Hyperopt'}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div className="panel research-panel hyperopt-results-panel">
+          <div className="panel-header compact">
+            <div>
+              <p className="eyebrow">📊 Results · 03</p>
+              <h3>Hyperopt results &amp; validation</h3>
+            </div>
+            {report && <span className={`pill ${report.status === 'completed' ? 'positive' : 'neutral'}`}>{report.status}</span>}
+          </div>
           {report && (
             <>
               <div className="bullet-list">
@@ -1059,7 +1109,7 @@ export function HyperoptPage() {
                 {report.emaTrendCondition && (
                   <div><span>EMA trend condition</span><strong>
                     {report.emaTrendCondition.enabled
-                      ? `Enabled · strategy EMA 7 vs ${report.emaTrendCondition.timeframe.toUpperCase()} EMA 9 · chain timeperiod ${report.emaTrendCondition.timeperiod}`
+                      ? `Enabled · strategy EMA 7 vs ${report.emaTrendCondition.timeframe.toUpperCase()} EMA 9 · chain timeperiod ${report.emaTrendCondition.timeperiod}${report.runSettings?.emaTrendTimeperiodMode === 'automatic' ? ' · selected by Hyperopt ✨' : ''}`
                       : 'Disabled'}
                   </strong></div>
                 )}
@@ -1086,6 +1136,9 @@ export function HyperoptPage() {
                       <td>{candidate.validationTrades}</td>
                       <td>
                         {Object.entries(candidate.parameters).map(([key, value]) => `${key}: ${value}`).join(' · ')}
+                        {candidate.emaTrendCondition?.enabled
+                          ? ` · EMA chain: ${candidate.emaTrendCondition.timeperiod}`
+                          : ''}
                         {candidate.stopLoss ? ` · stop: ${candidate.stopLoss.value} ${candidate.stopLoss.unit ?? 'pips'}` : ''}
                         {candidate.trailingStopLoss
                           ? ` · trailing stop: on (${formatTrailingStopLoss(candidate.stopLoss)})`
@@ -1101,9 +1154,9 @@ export function HyperoptPage() {
           {reportQuery.error && <p role="alert">Hyperopt report unavailable: {reportQuery.error.message}</p>}
         </div>
 
-        <div className="panel">
+        <div className="panel hyperopt-approval-panel">
           <div className="panel-header compact">
-            <div><p className="eyebrow">03 · User decision</p><h3>Approve optimized strategy</h3></div>
+            <div><p className="eyebrow">04 · User decision</p><h3>Approve optimized strategy</h3></div>
             <span className={`pill ${reviewQuery.data?.status === 'approved' ? 'positive' : 'neutral'}`}>
               {reviewQuery.data?.status ?? 'pending'}
             </span>
@@ -1119,7 +1172,7 @@ export function HyperoptPage() {
               {' '}· strategy exit signals: {reviewQuery.data.approvedRevision.hyperopt?.useExitSignal === false ? 'disabled' : 'enabled'}
               {' '}· EMA trend condition: {reviewQuery.data.approvedRevision.hyperopt?.emaTrendCondition?.enabled === false
                 ? 'disabled'
-                : `strategy EMA 7 vs ${(reviewQuery.data.approvedRevision.hyperopt?.emaTrendCondition?.timeframe ?? '1h').toUpperCase()} EMA 9 · chain period ${reviewQuery.data.approvedRevision.hyperopt?.emaTrendCondition?.timeperiod ?? 4}`}
+                : `strategy EMA 7 vs ${(reviewQuery.data.approvedRevision.hyperopt?.emaTrendCondition?.timeframe ?? '1h').toUpperCase()} EMA 9 · chain period ${reviewQuery.data.approvedRevision.hyperopt?.emaTrendCondition?.timeperiod ?? 4}${reviewQuery.data.approvedRevision.hyperopt?.runSettings?.emaTrendTimeperiodMode === 'automatic' ? ' · optimized ✨' : ''}`}
             </p>
           )}
           <div className="summary-grid">
