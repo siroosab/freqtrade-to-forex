@@ -934,6 +934,7 @@ export type SetupStatus = {
   environment: 'practice' | 'live'
   executionMode: 'dry_run' | 'practice' | 'live'
   liveTradingApproved: boolean
+  showPortfolioCockpit: boolean
   instruments: string[]
   pairTimeframes: Record<string, string>
   pairStrategies: Record<string, string>
@@ -988,6 +989,21 @@ export async function getSetupStatus(): Promise<SetupStatus> {
   const response = await fetch(buildApiUrl('/api/v1/setup/status'))
   if (!response.ok) throw new Error('Setup status unavailable')
   return response.json() as Promise<SetupStatus>
+}
+
+export async function setPortfolioCockpitVisibility(
+  showPortfolioCockpit: boolean,
+): Promise<{ showPortfolioCockpit: boolean }> {
+  const response = await fetch(buildApiUrl('/api/v1/setup/dashboard'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ showPortfolioCockpit }),
+  })
+  if (!response.ok) {
+    const detail = (await response.json().catch(() => ({}))) as { detail?: string }
+    throw new Error(detail.detail ?? 'Dashboard preference could not be saved')
+  }
+  return response.json() as Promise<{ showPortfolioCockpit: boolean }>
 }
 
 export async function getSetupInstruments(payload: {

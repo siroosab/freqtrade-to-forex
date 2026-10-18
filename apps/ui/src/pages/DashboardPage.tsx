@@ -21,6 +21,39 @@ function formatMarketCountdown(transitionAt: string | null | undefined, now: num
   return `${minutes}m`
 }
 
+function formatExecutionResultStatus(status: string): { label: string; icon: string; tone: string } {
+  const normalized = status.toLowerCase()
+  const knownStatuses: Record<string, { label: string; icon: string; tone: string }> = {
+    filled: { label: 'Order filled', icon: '✅', tone: 'success' },
+    closed: { label: 'Position closed', icon: '✅', tone: 'success' },
+    trailing_activated: { label: 'Trailing stop active', icon: '🛡️', tone: 'success' },
+    blocked: { label: 'Entry blocked', icon: '⛔', tone: 'warning' },
+    not_filled: { label: 'Order not filled', icon: '⏳', tone: 'warning' },
+    close_not_filled: { label: 'Close not filled', icon: '⏳', tone: 'warning' },
+    trailing_update_failed: { label: 'Trailing stop update failed', icon: '⚠️', tone: 'error' },
+    already_processed: { label: 'Already processed', icon: '🔁', tone: 'neutral' },
+    no_entry: { label: 'No entry signal', icon: '⏸️', tone: 'neutral' },
+  }
+  return knownStatuses[normalized] ?? {
+    label: status.replace(/_/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase()),
+    icon: 'ℹ️',
+    tone: 'neutral',
+  }
+}
+
+function getSignalPresentation(signal: string | undefined): { label: string; icon: string; tone: string } {
+  switch (signal?.toLowerCase()) {
+    case 'long':
+      return { label: 'BUY / Long', icon: '🟢', tone: 'success' }
+    case 'short':
+      return { label: 'SELL / Short', icon: '🔴', tone: 'error' }
+    case 'flat':
+      return { label: 'FLAT', icon: '⚪', tone: 'neutral' }
+    default:
+      return { label: signal ?? 'No signal', icon: '⚪', tone: 'neutral' }
+  }
+}
+
 export function DashboardPage() {
   useForexSocket()
   const queryClient = useQueryClient()
@@ -364,6 +397,16 @@ export function DashboardPage() {
     && marketTransitionMs !== null
     && marketTransitionMs >= 0
     && marketTransitionMs <= 60 * 60 * 1000
+  const showPortfolioCockpit = setupQuery.data?.showPortfolioCockpit === true
+  const strategyStatus = autoExecutionQuery.isError
+    ? { label: '⚠️ Status unavailable', tone: 'error' }
+    : autoExecutionQuery.isLoading && !autoExecution
+      ? { label: '🔄 Checking status…', tone: 'pending' }
+      : autoExecution?.enabled
+        ? autoExecution.workerRunning
+          ? { label: `🟢 Worker active · ${autoExecution.environment.toUpperCase()}`, tone: 'success' }
+          : { label: `🚨 Worker stopped · ${autoExecution.environment.toUpperCase()}`, tone: 'error' }
+        : { label: '⏸️ Automation off', tone: 'neutral' }
 
   return (
     <>
@@ -409,7 +452,7 @@ export function DashboardPage() {
         </div>
       </header>
 
-      <section className="dashboard-parent-grid">
+      <section className={`dashboard-parent-grid ${showPortfolioCockpit ? '' : 'dashboard-parent-grid--portfolio-hidden'}`}>
         <div className="panel dashboard-parent dashboard-parent--market">
           <div className="dashboard-parent-heading">
             <div><p className="eyebrow">Market & execution</p><h3>📈 Trading desk</h3></div>
@@ -655,97 +698,174 @@ export function DashboardPage() {
             </div>
           </div>
 
-          <div className="panel">
+          <div className="panel strategy-engine-panel">
             <div className="panel-header compact">
               <div>
                 <p className="eyebrow">Strategy engine</p>
                 <h3>🤖 Signals & automation</h3>
               </div>
-              <span
-                className={`pill ${
-                  autoExecution?.enabled && autoExecution.workerRunning ? 'positive' : 'neutral'
-                }`}
-              >
-                {autoExecutionQuery.isError
-                  ? 'Status unavailable'
-                  : autoExecution?.enabled
-                    ? `Auto · ${autoExecution.environment.toUpperCase()}${autoExecution.workerRunning ? '' : ' · Worker stopped'}`
-                    : 'Auto off'}
+              <span className={`strategy-status-badge ${strategyStatus.tone}`} aria-live="polite">
+                {strategyStatus.label}
               </span>
             </div>
 
             <div className="strategy-auto-controls">
-              <p>
-                Only approved pair strategies are considered. Risk budget, stop loss,
-                allowed side, OANDA tradeability and available depth are checked before entry.
-                The results below are from automatic execution; the strategy overview cards are
-                informational and do not drive orders.
-              </p>
-              <button
-                type="button"
-                className={autoExecution?.enabled ? 'danger-action' : 'primary-action'}
-                disabled={
-                  userRole === 'viewer' ||
-                  autoExecutionMutation.isPending ||
-                  autoExecutionQuery.isLoading ||
-                  autoExecutionQuery.isError
-                }
-                onClick={toggleAutoExecution}
-              >
-                {autoExecutionMutation.isPending
-                  ? 'Updating…'
-                  : autoExecution?.enabled
-                    ? 'Stop automatic execution'
-                    : 'Enable automatic execution'}
-              </button>
+              <div className="strategy-control-copy">
+                <strong>🧠 Automated execution</strong>
+                <p>
+                  Only approved strategies can place orders. Risk limits, stop loss, allowed side,
+                  broker tradeability, and available depth are checked before entry.
+                </p>
+              </div>
+              <div className="strategy-control-actions">
+                <button
+                  type="button"
+                  className={autoExecution?.enabled ? 'danger-action' : 'primary-action'}
+                  disabled={
+                    userRole === 'viewer' ||
+                    autoExecutionMutation.isPending ||
+                    autoExecutionQuery.isLoading ||
+                    autoExecutionQuery.isError
+                  }
+                  onClick={toggleAutoExecution}
+                >
+                  {autoExecutionMutation.isPending
+                    ? 'Updating…'
+                    : autoExecution?.enabled
+                      ? '⏹ Stop automation'
+                      : '▶ Enable automation'}
+                </button>
+                <button
+                  type="button"
+                  className="secondary-action strategy-refresh-button"
+                  disabled={autoExecutionQuery.isFetching}
+                  onClick={() => void autoExecutionQuery.refetch()}
+                >
+                  {autoExecutionQuery.isFetching ? 'Refreshing…' : '↻ Refresh status'}
+                </button>
+              </div>
               {autoExecutionQuery.isError && (
-                <small className="inline-error" role="alert">
+                <small className="inline-error strategy-error" role="alert">
                   {autoExecutionQuery.error instanceof Error
                     ? autoExecutionQuery.error.message
                     : 'Automatic execution status unavailable'}
                 </small>
               )}
               {autoExecutionMutation.isError && (
-                <small className="inline-error" role="alert">
+                <small className="inline-error strategy-error" role="alert">
                   {autoExecutionMutation.error instanceof Error
                     ? autoExecutionMutation.error.message
                     : 'Automatic execution update rejected'}
                 </small>
               )}
-              {autoExecution?.lastError && (
-                <small className="inline-error" role="alert">{autoExecution.lastError}</small>
-              )}
-              {autoExecution?.lastCycleAt && (
-                <small>Last strategy cycle: {new Date(autoExecution.lastCycleAt).toLocaleString()}</small>
-              )}
-              {autoExecution?.results.slice(0, 5).map((result) => (
-                <small key={`${result.pair}-${result.candleTime}-${result.status}`}>
-                  {result.pair} · {result.signal ?? '—'} · {result.status}
-                  {result.units !== undefined ? ` · ${result.units} units` : ''}
-                  {result.reason ? ` · ${result.reason}` : ''}
-                </small>
-              ))}
             </div>
-            <div className="strategy-stack">
-              {market?.strategySignals.map((strategy) => (
-                <div key={strategy.name} className="strategy-card">
+
+            <div className="strategy-live-summary" aria-label="Live automation status">
+              <div className="strategy-live-stat">
+                <span>Automation</span>
+                <strong className={autoExecution?.enabled ? 'success-text' : 'neutral-text'}>
+                  {autoExecutionQuery.isError ? 'Unavailable' : autoExecution?.enabled ? 'Enabled' : autoExecutionQuery.isLoading ? 'Checking…' : 'Off'}
+                </strong>
+              </div>
+              <div className="strategy-live-stat">
+                <span>Worker</span>
+                <strong className={autoExecution?.workerRunning ? 'success-text' : autoExecution?.enabled ? 'error-text' : 'neutral-text'}>
+                  {autoExecutionQuery.isError ? 'Unknown' : autoExecution?.workerRunning ? 'Running' : autoExecution?.enabled ? 'Stopped' : 'Idle'}
+                </strong>
+              </div>
+              <div className="strategy-live-stat">
+                <span>Environment</span>
+                <strong>{autoExecutionQuery.isError ? 'Unknown' : autoExecution?.environment?.toUpperCase() ?? '—'}</strong>
+              </div>
+              <div className="strategy-live-stat">
+                <span>Last cycle</span>
+                <strong>{autoExecution?.lastCycleAt ? new Date(autoExecution.lastCycleAt).toLocaleString() : 'No cycle yet'}</strong>
+              </div>
+            </div>
+
+            {autoExecution?.lastError && (
+              <div className="strategy-error-message" role="alert">
+                <strong>⚠️ Latest execution issue</strong>
+                <span>{autoExecution.lastError}</span>
+              </div>
+            )}
+
+            <section className="strategy-results" aria-labelledby="strategy-results-title">
+              <div className="strategy-section-heading">
+                <div>
+                  <strong id="strategy-results-title">📡 Latest execution results</strong>
+                  <small>
+                    {autoExecutionQuery.data
+                      ? `Status checked ${new Date(autoExecutionQuery.dataUpdatedAt).toLocaleTimeString()} · refreshes every 5 seconds`
+                      : 'Waiting for execution status'}
+                  </small>
+                </div>
+                <span>{autoExecution?.results.length ?? 0} pairs</span>
+              </div>
+              {autoExecutionQuery.isLoading && <p className="strategy-empty-state">Connecting to the strategy worker…</p>}
+              {autoExecution?.results.slice(0, 5).map((result) => {
+                const status = formatExecutionResultStatus(result.status)
+                const signal = getSignalPresentation(result.signal)
+                return (
+                  <article className="strategy-result-card" key={`${result.pair}-${result.candleTime}-${result.status}`}>
+                    <div className="strategy-result-heading">
+                      <div>
+                        <strong>{result.pair}</strong>
+                        <small>{result.timeframe}{result.candleTime ? ` · ${new Date(result.candleTime).toLocaleString()}` : ''}</small>
+                      </div>
+                      <span className={`strategy-result-status ${status.tone}`}>{status.icon} {status.label}</span>
+                    </div>
+                    <div className="strategy-result-details">
+                      <span className={`strategy-signal ${signal.tone}`}>{signal.icon} {signal.label}</span>
+                      {result.units !== undefined && <span>📦 {Number(result.units).toLocaleString()} units</span>}
+                      {result.fillPrice && <span>💱 Fill {result.fillPrice}</span>}
+                    </div>
+                    {result.reason && <p>{result.reason}</p>}
+                  </article>
+                )
+              })}
+              {!autoExecutionQuery.isLoading && !autoExecutionQuery.isError && (autoExecution?.results.length ?? 0) === 0 && (
+                <p className="strategy-empty-state">No strategy cycles have reported results yet.</p>
+              )}
+              {autoExecutionQuery.isError && (
+                <p className="strategy-empty-state" role="status">Live execution results are unavailable until the connection is restored.</p>
+              )}
+            </section>
+
+            <section className="strategy-overview" aria-labelledby="strategy-overview-title">
+              <div className="strategy-section-heading">
+                <div>
+                  <strong id="strategy-overview-title">🗂️ Strategy overview</strong>
+                  <small>Informational signals only — these cards do not trigger orders.</small>
+                </div>
+                <span>{market?.strategySignals.length ?? 0} strategies</span>
+              </div>
+              {marketQuery.isError && <p className="strategy-empty-state">Strategy overview is unavailable. Check the market data connection.</p>}
+              <div className="strategy-stack">
+                {market?.strategySignals.map((strategy) => (
+                  <article key={strategy.name} className="strategy-card">
                   <div className="strategy-row">
-                    <strong>{strategy.name}</strong>
-                    <span className="pill neutral">{strategy.mode}</span>
+                    <strong>🤖 {strategy.name}</strong>
+                    <span className="strategy-mode-badge">⚙️ {strategy.mode}</span>
                   </div>
                   <div className="strategy-meta">
-                    <span>{strategy.status}</span>
-                    <span>{strategy.quality}</span>
+                    <span>📍 {strategy.status}</span>
+                    <span>⭐ {strategy.quality}</span>
                   </div>
-                  <p>{strategy.signal}</p>
-                </div>
-              ))}
-            </div>
+                    <p>{strategy.signal}</p>
+                  </article>
+                ))}
+              </div>
+              {!marketQuery.isLoading && !marketQuery.isError && (market?.strategySignals.length ?? 0) === 0 && (
+                <p className="strategy-empty-state">No strategy overview is available for the current market.</p>
+              )}
+            </section>
           </div>
         </div>
       </section>
 
         </div>
+        {showPortfolioCockpit && (
         <div className="panel dashboard-parent dashboard-parent--account">
           <div className="dashboard-parent-heading">
             <div><p className="eyebrow">Account & execution</p><h3>🧭 Portfolio cockpit</h3></div>
@@ -921,6 +1041,7 @@ export function DashboardPage() {
 
       </section>
         </div>
+        )}
       </section>
 
       {confirmOpen && (

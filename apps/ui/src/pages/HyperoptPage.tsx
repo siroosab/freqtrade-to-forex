@@ -43,14 +43,26 @@ function describePair(quote: {
 function initialDateRange(): { startDate: string; endDate: string } {
   const end = new Date()
   const start = new Date(end)
-  start.setDate(start.getDate() - 29)
-  const localDate = (value: Date) => (
-    `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`
+  start.setUTCDate(start.getUTCDate() - 29)
+  const utcDate = (value: Date) => (
+    `${value.getUTCFullYear()}-${String(value.getUTCMonth() + 1).padStart(2, '0')}-${String(value.getUTCDate()).padStart(2, '0')}`
   )
   return {
-    startDate: localDate(start),
-    endDate: localDate(end),
+    startDate: utcDate(start),
+    endDate: utcDate(end),
   }
+}
+
+function formatDateRangeDate(value: string): string {
+  const date = new Date(`${value}T00:00:00Z`)
+  return Number.isNaN(date.getTime())
+    ? value
+    : date.toLocaleDateString(undefined, {
+      day: 'numeric',
+      month: 'short',
+      timeZone: 'UTC',
+      year: 'numeric',
+    })
 }
 
 function timeframeMinutes(value: string): number {
@@ -113,8 +125,6 @@ export function HyperoptPage() {
   const [pair, setPair] = useState(pairs[0] ?? 'EUR/USD')
   const [timeframe, setTimeframe] = useState('M15')
   const [strategyClass, setStrategyClass] = useState('')
-  const [historyValue, setHistoryValue] = useState(500)
-  const [historyMode, setHistoryMode] = useState<'candles' | 'days' | 'date_range'>('date_range')
   const [dateRange, setDateRange] = useState(initialDateRange)
   const [attempts, setAttempts] = useState(100)
   const [workers, setWorkers] = useState<number | null>(null)
@@ -272,7 +282,6 @@ export function HyperoptPage() {
   const downloadMutation = useMutation({
     mutationFn: downloadCandleDateRange,
     onSuccess: async () => {
-      setHistoryMode('date_range')
       await queryClient.invalidateQueries({ queryKey: ['candle-cache', pair, timeframe] })
     },
   })
@@ -327,10 +336,12 @@ export function HyperoptPage() {
   const strategies = strategiesQuery.data ?? []
   const dateRangeValid = Boolean(dateRange.startDate && dateRange.endDate)
     && dateRange.startDate <= dateRange.endDate
-  const historyValueValid = historyMode === 'date_range'
-    ? dateRangeValid
-    : Number.isInteger(historyValue)
-      && historyValue >= (historyMode === 'candles' ? 40 : 1)
+  const selectedDateCount = dateRangeValid
+    ? Math.floor(
+      (Date.parse(`${dateRange.endDate}T00:00:00Z`) - Date.parse(`${dateRange.startDate}T00:00:00Z`))
+      / 86_400_000,
+    ) + 1
+    : 0
   const effectiveSpread = spreadOverride?.pair === pair
     ? spreadOverride.value
     : quoteQuery.data?.spread ?? ''
@@ -372,10 +383,10 @@ export function HyperoptPage() {
 
   const runResearch = () => {
     const history = {
-      historyMode,
-      historyValue,
-      steps: historyValue,
-      ...(historyMode === 'date_range' ? dateRange : {}),
+      historyMode: 'date_range' as const,
+      historyValue: 0,
+      steps: 0,
+      ...dateRange,
     }
     backtestMutation.mutate({
       pair,
@@ -399,10 +410,10 @@ export function HyperoptPage() {
       pair,
       timeframe,
       strategyClass,
-      steps: historyValue,
-      historyMode,
-      historyValue,
-      ...(historyMode === 'date_range' ? dateRange : {}),
+      steps: 0,
+      historyMode: 'date_range',
+      historyValue: 0,
+      ...dateRange,
       attempts,
       workers: selectedWorkers,
       hyperoptLoss: lossFunction,
@@ -473,13 +484,13 @@ export function HyperoptPage() {
       )}
 
       <section className="content-grid">
-        <div className="panel">
+        <div className="panel hyperopt-scope-panel">
           <div className="panel-header compact">
             <div><p className="eyebrow">🧭 Scope</p><h3>Choose research inputs</h3></div>
           </div>
-          <div className="settings-grid">
+          <div className="settings-grid hyperopt-scope-fields">
             <label className="field-block">
-              <span>Pair</span>
+              <span>💱 Pair</span>
               <select value={pair} onChange={(event) => setPair(event.target.value)}>
                 {(pairs.length ? pairs : ['EUR/USD']).map((item) => <option key={item}>{item}</option>)}
               </select>
@@ -488,105 +499,88 @@ export function HyperoptPage() {
               </small>
             </label>
             <label className="field-block">
-              <span>Timeframe</span>
+              <span>⏱️ Timeframe</span>
               <select value={timeframe} onChange={(event) => setTimeframe(event.target.value)}>
                 {timeframeOptions.map((item) => <option key={item}>{item}</option>)}
               </select>
             </label>
             <label className="field-block">
-              <span>Strategy</span>
+              <span>🧠 Strategy</span>
               <select value={strategyClass} onChange={(event) => setStrategyClass(event.target.value)}>
                 {strategies.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}
               </select>
             </label>
-            <label className="field-block">
-              <span>History unit</span>
-              <select
-                value={historyMode}
-                onChange={(event) => {
-                  const mode = event.target.value as 'candles' | 'days' | 'date_range'
-                  setHistoryMode(mode)
-                  if (mode !== 'date_range') setHistoryValue(mode === 'days' ? 30 : 500)
-                }}
-              >
-                <option value="candles">Candles</option>
-                <option value="days">Days</option>
-                <option value="date_range">Date range</option>
-              </select>
-            </label>
-            <label className="field-block">
-              <span>{historyMode === 'date_range' ? 'Hyperopt input' : `History (${historyMode})`}</span>
-              {historyMode === 'date_range' ? (
-                <strong>{dateRange.startDate} through {dateRange.endDate}</strong>
-              ) : (
+          </div>
+          <section className="hyperopt-date-range" aria-labelledby="hyperopt-date-range-title">
+            <div className="hyperopt-date-range-heading">
+              <div>
+                <h4 id="hyperopt-date-range-title">📅 Research date range</h4>
+                <p>Choose the UTC candle history used by Backtest and Hyperopt.</p>
+              </div>
+              <span className="hyperopt-date-range-timezone">🌐 UTC</span>
+            </div>
+            <div className="hyperopt-date-fields">
+              <label className="field-block">
+                <span>🟢 Start date</span>
                 <input
-                  type="number"
-                  min={historyMode === 'candles' ? 40 : 1}
-                  value={historyValue}
-                  onChange={(event) => setHistoryValue(Number(event.target.value))}
+                  type="date"
+                  value={dateRange.startDate}
+                  max={dateRange.endDate || undefined}
+                  onChange={(event) => setDateRange((current) => ({ ...current, startDate: event.target.value }))}
                 />
+                <small>First UTC day included</small>
+              </label>
+              <label className="field-block">
+                <span>🏁 End date</span>
+                <input
+                  type="date"
+                  value={dateRange.endDate}
+                  min={dateRange.startDate || undefined}
+                  onChange={(event) => setDateRange((current) => ({ ...current, endDate: event.target.value }))}
+                />
+                <small>Last UTC day included</small>
+              </label>
+            </div>
+            <div className="hyperopt-date-range-summary" aria-live="polite">
+              <span>🗓️ Selected window</span>
+              {dateRangeValid ? (
+                <>
+                  <strong>{formatDateRangeDate(dateRange.startDate)} <span aria-hidden="true">→</span> {formatDateRangeDate(dateRange.endDate)}</strong>
+                  <small>{selectedDateCount.toLocaleString()} calendar days · both dates included</small>
+                </>
+              ) : (
+                <strong className="hyperopt-date-range-invalid">Choose a valid start and end date.</strong>
               )}
-            </label>
-          </div>
-          <div className="settings-grid">
-            <label className="field-block">
-              <span>Download from (UTC)</span>
-              <input
-                type="date"
-                value={dateRange.startDate}
-                max={dateRange.endDate || undefined}
-                onChange={(event) => setDateRange((current) => ({ ...current, startDate: event.target.value }))}
-              />
-            </label>
-            <label className="field-block">
-              <span>Download through (UTC)</span>
-              <input
-                type="date"
-                value={dateRange.endDate}
-                min={dateRange.startDate || undefined}
-                onChange={(event) => setDateRange((current) => ({ ...current, endDate: event.target.value }))}
-              />
-            </label>
-            <div className="field-block">
-              <span>Cached {timeframe} candles for {pair}</span>
+            </div>
+          </section>
+          <section className="hyperopt-cache-summary" aria-label="Cached candle data">
+            <div className="hyperopt-cache-heading">
+              <strong>🧊 Cached {timeframe} candles · {pair}</strong>
               {cacheQuery.isLoading ? (
-                <strong>Loading cache inventory…</strong>
+                <span>Checking cache…</span>
               ) : cacheQuery.data ? (
-                <strong>
-                  {cacheQuery.data.candles.toLocaleString()} candles across {cacheQuery.data.cachedRanges} cached range(s)
-                  {cacheQuery.data.from && cacheQuery.data.to
-                    ? ` · ${formatUtcDateTime(cacheQuery.data.from)} – ${formatUtcDateTime(cacheQuery.data.to)}`
-                    : ''}
-                </strong>
-              ) : null}
+                <span>
+                  {cacheQuery.data.candles.toLocaleString()} candles
+                  {' · '}{cacheQuery.data.cachedRanges} cached range{cacheQuery.data.cachedRanges === 1 ? '' : 's'}
+                </span>
+              ) : (
+                <span>No cache information available</span>
+              )}
             </div>
-            <div className="summary-grid">
-              <button
-                className="primary-action"
-                type="button"
-                onClick={() => downloadMutation.mutate({ pair, timeframe, ...dateRange })}
-                disabled={!scopeEnabled || !dateRangeValid || researchBusy}
-              >
-                {downloadMutation.isPending ? 'Downloading…' : 'Download date range'}
-              </button>
-              <button
-                className="secondary-action"
-                type="button"
-                onClick={clearSelectedCache}
-                disabled={!cacheQuery.data?.cachedRanges || researchBusy}
-              >
-                {clearCacheMutation.isPending ? 'Clearing…' : 'Clear this pair/timeframe'}
-              </button>
-            </div>
-          </div>
-          {cacheQuery.data?.ranges.map((range) => (
-            <p className="muted" key={range.key}>
-              {range.kind === 'range' ? 'Date range' : 'Recent cache'} · {range.candles.toLocaleString()} candles
-              {range.from && range.to
-                ? ` · ${formatUtcDateTime(range.from)} – ${formatUtcDateTime(range.to)}`
-                : ''}
-            </p>
-          ))}
+            {cacheQuery.data?.from && cacheQuery.data.to && (
+              <small className="hyperopt-cache-coverage">
+                📍 Coverage: {formatUtcDateTime(cacheQuery.data.from)} – {formatUtcDateTime(cacheQuery.data.to)}
+              </small>
+            )}
+            {cacheQuery.data?.ranges.map((range) => (
+              <small className="hyperopt-cache-range" key={range.key}>
+                {range.kind === 'range' ? '📆 Date range' : '🕘 Recent cache'} · {range.candles.toLocaleString()} candles
+                {range.from && range.to
+                  ? ` · ${formatUtcDateTime(range.from)} – ${formatUtcDateTime(range.to)}`
+                  : ''}
+              </small>
+            ))}
+          </section>
           {cacheQuery.error && <p role="alert">Cache inventory unavailable: {cacheQuery.error.message}</p>}
           {downloadMutation.error && <p role="alert">Data download failed: {downloadMutation.error.message}</p>}
           {downloadMutation.data && (
@@ -605,12 +599,30 @@ export function HyperoptPage() {
           {!strategies.length && !strategiesQuery.isLoading && (
             <p role="alert">No strategies are available. Add a valid strategy before starting research.</p>
           )}
+          <div className="hyperopt-scope-actions">
+            <button
+              className="primary-action"
+              type="button"
+              onClick={() => downloadMutation.mutate({ pair, timeframe, ...dateRange })}
+              disabled={!scopeEnabled || !dateRangeValid || researchBusy}
+            >
+              {downloadMutation.isPending ? '⏳ Downloading candles…' : '⬇️ Download selected dates'}
+            </button>
+            <button
+              className="secondary-action"
+              type="button"
+              onClick={clearSelectedCache}
+              disabled={!cacheQuery.data?.cachedRanges || researchBusy}
+            >
+              {clearCacheMutation.isPending ? '⏳ Clearing cache…' : '🧹 Clear pair & timeframe cache'}
+            </button>
+          </div>
         </div>
 
         <div className="panel research-panel">
           <div className="panel-header compact">
             <div><p className="eyebrow">Research · 01</p><h3>Backtest</h3></div>
-            <button className="primary-action" type="button" onClick={runResearch} disabled={!scopeEnabled || !historyValueValid || !costSettingsValid || !positionSizeValid || !backtestStopLossValid || !emaTrendTimeframeValid || quoteQuery.isPending || quoteQuery.isError || setupQuery.isPending || setupQuery.isError || researchBusy}>
+            <button className="primary-action" type="button" onClick={runResearch} disabled={!scopeEnabled || !dateRangeValid || !costSettingsValid || !positionSizeValid || !backtestStopLossValid || !emaTrendTimeframeValid || quoteQuery.isPending || quoteQuery.isError || setupQuery.isPending || setupQuery.isError || researchBusy}>
               {backtestMutation.isPending || backtestRunning ? 'Backtest running…' : 'Run backtest'}
             </button>
           </div>
@@ -786,7 +798,7 @@ export function HyperoptPage() {
           <div className="panel-header compact">
             <div><p className="eyebrow">02 · Manual Hyperopt</p><h3>🧠 Optimize strategy parameters</h3></div>
             <div className="summary-grid">
-              <button className="primary-action" type="button" onClick={runOptimization} disabled={!scopeEnabled || !historyValueValid || !costSettingsValid || !positionSizeValid || !hyperoptStopLossValid || !emaTrendTimeframeValid || quoteQuery.isPending || quoteQuery.isError || setupQuery.isPending || setupQuery.isError || researchBusy || !strategies.length}>
+              <button className="primary-action" type="button" onClick={runOptimization} disabled={!scopeEnabled || !dateRangeValid || !costSettingsValid || !positionSizeValid || !hyperoptStopLossValid || !emaTrendTimeframeValid || quoteQuery.isPending || quoteQuery.isError || setupQuery.isPending || setupQuery.isError || researchBusy || !strategies.length}>
                 {running || hyperoptMutation.isPending ? 'Optimizing…' : 'Run hyperopt'}
               </button>
               <button className="secondary-action" type="button" onClick={() => stopMutation.mutate()} disabled={!running || stopMutation.isPending}>

@@ -1,10 +1,11 @@
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import type { ChangeEvent, FormEvent } from 'react'
-import { controlRuntime, controlSystemdService, discoverSetupAccounts, getAvailableStrategies, getAutoExecutionStatus, getRuntimeStatus, getSetupFileUrl, getSetupInstruments, getSetupStatus, getSystemdServiceStatus, saveSetup, setAutoExecution, uploadSetupFile, type SetupAccount, type SetupPayload, type SystemdServiceAction } from '../api/mockApi'
+import { controlRuntime, controlSystemdService, discoverSetupAccounts, getAvailableStrategies, getAutoExecutionStatus, getRuntimeStatus, getSetupFileUrl, getSetupInstruments, getSetupStatus, getSystemdServiceStatus, saveSetup, setAutoExecution, setPortfolioCockpitVisibility, uploadSetupFile, type SetupAccount, type SetupPayload, type SetupStatus, type SystemdServiceAction } from '../api/mockApi'
 import { useUiStore } from '../store/useUiStore'
 
 export function SetupPage() {
+  const queryClient = useQueryClient()
   const userRole = useUiStore((state) => state.userRole)
   const sharedInstruments = useUiStore((state) => state.selectedInstruments)
   const setSelectedInstruments = useUiStore((state) => state.setSelectedInstruments)
@@ -30,6 +31,15 @@ export function SetupPage() {
   const runtimeQuery = useQuery({ queryKey: ['setup-runtime'], queryFn: getRuntimeStatus })
   const strategiesQuery = useQuery({ queryKey: ['available-strategies'], queryFn: getAvailableStrategies })
   const savedSetupQuery = useQuery({ queryKey: ['setup-status'], queryFn: getSetupStatus })
+  const dashboardPreferenceMutation = useMutation({
+    mutationFn: setPortfolioCockpitVisibility,
+    onSuccess: (result) => {
+      queryClient.setQueryData<SetupStatus>(['setup-status'], (current) => current
+        ? { ...current, showPortfolioCockpit: result.showPortfolioCockpit }
+        : current)
+      void queryClient.invalidateQueries({ queryKey: ['setup-status'] })
+    },
+  })
   const autoExecutionQuery = useQuery({
     queryKey: ['auto-execution-status'],
     queryFn: getAutoExecutionStatus,
@@ -293,6 +303,38 @@ export function SetupPage() {
             <ul className="setup-pair-list field-wide">
               {form.instruments.map((instrument) => <li className="setup-pair-item" key={instrument}>{instrument.replace('_', '/')}</li>)}
             </ul>
+            <div className="setup-section-heading"><span>04</span><div><strong>Dashboard layout</strong><small>Choose which account and execution details appear on the dashboard.</small></div></div>
+            <label className="account-confirm dashboard-preference field-wide">
+              <input
+                type="checkbox"
+                checked={savedSetupQuery.data?.showPortfolioCockpit ?? false}
+                disabled={savedSetupQuery.isLoading || dashboardPreferenceMutation.isPending}
+                onChange={(event) => dashboardPreferenceMutation.mutate(event.target.checked)}
+              />
+              <span>
+                <strong>Show Account &amp; execution · Portfolio cockpit</strong>
+                <small>
+                  Display the portfolio cockpit on the dashboard, including account snapshot,
+                  exposure, broker positions, and manual order controls. This preference is saved
+                  immediately and does not require reconnecting your OANDA account.
+                </small>
+                {dashboardPreferenceMutation.isPending && <small>Saving dashboard preference…</small>}
+                {savedSetupQuery.isError && (
+                  <small className="setup-error" role="alert">
+                    {savedSetupQuery.error instanceof Error
+                      ? savedSetupQuery.error.message
+                      : 'Dashboard preference could not be loaded.'}
+                  </small>
+                )}
+                {dashboardPreferenceMutation.isError && (
+                  <small className="setup-error" role="alert">
+                    {dashboardPreferenceMutation.error instanceof Error
+                      ? dashboardPreferenceMutation.error.message
+                      : 'Dashboard preference could not be saved.'}
+                  </small>
+                )}
+              </span>
+            </label>
             <label className="account-confirm field-wide">
               <input
                 type="checkbox"
@@ -354,7 +396,7 @@ export function SetupPage() {
           </form>
 
           <section className="setup-operations" aria-labelledby="operations-title">
-            <div className="setup-section-heading"><span>04</span><div><strong id="operations-title">Operations</strong><small>Apply file changes and control the bot without leaving setup.</small></div></div>
+            <div className="setup-section-heading"><span>05</span><div><strong id="operations-title">Operations</strong><small>Apply file changes and control the bot without leaving setup.</small></div></div>
             <div className="setup-file-grid">
               <div className="setup-file-card"><div><strong>Strategy files</strong><small>Upload one or more validated Freqtrade Python strategies. Class names must be unique.</small></div><div className="setup-file-actions"><label className="secondary-action">Upload<input type="file" accept=".py,text/x-python" multiple onChange={handleStrategyFiles} /></label><a className="secondary-action" href={getSetupFileUrl('strategy')} download>Download active</a></div>{strategyUploadMessage && <small role="status">{strategyUploadMessage}</small>}{strategiesQuery.data?.map((strategy) => <a key={strategy.name} href={getSetupFileUrl('strategy', strategy.name)} download>{strategy.name} · {strategy.fileName}</a>)}</div>
               <div className="setup-file-card"><div><strong>config.json</strong><small>Upload a validated JSON config or export the current one.</small></div><div className="setup-file-actions"><label className="secondary-action">Upload<input type="file" accept="application/json,.json" onChange={(event) => handleFile('config', event)} /></label><a className="secondary-action" href={getSetupFileUrl('config')} download>Download</a></div></div>

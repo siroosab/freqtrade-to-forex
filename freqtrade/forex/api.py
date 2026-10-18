@@ -3590,6 +3590,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             "environment": exchange.get("oanda_environment", "practice"),
             "executionMode": exchange.get("oanda_execution_mode", "dry_run"),
             "liveTradingApproved": persisted.get("live_trading_approved") is True,
+            "showPortfolioCockpit": persisted.get("show_portfolio_cockpit") is True,
             "instruments": instruments,
             "pairTimeframes": pair_timeframes,
             "pairStrategies": pair_strategies,
@@ -3601,6 +3602,28 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             "tokenConfigured": bool(token),
             "strategyFile": str(strategy_path),
             "configFile": str(config_path),
+        }
+
+    @app.post("/api/v1/setup/dashboard")
+    async def save_dashboard_preferences(
+        payload: dict,
+        user_role: str | None = Header(default=None, alias="X-User-Role"),
+        csrf_token: str | None = Header(default=None, alias="X-CSRF-Token"),
+        session_token: str | None = Header(default=None, alias="X-Session-Token"),
+    ) -> dict:
+        validate_write_access(user_role, csrf_token, session_token)
+        show_portfolio_cockpit = payload.get("showPortfolioCockpit")
+        if not isinstance(show_portfolio_cockpit, bool):
+            raise HTTPException(
+                status_code=400, detail="showPortfolioCockpit must be a boolean"
+            )
+        config_path, _ = resolve_setup_paths()
+        persisted = load_forex_config(config_path)
+        persisted["show_portfolio_cockpit"] = show_portfolio_cockpit
+        saved_path = save_forex_config(persisted, config_path)
+        return {
+            "showPortfolioCockpit": show_portfolio_cockpit,
+            "configPath": str(saved_path),
         }
 
     @app.get("/api/v1/setup/instruments")
@@ -3863,6 +3886,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             "executionMode": execution_mode,
             "liveTradingApproved": environment == "live"
             and payload.get("liveConfirmed") is True,
+            "showPortfolioCockpit": current.get("show_portfolio_cockpit") is True,
             "accountTypeCode": selected_account["accountTypeCode"],
             "accountType": selected_account["accountType"],
             "instruments": instruments,

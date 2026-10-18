@@ -2758,6 +2758,22 @@ def test_setup_runtime_and_file_endpoints_work_with_configured_paths(monkeypatch
     status = client.get("/api/v1/setup/status")
     assert status.status_code == 200, status.text
     assert status.json()["configFile"] == str(config_path)
+    assert status.json()["showPortfolioCockpit"] is False
+
+    dashboard_preference = client.post(
+        "/api/v1/setup/dashboard",
+        json={"showPortfolioCockpit": True},
+        headers=_auth_headers(client),
+    )
+    assert dashboard_preference.status_code == 200, dashboard_preference.text
+    assert dashboard_preference.json()["showPortfolioCockpit"] is True
+
+    invalid_dashboard_preference = client.post(
+        "/api/v1/setup/dashboard",
+        json={"showPortfolioCockpit": "yes"},
+        headers=_auth_headers(client),
+    )
+    assert invalid_dashboard_preference.status_code == 400
 
     setup = client.post(
         "/api/v1/setup",
@@ -2784,6 +2800,7 @@ def test_setup_runtime_and_file_endpoints_work_with_configured_paths(monkeypatch
     payload = setup.json()
     assert payload["configured"] is True
     assert payload["executionMode"] == "practice"
+    assert payload["showPortfolioCockpit"] is True
     assert payload["accountTypeCode"] == "003"
     assert payload["pairStrategies"] == {
         "EUR_USD": "ForexMasterStrategy",
@@ -2817,6 +2834,14 @@ def test_setup_runtime_and_file_endpoints_work_with_configured_paths(monkeypatch
         "GBP_USD": "ForexMasterStrategy",
     }
     assert saved_status.json()["riskFraction"] == "0.025"
+
+    disabled_dashboard_preference = client.post(
+        "/api/v1/setup/dashboard",
+        json={"showPortfolioCockpit": False},
+        headers=_auth_headers(client),
+    )
+    assert disabled_dashboard_preference.status_code == 200, disabled_dashboard_preference.text
+    assert client.get("/api/v1/setup/status").json()["showPortfolioCockpit"] is False
 
 
 def test_setup_discovery_returns_only_supported_accounts_and_never_token(monkeypatch):
