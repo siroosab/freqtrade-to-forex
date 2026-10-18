@@ -4566,7 +4566,6 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 ],
             }
             report["reportText"] = format_hyperopt_report(report)
-            job["status"] = report["status"]
             job["report"] = report
             job["completedAt"] = completed_at
             HYPEROPT_REPORTS[scope_key] = {
@@ -4574,6 +4573,18 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "completedAt": completed_at,
             }
             persist_hyperopt_report(scope_key, completed_at, report)
+            if report["status"] == "completed":
+                STRATEGY_REVIEW_BY_SCOPE[(pair, timeframe.upper(), strategy_class)] = {
+                    **strategy_review_for_scope(pair, timeframe, strategy_class),
+                    "status": "pending",
+                    "pair": pair,
+                    "timeframe": timeframe.upper(),
+                    "strategyClass": strategy_class,
+                    "notes": "Awaiting manual review for the latest Hyperopt result.",
+                    "lastUpdated": completed_at,
+                }
+                persist_scope_revision(pair, timeframe, strategy_class)
+            job["status"] = report["status"]
         except Exception as exc:  # pragma: no cover - background worker boundary
             job["status"] = "failed"
             job["error"] = str(exc)

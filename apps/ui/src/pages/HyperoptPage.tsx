@@ -208,6 +208,18 @@ export function HyperoptPage() {
     enabled: scopeEnabled,
   })
   useEffect(() => {
+    const completedReportRevision = statusQuery.data?.status === 'completed'
+      ? statusQuery.data.report?.dataRevision
+      : undefined
+    if (!completedReportRevision) return
+    void queryClient.invalidateQueries({
+      queryKey: ['strategy-review', pair, timeframe, strategyClass],
+    })
+    void queryClient.invalidateQueries({
+      queryKey: ['hyperopt-report', pair, timeframe, strategyClass],
+    })
+  }, [pair, queryClient, statusQuery.data?.report?.dataRevision, statusQuery.data?.status, strategyClass, timeframe])
+  useEffect(() => {
     const revision = reviewQuery.data?.approvedRevision
     if (
       !revision
@@ -239,7 +251,6 @@ export function HyperoptPage() {
     onSuccess: () => {
       void statusQuery.refetch()
       void reportQuery.refetch()
-      void reviewQuery.refetch()
       void queryClient.invalidateQueries({ queryKey: ['candle-cache', pair, timeframe] })
     },
   })
