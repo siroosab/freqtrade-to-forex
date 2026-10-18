@@ -737,11 +737,12 @@ export function DashboardPage() {
                 </button>
                 <button
                   type="button"
-                  className="secondary-action strategy-refresh-button"
-                  disabled={autoExecutionQuery.isFetching}
+                  className={`secondary-action strategy-refresh-button ${autoExecutionQuery.isFetching ? 'is-refreshing' : ''}`}
+                  aria-label={autoExecutionQuery.isFetching ? 'Refreshing strategy status' : 'Refresh strategy status'}
                   onClick={() => void autoExecutionQuery.refetch()}
                 >
-                  {autoExecutionQuery.isFetching ? 'Refreshing…' : '↻ Refresh status'}
+                  <span className="strategy-refresh-icon" aria-hidden="true">↻</span>
+                  <span>Refresh status</span>
                 </button>
               </div>
               {autoExecutionQuery.isError && (
@@ -783,53 +784,56 @@ export function DashboardPage() {
               </div>
             </div>
 
-            {autoExecution?.lastError && (
-              <div className="strategy-error-message" role="alert">
-                <strong>⚠️ Latest execution issue</strong>
-                <span>{autoExecution.lastError}</span>
-              </div>
-            )}
+            <div className={`strategy-error-message ${autoExecution?.lastError ? '' : 'is-empty'}`} aria-live="polite">
+              {autoExecution?.lastError && (
+                <>
+                  <strong>⚠️ Latest execution issue</strong>
+                  <span title={autoExecution.lastError}>{autoExecution.lastError}</span>
+                </>
+              )}
+            </div>
 
             <section className="strategy-results" aria-labelledby="strategy-results-title">
               <div className="strategy-section-heading">
                 <div>
                   <strong id="strategy-results-title">📡 Latest execution results</strong>
-                  <small>
-                    {autoExecutionQuery.data
-                      ? `Status checked ${new Date(autoExecutionQuery.dataUpdatedAt).toLocaleTimeString()} · refreshes every 5 seconds`
-                      : 'Waiting for execution status'}
-                  </small>
+                  <small>Automatically refreshes every 5 seconds</small>
                 </div>
-                <span>{autoExecution?.results.length ?? 0} pairs</span>
+                <div className="strategy-refresh-state" aria-live="polite" aria-atomic="true">
+                  <span className={`strategy-refresh-indicator ${autoExecutionQuery.isFetching ? 'is-refreshing' : ''}`} aria-hidden="true" />
+                  <span>{autoExecutionQuery.isFetching ? 'Refreshing' : 'Live status'}</span>
+                </div>
               </div>
-              {autoExecutionQuery.isLoading && <p className="strategy-empty-state">Connecting to the strategy worker…</p>}
-              {autoExecution?.results.slice(0, 5).map((result) => {
-                const status = formatExecutionResultStatus(result.status)
-                const signal = getSignalPresentation(result.signal)
-                return (
-                  <article className="strategy-result-card" key={`${result.pair}-${result.candleTime}-${result.status}`}>
-                    <div className="strategy-result-heading">
-                      <div>
-                        <strong>{result.pair}</strong>
-                        <small>{result.timeframe}{result.candleTime ? ` · ${new Date(result.candleTime).toLocaleString()}` : ''}</small>
+              <div className="strategy-results-list">
+                {autoExecutionQuery.isLoading && <p className="strategy-empty-state">Connecting to the strategy worker…</p>}
+                {autoExecution?.results.slice(0, 5).map((result) => {
+                  const status = formatExecutionResultStatus(result.status)
+                  const signal = getSignalPresentation(result.signal)
+                  return (
+                    <article className="strategy-result-card" key={`${result.pair}-${result.candleTime}-${result.status}`}>
+                      <div className="strategy-result-heading">
+                        <div>
+                          <strong>{result.pair}</strong>
+                          <small>{result.timeframe}{result.candleTime ? ` · ${new Date(result.candleTime).toLocaleString()}` : ''}</small>
+                        </div>
+                        <span className={`strategy-result-status ${status.tone}`}>{status.icon} {status.label}</span>
                       </div>
-                      <span className={`strategy-result-status ${status.tone}`}>{status.icon} {status.label}</span>
-                    </div>
-                    <div className="strategy-result-details">
-                      <span className={`strategy-signal ${signal.tone}`}>{signal.icon} {signal.label}</span>
-                      {result.units !== undefined && <span>📦 {Number(result.units).toLocaleString()} units</span>}
-                      {result.fillPrice && <span>💱 Fill {result.fillPrice}</span>}
-                    </div>
-                    {result.reason && <p>{result.reason}</p>}
-                  </article>
-                )
-              })}
-              {!autoExecutionQuery.isLoading && !autoExecutionQuery.isError && (autoExecution?.results.length ?? 0) === 0 && (
-                <p className="strategy-empty-state">No strategy cycles have reported results yet.</p>
-              )}
-              {autoExecutionQuery.isError && (
-                <p className="strategy-empty-state" role="status">Live execution results are unavailable until the connection is restored.</p>
-              )}
+                      <div className="strategy-result-details">
+                        <span className={`strategy-signal ${signal.tone}`}>{signal.icon} {signal.label}</span>
+                        {result.units !== undefined && <span>📦 {Number(result.units).toLocaleString()} units</span>}
+                        {result.fillPrice && <span>💱 Fill {result.fillPrice}</span>}
+                      </div>
+                      {result.reason && <p>{result.reason}</p>}
+                    </article>
+                  )
+                })}
+                {!autoExecutionQuery.isLoading && !autoExecutionQuery.isError && (autoExecution?.results.length ?? 0) === 0 && (
+                  <p className="strategy-empty-state">No strategy cycles have reported results yet.</p>
+                )}
+                {autoExecutionQuery.isError && (
+                  <p className="strategy-empty-state" role="status">Live execution results are unavailable until the connection is restored.</p>
+                )}
+              </div>
             </section>
 
             <section className="strategy-overview" aria-labelledby="strategy-overview-title">
