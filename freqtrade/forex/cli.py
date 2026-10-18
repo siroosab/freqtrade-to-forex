@@ -150,7 +150,7 @@ def build_parser() -> argparse.ArgumentParser:
     backtest.add_argument("--financing-rate-per-day", type=Decimal, default=Decimal("0"))
     backtest.add_argument("--disable-ema-trend-condition", action="store_true")
     backtest.add_argument("--ema-trend-timeframe", choices=("H1", "H4"), default="H1")
-    backtest.add_argument("--ema-trend-timeperiod", type=int, choices=range(4, 14), default=4)
+    backtest.add_argument("--ema-trend-timeperiod", type=int, choices=range(2, 14), default=4)
     hyperopt = subparsers.add_parser(
         "hyperopt", help="Optimize a Freqtrade strategy's declared parameters"
     )
@@ -178,7 +178,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     hyperopt.add_argument("--disable-ema-trend-condition", action="store_true")
     hyperopt.add_argument("--ema-trend-timeframe", choices=("H1", "H4"), default="H1")
-    hyperopt.add_argument("--ema-trend-timeperiod", type=int, choices=range(4, 14), default=4)
+    hyperopt.add_argument("--ema-trend-timeperiod", type=int, choices=range(2, 14), default=4)
     hyperopt.add_argument(
         "--hyperopt-loss", choices=HYPEROPT_LOSS_FUNCTIONS, default=DEFAULT_HYPEROPT_LOSS
     )

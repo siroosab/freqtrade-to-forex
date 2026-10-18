@@ -123,7 +123,7 @@ and timeframe scope.
 
 The Manual Hyperopt panel also includes a global EMA trend condition, enabled
 by default and independent of strategy source code. Choose H1 or H4 and a fixed
-EMA `timeperiod` from 4 through 13. It builds the chained `ema_x_2` through
+EMA `timeperiod` from 2 through 13. It builds the chained `ema_x_2` through
 `ema_x_10` series without the `count_hi` or `count_low` columns, then permits
 long entries only when `ema_x_9` is above `ema_x_10` and short entries only
 when it is below. The selected timeframe must be strictly higher than the

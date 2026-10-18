@@ -902,7 +902,7 @@ export function HyperoptPage() {
                     value={emaTrendTimeperiod}
                     onChange={(event) => setEmaTrendTimeperiod(Number(event.target.value))}
                   >
-                    {Array.from({ length: 10 }, (_, index) => index + 4).map((period) => (
+                    {Array.from({ length: 12 }, (_, index) => index + 2).map((period) => (
                       <option key={period} value={period}>{period}</option>
                     ))}
                   </select>

@@ -39,9 +39,9 @@ def normalize_ema_trend_condition(settings: object | None) -> dict[str, object]:
     if (
         not isinstance(timeperiod, Integral)
         or isinstance(timeperiod, bool)
-        or not 4 <= timeperiod <= 13
+        or not 2 <= timeperiod <= 13
     ):
-        raise ValueError("emaTrendCondition.timeperiod must be an integer from 4 to 13")
+        raise ValueError("emaTrendCondition.timeperiod must be an integer from 2 to 13")
 
     return {
         "enabled": enabled,
@@ -62,9 +62,9 @@ def add_ema_trend_indicators(dataframe: pd.DataFrame, *, timeperiod: int) -> pd.
     if (
         not isinstance(timeperiod, Integral)
         or isinstance(timeperiod, bool)
-        or not 4 <= timeperiod <= 13
+        or not 2 <= timeperiod <= 13
     ):
-        raise ValueError("timeperiod must be an integer from 4 to 13")
+        raise ValueError("timeperiod must be an integer from 2 to 13")
     if "close" not in dataframe:
         raise ValueError("EMA trend candles must include a close column")
 

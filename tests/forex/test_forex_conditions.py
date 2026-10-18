@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 import pandas as pd
 import pytest
 
+from freqtrade.forex.cli import build_parser
 from freqtrade.forex.conditions import (
     add_ema_trend_indicators,
     apply_ema_trend_condition,
@@ -49,7 +50,7 @@ def _informative_candles(direction: str) -> pd.DataFrame:
 
 
 def test_ema_condition_builds_only_the_fixed_chained_ema_columns() -> None:
-    result = add_ema_trend_indicators(_informative_candles("up"), timeperiod=4)
+    result = add_ema_trend_indicators(_informative_candles("up"), timeperiod=2)
 
     assert {f"ema_x_{index}" for index in range(2, 11)} <= set(result.columns)
     assert "count_hi" not in result
@@ -129,8 +130,14 @@ def test_strategy_adapter_applies_the_shared_condition_without_strategy_changes(
 
 def test_ema_trend_condition_settings_are_normalized_and_validated() -> None:
     assert normalize_ema_trend_condition(
-        {"enabled": True, "timeframe": "H4", "timeperiod": 13}
-    ) == {"enabled": True, "timeframe": "4h", "timeperiod": 13}
+        {"enabled": True, "timeframe": "H4", "timeperiod": 2}
+    ) == {"enabled": True, "timeframe": "4h", "timeperiod": 2}
+
+
+def test_hyperopt_cli_accepts_ema_trend_timeperiod_two() -> None:
+    args = build_parser().parse_args(["hyperopt", "--ema-trend-timeperiod", "2"])
+
+    assert args.ema_trend_timeperiod == 2
 
 
 def test_condition_timeframe_and_warmup_are_included_in_required_history() -> None:
