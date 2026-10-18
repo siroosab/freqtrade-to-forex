@@ -8,7 +8,7 @@ import pandas as pd
 import talib.abstract as ta
 
 
-EMA_TREND_EMA_COUNT = 9
+EMA_TREND_EMA_COUNT = 8
 EMA_TREND_TIMEFRAMES = {"H1": "1h", "1H": "1h", "1h": "1h", "H4": "4h", "4H": "4h", "4h": "4h"}
 DEFAULT_EMA_TREND_CONDITION: dict[str, object] = {
     "enabled": True,
@@ -58,7 +58,7 @@ def normalize_approved_ema_trend_condition(settings: object | None) -> dict[str,
 
 
 def add_ema_trend_indicators(dataframe: pd.DataFrame, *, timeperiod: int) -> pd.DataFrame:
-    """Add chained EMA columns from ``ema_x_2`` through ``ema_x_10``."""
+    """Add chained EMA columns from ``ema_x_2`` through ``ema_x_9``."""
     if (
         not isinstance(timeperiod, Integral)
         or isinstance(timeperiod, bool)
@@ -86,26 +86,31 @@ def apply_ema_trend_condition(
     condition_timeframe: str,
     timeperiod: int,
 ) -> pd.DataFrame:
-    """Gate strategy entry signals using the last completed higher-timeframe EMA pair."""
+    """Gate entries using higher-timeframe chained EMA 9 versus base-timeframe EMA 7."""
     from freqtrade.strategy.strategy_helper import merge_informative_pair
 
+    if "close" not in dataframe:
+        raise ValueError("EMA trend candles must include a close column")
+
+    base_frame = dataframe.copy()
+    base_frame["ema_7"] = ta.EMA(base_frame["close"], timeperiod=7)
     ema_frame = add_ema_trend_indicators(informative_candles.copy(), timeperiod=timeperiod)
     result = merge_informative_pair(
-        dataframe,
-        ema_frame.loc[:, ["date", "ema_x_9", "ema_x_10"]],
+        base_frame,
+        ema_frame.loc[:, ["date", "ema_x_9"]],
         base_timeframe,
         condition_timeframe,
         ffill=True,
     )
     suffix = condition_timeframe.lower()
-    fast_ema = result[f"ema_x_9_{suffix}"]
-    slow_ema = result[f"ema_x_10_{suffix}"]
+    higher_timeframe_ema = result[f"ema_x_9_{suffix}"]
+    base_timeframe_ema = result["ema_7"]
     if "enter_long" in result:
-        result["enter_long"] = result["enter_long"].fillna(False).astype(bool) & fast_ema.gt(
-            slow_ema
+        result["enter_long"] = result["enter_long"].fillna(False).astype(bool) & (
+            higher_timeframe_ema > base_timeframe_ema
         )
     if "enter_short" in result:
-        result["enter_short"] = result["enter_short"].fillna(False).astype(bool) & fast_ema.lt(
-            slow_ema
+        result["enter_short"] = result["enter_short"].fillna(False).astype(bool) & (
+            higher_timeframe_ema < base_timeframe_ema
         )
     return result

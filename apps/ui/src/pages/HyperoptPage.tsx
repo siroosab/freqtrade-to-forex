@@ -880,7 +880,7 @@ export function HyperoptPage() {
                 onChange={(event) => setEmaTrendEnabled(event.target.checked)}
               />
               <small>
-                Enabled by default. Long entries require EMA 9 above EMA 10; short entries require EMA 9 below EMA 10. This global condition does not require edits to the strategy.
+                Enabled by default. Long entries require the selected higher-timeframe chained EMA 9 above EMA 7 on the strategy timeframe; short entries require it below. This global condition does not require edits to the strategy.
               </small>
             </label>
             {emaTrendEnabled && (
@@ -906,7 +906,7 @@ export function HyperoptPage() {
                       <option key={period} value={period}>{period}</option>
                     ))}
                   </select>
-                  <small>Fixed for this Hyperopt run; chained EMA columns run from ema_x_2 through ema_x_10.</small>
+                  <small>Fixed for this Hyperopt run; it controls the chained higher-timeframe EMA ending at ema_x_9. EMA 7 is calculated from the strategy timeframe candles.</small>
                 </label>
               </>
             )}
@@ -1036,7 +1036,7 @@ export function HyperoptPage() {
                 {report.emaTrendCondition && (
                   <div><span>EMA trend condition</span><strong>
                     {report.emaTrendCondition.enabled
-                      ? `Enabled · ${report.emaTrendCondition.timeframe.toUpperCase()} · timeperiod ${report.emaTrendCondition.timeperiod}`
+                      ? `Enabled · ${report.emaTrendCondition.timeframe.toUpperCase()} EMA 9 vs strategy-timeframe EMA 7 · chain timeperiod ${report.emaTrendCondition.timeperiod}`
                       : 'Disabled'}
                   </strong></div>
                 )}
@@ -1096,7 +1096,7 @@ export function HyperoptPage() {
               {' '}· strategy exit signals: {reviewQuery.data.approvedRevision.hyperopt?.useExitSignal === false ? 'disabled' : 'enabled'}
               {' '}· EMA trend condition: {reviewQuery.data.approvedRevision.hyperopt?.emaTrendCondition?.enabled === false
                 ? 'disabled'
-                : `${(reviewQuery.data.approvedRevision.hyperopt?.emaTrendCondition?.timeframe ?? '1h').toUpperCase()} · period ${reviewQuery.data.approvedRevision.hyperopt?.emaTrendCondition?.timeperiod ?? 4}`}
+                : `${(reviewQuery.data.approvedRevision.hyperopt?.emaTrendCondition?.timeframe ?? '1h').toUpperCase()} EMA 9 vs strategy-timeframe EMA 7 · chain period ${reviewQuery.data.approvedRevision.hyperopt?.emaTrendCondition?.timeperiod ?? 4}`}
             </p>
           )}
           <div className="summary-grid">
