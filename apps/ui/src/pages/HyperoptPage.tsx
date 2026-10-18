@@ -130,7 +130,7 @@ export function HyperoptPage() {
   const [useExitSignal, setUseExitSignal] = useState(true)
   const [emaTrendEnabled, setEmaTrendEnabled] = useState(true)
   const [emaTrendTimeframe, setEmaTrendTimeframe] = useState<'1h' | '4h'>('1h')
-  const [emaTrendTimeperiod, setEmaTrendTimeperiod] = useState(4)
+  const [emaTrendTimeperiod, setEmaTrendTimeperiod] = useState(2)
   const [stopLossPips, setStopLossPips] = useState('0.5')
   const [backtestStopLossPipsOverride, setBacktestStopLossPipsOverride] = useState<{
     scope: string
