@@ -880,7 +880,7 @@ export function HyperoptPage() {
                 onChange={(event) => setEmaTrendEnabled(event.target.checked)}
               />
               <small>
-                Enabled by default. Long entries require the selected higher-timeframe chained EMA 9 above EMA 7 on the strategy timeframe; short entries require it below. This global condition does not require edits to the strategy.
+                Enabled by default. Long entries require EMA 7 on the strategy timeframe above the selected higher-timeframe chained EMA 9; short entries require EMA 7 below it. This global condition does not require edits to the strategy.
               </small>
             </label>
             {emaTrendEnabled && (
@@ -1036,7 +1036,7 @@ export function HyperoptPage() {
                 {report.emaTrendCondition && (
                   <div><span>EMA trend condition</span><strong>
                     {report.emaTrendCondition.enabled
-                      ? `Enabled · ${report.emaTrendCondition.timeframe.toUpperCase()} EMA 9 vs strategy-timeframe EMA 7 · chain timeperiod ${report.emaTrendCondition.timeperiod}`
+                      ? `Enabled · strategy EMA 7 vs ${report.emaTrendCondition.timeframe.toUpperCase()} EMA 9 · chain timeperiod ${report.emaTrendCondition.timeperiod}`
                       : 'Disabled'}
                   </strong></div>
                 )}
@@ -1096,7 +1096,7 @@ export function HyperoptPage() {
               {' '}· strategy exit signals: {reviewQuery.data.approvedRevision.hyperopt?.useExitSignal === false ? 'disabled' : 'enabled'}
               {' '}· EMA trend condition: {reviewQuery.data.approvedRevision.hyperopt?.emaTrendCondition?.enabled === false
                 ? 'disabled'
-                : `${(reviewQuery.data.approvedRevision.hyperopt?.emaTrendCondition?.timeframe ?? '1h').toUpperCase()} EMA 9 vs strategy-timeframe EMA 7 · chain period ${reviewQuery.data.approvedRevision.hyperopt?.emaTrendCondition?.timeperiod ?? 4}`}
+                : `strategy EMA 7 vs ${(reviewQuery.data.approvedRevision.hyperopt?.emaTrendCondition?.timeframe ?? '1h').toUpperCase()} EMA 9 · chain period ${reviewQuery.data.approvedRevision.hyperopt?.emaTrendCondition?.timeperiod ?? 4}`}
             </p>
           )}
           <div className="summary-grid">

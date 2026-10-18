@@ -107,10 +107,10 @@ def apply_ema_trend_condition(
     base_timeframe_ema = result["ema_7"]
     if "enter_long" in result:
         result["enter_long"] = result["enter_long"].fillna(False).astype(bool) & (
-            higher_timeframe_ema > base_timeframe_ema
+            base_timeframe_ema > higher_timeframe_ema
         )
     if "enter_short" in result:
         result["enter_short"] = result["enter_short"].fillna(False).astype(bool) & (
-            higher_timeframe_ema < base_timeframe_ema
+            base_timeframe_ema < higher_timeframe_ema
         )
     return result

@@ -63,7 +63,7 @@ def test_ema_condition_gates_entries_using_only_completed_higher_timeframe_candl
     base = pd.DataFrame(
         {
             "date": [start + timedelta(minutes=15 * index) for index in range(4 * 80)],
-            "close": [10.0] * (4 * 80),
+            "close": [100.0] * (4 * 80),
             "enter_long": True,
             "enter_short": True,
         }
@@ -89,7 +89,7 @@ def test_ema_condition_allows_shorts_during_a_higher_timeframe_downtrend() -> No
     base = pd.DataFrame(
         {
             "date": [start + timedelta(minutes=15 * index) for index in range(4 * 80)],
-            "close": [100.0] * (4 * 80),
+            "close": [1.0] * (4 * 80),
             "enter_long": True,
             "enter_short": True,
         }
@@ -107,12 +107,12 @@ def test_ema_condition_allows_shorts_during_a_higher_timeframe_downtrend() -> No
     assert result.loc[4 * 40, "enter_short"]
 
 
-def test_ema_condition_compares_higher_timeframe_ema_9_with_base_timeframe_ema_7() -> None:
+def test_ema_condition_long_requires_base_timeframe_ema_7_above_higher_timeframe_ema_9() -> None:
     start = datetime(2026, 1, 1, tzinfo=UTC)
     base = pd.DataFrame(
         {
             "date": [start + timedelta(minutes=15 * index) for index in range(4 * 80)],
-            "close": [10.0] * (4 * 80),
+            "close": [100.0] * (4 * 80),
             "enter_long": True,
             "enter_short": True,
         }
@@ -126,20 +126,44 @@ def test_ema_condition_compares_higher_timeframe_ema_9_with_base_timeframe_ema_7
         timeperiod=4,
     )
 
-    assert result.loc[4 * 40, "ema_x_9_1h"] > result.loc[4 * 40, "ema_7"]
+    assert result.loc[4 * 40, "ema_7"] > result.loc[4 * 40, "ema_x_9_1h"]
     assert "ema_x_10_1h" not in result
     assert result.loc[4 * 40, "enter_long"]
     assert not result.loc[4 * 40, "enter_short"]
+
+
+def test_ema_condition_short_requires_base_timeframe_ema_7_below_higher_timeframe_ema_9() -> None:
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    base = pd.DataFrame(
+        {
+            "date": [start + timedelta(minutes=15 * index) for index in range(4 * 80)],
+            "close": [1.0] * (4 * 80),
+            "enter_long": True,
+            "enter_short": True,
+        }
+    )
+
+    result = apply_ema_trend_condition(
+        base,
+        _informative_candles("up"),
+        base_timeframe="15m",
+        condition_timeframe="1h",
+        timeperiod=4,
+    )
+
+    assert result.loc[4 * 40, "ema_7"] < result.loc[4 * 40, "ema_x_9_1h"]
+    assert not result.loc[4 * 40, "enter_long"]
+    assert result.loc[4 * 40, "enter_short"]
 
 
 def test_strategy_adapter_applies_the_shared_condition_without_strategy_changes() -> None:
     start = datetime(2026, 1, 1, tzinfo=UTC)
     dates = [start + timedelta(minutes=15 * index) for index in range(4 * 80)]
     long_base = pd.DataFrame(
-        {"date": dates, "close": [10.0] * (4 * 80)}
+        {"date": dates, "close": [100.0] * (4 * 80)}
     )
     short_base = pd.DataFrame(
-        {"date": dates, "close": [100.0] * (4 * 80)}
+        {"date": dates, "close": [1.0] * (4 * 80)}
     )
     settings = {"enabled": True, "timeframe": "1h", "timeperiod": 4}
 
