@@ -1219,6 +1219,16 @@
   min-width: 850px;
 }
 
+.broker-positions-table td.positive {
+  color: #86efac;
+  font-weight: 700;
+}
+
+.broker-positions-table td.negative {
+  color: #fca5a5;
+  font-weight: 700;
+}
+
 .manual-position-row {
   background: rgba(250, 204, 21, 0.035);
 }
