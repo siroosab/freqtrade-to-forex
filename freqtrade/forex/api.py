@@ -4621,8 +4621,11 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 persist_scope_revision(pair, timeframe, strategy_class)
             job["status"] = report["status"]
         except Exception as exc:  # pragma: no cover - background worker boundary
-            job["status"] = "failed"
-            job["error"] = str(exc)
+            if stop_event.is_set():
+                job["status"] = "stopped"
+            else:
+                job["status"] = "failed"
+                job["error"] = str(exc)
             job["completedAt"] = datetime.now(UTC).isoformat()
 
     def resolve_candle_scope(pair: str, timeframe: str) -> tuple[str, str]:

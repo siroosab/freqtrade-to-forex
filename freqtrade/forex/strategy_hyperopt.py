@@ -6,7 +6,7 @@ import math
 import random
 from collections import defaultdict
 from collections.abc import Callable
-from concurrent.futures import FIRST_COMPLETED, ProcessPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
 from copy import deepcopy
 from dataclasses import dataclass
 from decimal import ROUND_UP, Decimal
@@ -191,6 +191,50 @@ def _evaluate_hyperopt_candidate(
     }
 
 
+def _evaluate_hyperopt_batch(
+    executor: ProcessPoolExecutor,
+    tasks: list[_HyperoptTask],
+    *,
+    workers: int,
+    record_result: Callable[[int, dict[str, object]], None],
+    should_stop: Callable[[], bool] | None,
+) -> bool:
+    pending: set[Future[tuple[int, dict[str, object]]]] = set()
+    task_iterator = iter(tasks)
+
+    def submit_next() -> bool:
+        try:
+            task = next(task_iterator)
+        except StopIteration:
+            return False
+        pending.add(executor.submit(_evaluate_hyperopt_candidate, task))
+        return True
+
+    for _ in range(workers):
+        if not submit_next():
+            break
+    while pending:
+        completed_futures, pending = wait(
+            pending,
+            timeout=0.25,
+            return_when=FIRST_COMPLETED,
+        )
+        for future in completed_futures:
+            attempt, row = future.result()
+            record_result(attempt, row)
+        if should_stop is not None and should_stop():
+            for future in pending:
+                future.cancel()
+            terminate_workers = getattr(executor, "terminate_workers", None)
+            if callable(terminate_workers):
+                terminate_workers()
+            return True
+        for _ in completed_futures:
+            if not submit_next():
+                break
+    return False
+
+
 def _evaluate_hyperopt_tasks(
     tasks: list[_HyperoptTask],
     context: _HyperoptWorkerContext,
@@ -211,7 +255,7 @@ def _evaluate_hyperopt_tasks(
         if on_attempt is not None:
             on_attempt(completed, total_attempts)
 
-    if workers == 1:
+    if workers == 1 and should_stop is None:
         for task in tasks:
             attempt, row = _evaluate_hyperopt_candidate(task, context)
             record_result(attempt, row)
@@ -221,20 +265,13 @@ def _evaluate_hyperopt_tasks(
             initializer=_initialize_hyperopt_worker,
             initargs=(context,),
         ) as executor:
-            pending = {executor.submit(_evaluate_hyperopt_candidate, task) for task in tasks}
-            while pending:
-                completed_futures, pending = wait(
-                    pending,
-                    timeout=0.25,
-                    return_when=FIRST_COMPLETED,
-                )
-                for future in completed_futures:
-                    attempt, row = future.result()
-                    record_result(attempt, row)
-                if should_stop is not None and should_stop():
-                    for future in pending:
-                        future.cancel()
-                    break
+            _evaluate_hyperopt_batch(
+                executor,
+                tasks,
+                workers=workers,
+                record_result=record_result,
+                should_stop=should_stop,
+            )
     indexed_rows.sort(key=lambda item: item[0])
     return [row for _, row in indexed_rows]
 

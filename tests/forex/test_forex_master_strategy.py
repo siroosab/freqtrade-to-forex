@@ -1,4 +1,5 @@
 import math
+import threading
 from decimal import Decimal
 
 import pandas as pd
@@ -8,6 +9,71 @@ from freqtrade.forex import strategy_hyperopt
 from freqtrade.forex.models import OandaInstrument
 from freqtrade.forex.strategy_execution import FreqtradeStrategyAdapter, load_strategy
 from freqtrade.forex.strategy_hyperopt import hyperopt_worker_limit, run_strategy_hyperopt
+
+
+@pytest.mark.parametrize("workers", [1, 2])
+def test_hyperopt_stop_terminates_bounded_worker_batch(monkeypatch, workers) -> None:
+    stop_event = threading.Event()
+    submitted_attempts = []
+    executor_instances = []
+
+    class FakeFuture:
+        def __init__(self, attempt):
+            self.attempt = attempt
+            self.cancelled = False
+
+        def result(self):
+            return self.attempt, {"objective": "1"}
+
+        def cancel(self):
+            self.cancelled = True
+            return True
+
+    class FakeExecutor:
+        def __init__(self, **_kwargs):
+            self.futures = []
+            self.terminated = False
+            executor_instances.append(self)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def submit(self, _function, task):
+            submitted_attempts.append(task[0])
+            future = FakeFuture(task[0])
+            self.futures.append(future)
+            return future
+
+        def terminate_workers(self):
+            self.terminated = True
+
+    def wait_for_first(pending, **_kwargs):
+        completed = min(pending, key=lambda future: future.attempt)
+        return {completed}, pending - {completed}
+
+    def on_attempt(_done, _total):
+        stop_event.set()
+
+    monkeypatch.setattr(strategy_hyperopt, "ProcessPoolExecutor", FakeExecutor)
+    monkeypatch.setattr(strategy_hyperopt, "wait", wait_for_first)
+    results = strategy_hyperopt._evaluate_hyperopt_tasks(
+        [(1,), (2,), (3,), (4,)],
+        object(),
+        workers=workers,
+        total_attempts=4,
+        on_attempt=on_attempt,
+        on_candidate=None,
+        should_stop=stop_event.is_set,
+    )
+
+    assert len(submitted_attempts) == workers
+    assert results == [{"objective": "1"}]
+    if workers > 1:
+        assert executor_instances[0].futures[1].cancelled
+    assert executor_instances[0].terminated
 
 
 @pytest.mark.parametrize(("cpu_count", "expected_workers"), [(1, 1), (2, 1), (4, 3)])
