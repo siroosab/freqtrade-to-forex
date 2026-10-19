@@ -260,57 +260,62 @@ export function AutoHyperoptPage() {
           )}
 
           <section className="summary-grid auto-hyperopt-summary">
-            <article className="summary-card">
-              <span>Selected instruments</span>
+            <article className="summary-card auto-hyperopt-summary-card auto-hyperopt-summary-card--pairs">
+              <span>💱 Selected instruments</span>
               <strong>{selectedPairDetails.length}</strong>
             </article>
-            <article className="summary-card">
-              <span>Weekly schedule</span>
+            <article className="summary-card auto-hyperopt-summary-card auto-hyperopt-summary-card--days">
+              <span>📆 Weekly schedule</span>
               <strong>{daysLabel}</strong>
             </article>
-            <article className="summary-card">
-              <span>Queue time · {schedule.scheduler.serverTimezone ?? 'server local'}</span>
+            <article className="summary-card auto-hyperopt-summary-card auto-hyperopt-summary-card--time">
+              <span>🕒 Queue start</span>
               <strong>{currentTime}</strong>
+              <small>
+                🌐 {schedule.scheduler.serverTimezone ?? 'Server local time'}
+              </small>
             </article>
-            <article className="summary-card">
-              <span>Last queue</span>
+            <article className="summary-card auto-hyperopt-summary-card auto-hyperopt-summary-card--queue">
+              <span>📦 Last queue</span>
               <strong>{queue?.status ?? 'idle'}</strong>
             </article>
           </section>
 
           <section className="panel auto-hyperopt-diagnostics" aria-live="polite">
-            <div>
+            <div className="auto-hyperopt-diagnostics-heading">
               <p className="eyebrow">Scheduler diagnostics</p>
-              <strong>
-                {schedule.scheduler.running ? 'Scheduler is running' : 'Scheduler is not running'}
-              </strong>
+              <h3>🔎 Scheduler health</h3>
             </div>
-            <div>
-              <span>Server clock</span>
+            <div className={`auto-hyperopt-diagnostic-card ${schedule.scheduler.running ? 'is-positive' : 'is-warning'}`}>
+              <span><span aria-hidden="true">⚙️</span> Scheduler</span>
+              <strong>{schedule.scheduler.running ? 'Running' : 'Not running'}</strong>
+            </div>
+            <div className="auto-hyperopt-diagnostic-card is-blue">
+              <span><span aria-hidden="true">🕰️</span> Server clock</span>
               <strong>{formatServerDateTime(schedule.scheduler.serverNow)}</strong>
             </div>
-            <div>
-              <span>Today's schedule</span>
+            <div className="auto-hyperopt-diagnostic-card is-violet">
+              <span><span aria-hidden="true">📅</span> Today’s schedule</span>
               <strong>{schedulerWindowLabel(schedule)}</strong>
             </div>
-            <div>
-              <span>Next scheduled run</span>
+            <div className="auto-hyperopt-diagnostic-card is-cyan">
+              <span><span aria-hidden="true">⏭️</span> Next scheduled run</span>
               <strong>{nextRunLabel(schedule)}</strong>
             </div>
-            <div>
-              <span>Last scheduler check</span>
+            <div className="auto-hyperopt-diagnostic-card is-slate">
+              <span><span aria-hidden="true">🔄</span> Last scheduler check</span>
               <strong>{formatServerDateTime(schedule.scheduler.lastCheckedAt)}</strong>
             </div>
-            <div>
-              <span>Last Hyperopt start</span>
+            <div className="auto-hyperopt-diagnostic-card is-green">
+              <span><span aria-hidden="true">🚀</span> Last Hyperopt start</span>
               <strong>
                 {queue?.hyperoptStartedAt
                   ? `${queue.activePair ?? 'Pair'} · ${formatServerDateTime(queue.hyperoptStartedAt)}`
                   : 'No start recorded'}
               </strong>
             </div>
-            <div>
-              <span>Start command status</span>
+            <div className={`auto-hyperopt-diagnostic-card ${queue?.launchStatus === 'failed' ? 'is-warning' : 'is-amber'}`}>
+              <span><span aria-hidden="true">📡</span> Start command</span>
               <strong>
                 {queue?.launchStatus === 'failed'
                   ? `Failed · ${queue.launchError ?? 'see API log'}`
@@ -325,7 +330,7 @@ export function AutoHyperoptPage() {
           <section className="panel auto-hyperopt-schedule-panel">
             <div className="panel-header">
               <div>
-                <p className="eyebrow">01 · Schedule</p>
+                <p className="eyebrow">01 · 🗓️ Schedule</p>
                 <h3>Choose when the queue starts</h3>
               </div>
               <label className="auto-hyperopt-enable">
@@ -366,7 +371,7 @@ export function AutoHyperoptPage() {
                 </div>
               </div>
               <label className="auto-hyperopt-time">
-                <span className="auto-hyperopt-field-label">Queue start time · server local</span>
+                <span className="auto-hyperopt-field-label">🕒 Queue start time</span>
                 <input
                   type="time"
                   value={currentTime}
@@ -383,13 +388,13 @@ export function AutoHyperoptPage() {
                   disabled={activeQueue}
                 />
                 <small>
-                  API server clock: {formatServerDateTime(schedule.scheduler.serverNow)}.
-                  {' '}Your clock for that same instant: {formatBrowserDateTime(schedule.scheduler.serverNow)}.
-                  {' '}This input is interpreted using server time, not your browser's local time.
+                  🌐 {schedule.scheduler.serverTimezone ?? 'Server local time'} · API clock: {formatServerDateTime(schedule.scheduler.serverNow)}
+                  <br />
+                  💻 Your local clock: {formatBrowserDateTime(schedule.scheduler.serverNow)}. This schedule follows server time.
                 </small>
               </label>
               <label className="auto-hyperopt-time">
-                <span className="auto-hyperopt-field-label">CPU worker processes</span>
+                <span className="auto-hyperopt-field-label">🧠 CPU worker processes</span>
                 <select
                   value={currentWorkers}
                   onChange={(event) => setDraft((current) => ({
@@ -422,7 +427,7 @@ export function AutoHyperoptPage() {
           <section className="panel auto-hyperopt-pairs-panel">
             <div className="panel-header">
               <div>
-                <p className="eyebrow">02 · Approved strategies</p>
+                <p className="eyebrow">02 · 🎯 Approved strategies</p>
                 <h3>Choose instruments for the queue</h3>
               </div>
               <span className="pill neutral">{schedule.availablePairs.length} approved</span>
@@ -458,12 +463,14 @@ export function AutoHyperoptPage() {
                         <small>{item.timeframe} · {item.strategyClass}</small>
                       </span>
                       <span className="auto-hyperopt-pair-settings">
+                        <small className="auto-hyperopt-pair-meta-label">🛠 Hyperopt settings</small>
                         <strong>{item.settings?.attempts ?? '—'} attempts</strong>
                         <small>
                           {item.settings?.stopDistanceMode ?? 'static'} stop · ROI {item.settings?.optimizeRoi === false ? 'off' : 'on'} · exit signals {item.settings?.useExitSignal === false ? 'off' : 'on'}
                         </small>
                       </span>
                       <span className="auto-hyperopt-last-result">
+                        <small className="auto-hyperopt-pair-meta-label">📈 Last result</small>
                         <strong className={`auto-hyperopt-result ${resultTone}`}>
                           {parsedNetPl == null
                             ? resultLabel(result)
@@ -484,7 +491,7 @@ export function AutoHyperoptPage() {
 
           <section className="panel auto-hyperopt-footer">
             <div>
-              <p className="eyebrow">03 · Queue status</p>
+              <p className="eyebrow">03 · 📦 Queue status</p>
               <h3>
                 {queue?.message
                   ?? `Next run: ${nextRunLabel(schedule)}`}
