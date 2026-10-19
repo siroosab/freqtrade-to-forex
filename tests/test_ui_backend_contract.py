@@ -114,6 +114,19 @@ def test_account_summary_endpoint_exists():
     assert "netPnl" in payload
 
 
+def test_hyperopt_worker_capacity_is_exposed_to_ui(monkeypatch):
+    monkeypatch.setattr("freqtrade.forex.api.hyperopt_worker_limit", lambda: 3)
+
+    hyperopt_status = client.get("/api/v1/hyperopt/status?pair=EUR%2FUSD")
+    auto_hyperopt_schedule = client.get("/api/v1/auto-hyperopt")
+
+    assert hyperopt_status.status_code == 200, hyperopt_status.text
+    assert hyperopt_status.json()["availableWorkers"] == 3
+    assert auto_hyperopt_schedule.status_code == 200, auto_hyperopt_schedule.text
+    assert auto_hyperopt_schedule.json()["availableWorkers"] == 3
+    assert auto_hyperopt_schedule.json()["workers"] <= 3
+
+
 def test_market_summary_endpoint_exists():
     response = client.get("/api/v1/markets/summary")
     assert response.status_code == 200, response.text

@@ -93,8 +93,8 @@ _HyperoptTask = tuple[
 
 
 def hyperopt_worker_limit() -> int:
-    """Return the CPU count available to this process, respecting container limits."""
-    return max(1, cpu_count())
+    """Leave one available CPU for the trading/API process when possible."""
+    return max(1, cpu_count() - 1)
 
 
 def _initialize_hyperopt_worker(context: _HyperoptWorkerContext) -> None:

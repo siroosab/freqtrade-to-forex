@@ -1002,7 +1002,7 @@ export function HyperoptPage() {
                 ))}
               </select>
               <small>
-                Available on the server: {availableWorkers}. Each worker evaluates candidates in a separate process; using all workers can leave less CPU for live trading.
+                Available to Hyperopt: {availableWorkers}. One CPU is reserved for live trading and the UI when possible; a single-CPU server can use one worker.
               </small>
             </label>
             <label className="field-block">

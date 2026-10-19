@@ -409,7 +409,7 @@ export function AutoHyperoptPage() {
                   ))}
                 </select>
                 <small>
-                  Available on the server: {schedule?.availableWorkers ?? 1}. This worker count is used for every pair in the scheduled queue. Choose fewer workers to reserve CPU for live trading.
+                  Available to Hyperopt: {schedule?.availableWorkers ?? 1}. One CPU is reserved for live trading and the UI when possible; a single-CPU server can use one worker. This limit applies to every pair in the queue.
                 </small>
               </label>
             </div>

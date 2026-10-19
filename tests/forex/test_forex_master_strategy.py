@@ -1,15 +1,23 @@
-from decimal import Decimal
 import math
+from decimal import Decimal
 
 import pandas as pd
 import pytest
 
+from freqtrade.forex import strategy_hyperopt
 from freqtrade.forex.models import OandaInstrument
 from freqtrade.forex.strategy_execution import FreqtradeStrategyAdapter, load_strategy
 from freqtrade.forex.strategy_hyperopt import hyperopt_worker_limit, run_strategy_hyperopt
 
 
-@pytest.mark.skipif(hyperopt_worker_limit() < 2, reason="requires two available CPUs")
+@pytest.mark.parametrize(("cpu_count", "expected_workers"), [(1, 1), (2, 1), (4, 3)])
+def test_hyperopt_worker_limit_reserves_one_cpu(monkeypatch, cpu_count, expected_workers) -> None:
+    monkeypatch.setattr(strategy_hyperopt, "cpu_count", lambda: cpu_count)
+
+    assert hyperopt_worker_limit() == expected_workers
+
+
+@pytest.mark.skipif(hyperopt_worker_limit() < 2, reason="requires three available CPUs")
 def test_strategy_hyperopt_evaluates_candidates_in_process_workers() -> None:
     closes = [1.1 + math.sin(index / 3) * 0.002 for index in range(100)]
     candles = pd.DataFrame(
