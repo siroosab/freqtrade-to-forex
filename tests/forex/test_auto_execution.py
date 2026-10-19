@@ -1363,6 +1363,72 @@ def test_auto_execution_api_requires_approved_strategy_before_enable(
     assert "worker is not running" in active_status.json()["lastError"]
 
 
+def test_broker_positions_show_the_live_trailing_stop_price(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OANDA_TOKEN", "test-token")
+    monkeypatch.setenv("OANDA_ACCOUNT_ID", "test-account")
+    monkeypatch.setenv("OANDA_ENVIRONMENT", "practice")
+    monkeypatch.setenv("OANDA_EXECUTION_MODE", "practice")
+
+    class PositionClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def get_account_summary(self):
+            return OandaAccountState(
+                account_id="test-account",
+                currency="GBP",
+                balance=Decimal(10000),
+                nav=Decimal(10000),
+                margin_available=Decimal(9000),
+                unrealized_pl=Decimal(209),
+            )
+
+        async def get_open_trades(self):
+            return [
+                {
+                    "id": "trailing-trade",
+                    "instrument": "GBP_USD",
+                    "currentUnits": "1000",
+                    "price": "1.33170",
+                    "trailingStopLossOrder": {
+                        "trailingStopValue": "1.33195",
+                        "distance": "0.00070",
+                    },
+                    "tradeClientExtensions": {"id": "auto-gbp-usd"},
+                    "unrealizedPL": "209.2690",
+                }
+            ]
+
+        async def get_closed_trades(self, *, count):
+            return []
+
+        async def get_prices(self, instruments):
+            assert instruments == ["GBP_USD"]
+            return [
+                OandaPrice(
+                    instrument="GBP_USD",
+                    time="2026-10-19T09:30:00Z",
+                    bid=Decimal("1.33265"),
+                    ask=Decimal("1.33267"),
+                )
+            ]
+
+    monkeypatch.setattr("freqtrade.forex.api.OandaClient", PositionClient)
+
+    with TestClient(create_app(tmp_path / "api.sqlite")) as client:
+        response = client.get("/api/v1/positions")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["open"][0]["stopLoss"] == "1.33195"
+
+
 def test_auto_execution_reports_missing_stop_loss_for_all_configured_pairs(
     tmp_path,
     monkeypatch,

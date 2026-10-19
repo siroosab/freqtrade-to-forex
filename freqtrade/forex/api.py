@@ -1512,7 +1512,13 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         if quote is not None and not closed:
             current_price = str(quote.bid if side == "BUY" else quote.ask)
         stop_loss = trade.get("stopLossOrder") or {}
+        trailing_stop_loss = trade.get("trailingStopLossOrder") or {}
         take_profit = trade.get("takeProfitOrder") or {}
+        stop_loss_price = (
+            trailing_stop_loss.get("trailingStopValue")
+            if trailing_stop_loss
+            else stop_loss.get("price")
+        )
         return {
             "id": str(trade.get("id", "")),
             "symbol": normalize_pair(instrument),
@@ -1521,7 +1527,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             "entryPrice": str(trade.get("price", "")),
             "currentPrice": current_price,
             "exitPrice": str(trade.get("averageClosePrice", "")) or None,
-            "stopLoss": str(stop_loss.get("price", "")) or None,
+            "stopLoss": str(stop_loss_price or "") or None,
             "takeProfit": str(take_profit.get("price", "")) or None,
             "pnl": str(trade.get("realizedPL" if closed else "unrealizedPL", "0")),
             "openedAt": trade.get("openTime"),
