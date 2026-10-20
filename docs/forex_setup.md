@@ -103,6 +103,10 @@ tagged trades using strategy exits, reversals, and the approved ROI schedule
 (subject to configured Take Profit protections). It is the Forex Auto
 Execution worker, not the standard `freqtrade trade` CLI exchange lifecycle.
 In this project, the only account environments are Practice and Live.
+OANDA requests that receive HTTP 401 with `Insufficient authorization to perform
+request.` are retried up to three times after the initial attempt, with increasing
+delays, before the failure is reported. Other authorization errors are not retried;
+verify the selected environment, account, and token permissions if the error persists.
 
 ## Pair strategies and research runs
 

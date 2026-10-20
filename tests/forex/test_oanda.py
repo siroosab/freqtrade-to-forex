@@ -4501,6 +4501,90 @@ async def test_oanda_client_retries_disconnect_and_timeout_during_practice_order
 
 
 @pytest.mark.asyncio
+async def test_oanda_client_retries_insufficient_authorization_during_order(
+    monkeypatch,
+) -> None:
+    order_bodies: list[bytes] = []
+    retry_delays: list[float] = []
+
+    async def record_sleep(delay: float) -> None:
+        retry_delays.append(delay)
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/instruments"):
+            return httpx.Response(
+                200,
+                json={
+                    "instruments": [
+                        {
+                            "name": "EUR_USD",
+                            "displayName": "EUR/USD",
+                            "pipLocation": -4,
+                            "displayPrecision": 5,
+                            "tradeUnitsPrecision": 0,
+                            "minimumTradeSize": "1",
+                        }
+                    ]
+                },
+            )
+        if request.url.path.endswith("/pricing"):
+            return httpx.Response(
+                200,
+                json={
+                    "prices": [
+                        {
+                            "instrument": "EUR_USD",
+                            "time": "2026-09-15T10:00:00Z",
+                            "bids": [{"price": "1.10000"}],
+                            "asks": [{"price": "1.10012"}],
+                        }
+                    ],
+                },
+            )
+        order_bodies.append(request.content)
+        if len(order_bodies) < 3:
+            return httpx.Response(
+                401,
+                json={"errorMessage": "Insufficient authorization to perform request."},
+            )
+        return httpx.Response(
+            201,
+            json={
+                "orderCreateTransaction": {"id": "practice-order-1", "units": "1000"},
+                "orderFillTransaction": {
+                    "id": "practice-fill-1",
+                    "orderID": "practice-order-1",
+                    "instrument": "EUR_USD",
+                    "units": "1000",
+                    "price": "1.10012",
+                },
+                "lastTransactionID": "practice-fill-1",
+            },
+        )
+
+    monkeypatch.setattr("freqtrade.forex.oanda.asyncio.sleep", record_sleep)
+    async with httpx.AsyncClient(
+        base_url=OandaEnvironment.PRACTICE.rest_url,
+        transport=httpx.MockTransport(handler),
+    ) as http_client:
+        async with OandaClient(
+            "ignored", "account", http_client=http_client, max_retries=2
+        ) as client:
+            result = await client.create_market_order(
+                "EUR_USD",
+                1000,
+                stop_loss_price="1.09900",
+                client_order_id="practice-auth-retry-1",
+            )
+
+    assert result.order_id == "practice-order-1"
+    assert len(order_bodies) == 3
+    assert order_bodies[0] == order_bodies[1] == order_bodies[2]
+    assert retry_delays == [1.0, 2.0]
+    assert OandaClient._is_retryable(401, {"errorMessage": "Invalid token."}) is False
+
+
+@pytest.mark.asyncio
 async def test_oanda_client_reads_account_and_open_positions() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path.endswith("/summary"):

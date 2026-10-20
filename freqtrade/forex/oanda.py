@@ -749,12 +749,24 @@ class OandaClient:
     def _is_retryable(status_code: int, detail: Any) -> bool:
         if status_code in {408, 429, 500, 502, 503, 504}:
             return True
+        if status_code == 401 and isinstance(detail, dict):
+            return (
+                detail.get("errorMessage")
+                == "Insufficient authorization to perform request."
+            )
         if isinstance(detail, dict):
             code = detail.get("errorCode") or detail.get("code")
-            return str(code).upper() in {"RATE_LIMITED", "TIMEOUT", "SERVER_ERROR", "TOO_MANY_REQUESTS"}
+            return str(code).upper() in {
+                "RATE_LIMITED",
+                "TIMEOUT",
+                "SERVER_ERROR",
+                "TOO_MANY_REQUESTS",
+            }
         return False
 
     def _retry_delay(self, status_code: int, attempt: int) -> float:
+        if status_code == 401:
+            return max(self.retry_backoff * 4, 1.0) * (2**attempt)
         if status_code == 429:
             retry_after = self._client.headers.get("Retry-After") if self._client else None
             if retry_after is not None:
