@@ -98,10 +98,10 @@ class ForexEmaCrossStrategy(IStrategy):
             dataframe["count_low"].shift(2) == 0
         )& (slow_ema > fast_ema)
 
-        dataframe["enter_short"] = (dataframe["count_high"] > 0) & (
-            dataframe["count_high"].shift(1) == 0
+        dataframe["enter_short"] = (dataframe["count_low"] > 0) & (
+            dataframe["count_low"].shift(1) == 0
         )& (
-            dataframe["count_high"].shift(2) == 0
+            dataframe["count_low"].shift(2) == 0
         )& (slow_ema < fast_ema)
 
         return dataframe
