@@ -89,19 +89,23 @@ class ForexEmaCrossStrategy(IStrategy):
     def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         fast_ema = dataframe[f"ema_x_{self.entry_fast_ema_index.value}"]
         slow_ema = dataframe[f"ema_x_{self.entry_slow_ema_index.value}"]
-        #test mode
+        #test mode##
         #dataframe["enter_long"] = qtpylib.crossed_above(fast_ema, slow_ema).fillna(False)
         #dataframe["enter_short"] = qtpylib.crossed_below(fast_ema, slow_ema).fillna(False)
         dataframe["enter_long"] = (dataframe["count_low"] > 0) & (
             dataframe["count_low"].shift(1) == 0
         )& (
             dataframe["count_low"].shift(2) == 0
+        )& (
+                    dataframe["count_low"].shift(3) == 0
         )& (slow_ema > fast_ema)
 
         dataframe["enter_short"] = (dataframe["count_hi"] > 0) & (
             dataframe["count_hi"].shift(1) == 0
         )& (
             dataframe["count_hi"].shift(2) == 0
+        )& (
+                    dataframe["count_hi"].shift(3) == 0
         )& (slow_ema < fast_ema)
 
         return dataframe
