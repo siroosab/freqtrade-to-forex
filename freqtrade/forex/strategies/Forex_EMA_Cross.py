@@ -99,7 +99,7 @@ class ForexEmaCrossStrategy(IStrategy):
             .rolling(5)
             .apply(lambda x: (x == 0).all(), raw=True)
             .eq(1)
-            & (slow_ema > fast_ema)
+            & (dataframe["close"] > fast_ema)
         )
 
         dataframe["enter_short"] = (
@@ -109,7 +109,7 @@ class ForexEmaCrossStrategy(IStrategy):
             .rolling(5)
             .apply(lambda x: (x == 0).all(), raw=True)
             .eq(1)
-        ) & (slow_ema < fast_ema)
+        ) & (dataframe["close"] < fast_ema)
 
         return dataframe
 
