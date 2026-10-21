@@ -92,21 +92,24 @@ class ForexEmaCrossStrategy(IStrategy):
         #test mode##
         #dataframe["enter_long"] = qtpylib.crossed_above(fast_ema, slow_ema).fillna(False)
         #dataframe["enter_short"] = qtpylib.crossed_below(fast_ema, slow_ema).fillna(False)
-        dataframe["enter_long"] = (dataframe["count_low"] > 0) & (
-            dataframe["count_low"].shift(1) == 0
-        )& (
-            dataframe["count_low"].shift(2) == 0
-        )& (
-                    dataframe["count_low"].shift(3) == 0
-        )& (slow_ema > fast_ema)
+        dataframe["enter_long"] = (
+            (dataframe["count_low"] > 0)
+            & dataframe["count_low"]
+            .shift(1)
+            .rolling(5)
+            .apply(lambda x: (x == 0).all(), raw=True)
+            .eq(1)
+            & (slow_ema > fast_ema)
+        )
 
-        dataframe["enter_short"] = (dataframe["count_hi"] > 0) & (
-            dataframe["count_hi"].shift(1) == 0
-        )& (
-            dataframe["count_hi"].shift(2) == 0
-        )& (
-                    dataframe["count_hi"].shift(3) == 0
-        )& (slow_ema < fast_ema)
+        dataframe["enter_short"] = (
+            (dataframe["count_hi"] > 0)
+            & dataframe["count_hi"]
+            .shift(1)
+            .rolling(5)
+            .apply(lambda x: (x == 0).all(), raw=True)
+            .eq(1)
+        ) & (slow_ema < fast_ema)
 
         return dataframe
 
