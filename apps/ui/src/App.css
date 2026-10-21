@@ -5431,8 +5431,208 @@
     linear-gradient(155deg, rgba(14, 25, 42, 0.96), rgba(10, 17, 30, 0.94));
 }
 
+.hyperopt-result-highlights {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 14px 0;
+}
+
+.hyperopt-result-highlight {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 14px;
+  background: rgba(15, 23, 42, 0.48);
+}
+
+.hyperopt-result-highlight span {
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.hyperopt-result-highlight strong {
+  overflow-wrap: anywhere;
+  color: #e2e8f0;
+  font-size: 0.78rem;
+}
+
+.hyperopt-result-highlight.approved {
+  border-color: rgba(52, 211, 153, 0.35);
+  background: linear-gradient(135deg, rgba(6, 78, 59, 0.24), rgba(15, 23, 42, 0.52));
+}
+
+.hyperopt-result-highlight.approved span {
+  color: #6ee7b7;
+}
+
+.hyperopt-result-highlight.pending {
+  border-color: rgba(251, 191, 36, 0.32);
+  background: linear-gradient(135deg, rgba(120, 53, 15, 0.2), rgba(15, 23, 42, 0.52));
+}
+
+.hyperopt-result-highlight.pending span {
+  color: #fcd34d;
+}
+
+.hyperopt-result-list {
+  display: grid;
+  gap: 10px;
+}
+
+.hyperopt-result-card {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid rgba(100, 116, 139, 0.28);
+  border-radius: 16px;
+  background: rgba(8, 15, 28, 0.56);
+  transition: border-color 160ms ease, background 160ms ease, transform 160ms ease;
+}
+
+.hyperopt-result-card.newest {
+  border-color: rgba(56, 189, 248, 0.62);
+  background:
+    linear-gradient(115deg, rgba(8, 145, 178, 0.12), transparent 58%),
+    rgba(8, 15, 28, 0.72);
+  box-shadow: inset 3px 0 0 #38bdf8, 0 8px 24px rgba(2, 132, 199, 0.1);
+}
+
+.hyperopt-result-card.approved {
+  border-color: rgba(52, 211, 153, 0.4);
+}
+
+.hyperopt-result-card-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.hyperopt-result-card-heading > div {
+  min-width: 0;
+}
+
+.hyperopt-result-card-heading h4 {
+  margin: 8px 0 4px;
+  color: #f1f5f9;
+  font-size: 0.92rem;
+  overflow-wrap: anywhere;
+}
+
+.hyperopt-result-card-heading p {
+  margin: 0;
+  color: #94a3b8;
+  font-size: 0.74rem;
+}
+
+.hyperopt-result-card-heading > button {
+  flex: 0 0 auto;
+  min-height: 38px;
+  padding: 8px 12px;
+  font-size: 0.75rem;
+}
+
+.hyperopt-result-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.hyperopt-result-badge {
+  padding: 4px 8px;
+  border: 1px solid rgba(148, 163, 184, 0.26);
+  border-radius: 999px;
+  background: rgba(30, 41, 59, 0.66);
+  color: #cbd5e1;
+  font-size: 0.66rem;
+  font-weight: 750;
+}
+
+.hyperopt-result-badge.newest {
+  border-color: rgba(56, 189, 248, 0.42);
+  background: rgba(3, 105, 161, 0.2);
+  color: #7dd3fc;
+}
+
+.hyperopt-result-badge.approved {
+  border-color: rgba(52, 211, 153, 0.38);
+  background: rgba(6, 95, 70, 0.24);
+  color: #6ee7b7;
+}
+
+.hyperopt-result-badge.pending {
+  border-color: rgba(251, 191, 36, 0.4);
+  background: rgba(120, 53, 15, 0.24);
+  color: #fcd34d;
+}
+
+.hyperopt-result-badge.failed {
+  border-color: rgba(248, 113, 113, 0.38);
+  background: rgba(127, 29, 29, 0.2);
+  color: #fca5a5;
+}
+
+.hyperopt-result-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 13px;
+}
+
+.hyperopt-result-metrics > span {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  color: #94a3b8;
+  font-size: 0.68rem;
+}
+
+.hyperopt-result-metrics strong {
+  overflow-wrap: anywhere;
+  color: #e2e8f0;
+  font-size: 0.78rem;
+}
+
+.hyperopt-result-details {
+  margin-top: 12px;
+  border-top: 1px solid rgba(100, 116, 139, 0.2);
+}
+
+.hyperopt-result-details summary {
+  padding: 10px 0 2px;
+  color: #7dd3fc;
+  cursor: pointer;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.hyperopt-result-details[open] .bullet-list {
+  margin-top: 10px;
+}
+
 .hyperopt-approval-panel {
   grid-column: 1 / -1;
+}
+
+@media (max-width: 680px) {
+  .hyperopt-result-highlights {
+    grid-template-columns: 1fr;
+  }
+
+  .hyperopt-result-card-heading {
+    flex-direction: column;
+  }
+
+  .hyperopt-result-card-heading > button {
+    width: 100%;
+  }
+
+  .hyperopt-result-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 .hyperopt-approval-panel .summary-grid {

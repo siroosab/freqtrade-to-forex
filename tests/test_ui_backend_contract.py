@@ -870,7 +870,13 @@ def test_hyperopt_approval_flows_into_chart_strategy(
             return []
 
     class FakeAdapter:
-        def __init__(self, strategy, pair, informative_candles=None):
+        def __init__(
+            self,
+            strategy,
+            pair,
+            informative_candles=None,
+            ema_trend_condition=None,
+        ):
             pass
 
         @property
@@ -1107,6 +1113,64 @@ def test_hyperopt_approval_flows_into_chart_strategy(
             assert automatic_status["report"]["attemptsRequested"] == 1
             assert automatic_status["report"]["optimizeRoi"] is optimize_roi
             assert automatic_status["report"]["useExitSignal"] is use_exit_signal
+            automatic_review = scoped_client.get(
+                "/api/v1/strategy/review"
+                "?pair=EUR%2FUSD&timeframe=M15&strategy_class=ForexMasterStrategy"
+            )
+            assert automatic_review.status_code == 200, automatic_review.text
+            assert automatic_review.json()["status"] == "approved"
+            assert (
+                automatic_review.json()["approvedRevision"]["hyperopt"]["dataRevision"]
+                == automatic_status["report"]["dataRevision"]
+            )
+            assert (
+                automatic_review.json()["approvedRevision"]["hyperopt"]["parameters"]
+                == automatic_status["report"]["bestParameters"]
+            )
+            result_history = scoped_client.get(
+                "/api/v1/hyperopt/reports"
+                "?pair=EUR%2FUSD&timeframe=M15&strategy_class=ForexMasterStrategy"
+            )
+            assert result_history.status_code == 200, result_history.text
+            assert len(result_history.json()["reports"]) == 2
+            assert (
+                result_history.json()["reports"][0]["report"]["dataRevision"]
+                == automatic_status["report"]["dataRevision"]
+            )
+            restored_older_approval = scoped_client.post(
+                "/api/v1/strategy/review",
+                headers=headers,
+                json={
+                    "status": "approved",
+                    "pair": "EUR/USD",
+                    "timeframe": "M15",
+                    "strategyClass": "ForexMasterStrategy",
+                    "requireOptimization": True,
+                    "dataRevision": result_history.json()["reports"][1]["report"][
+                        "dataRevision"
+                    ],
+                },
+            )
+            assert restored_older_approval.status_code == 200, restored_older_approval.text
+            assert (
+                restored_older_approval.json()["approvedRevision"]["hyperopt"][
+                    "dataRevision"
+                ]
+                == result_history.json()["reports"][1]["report"]["dataRevision"]
+            )
+            reapproved_latest = scoped_client.post(
+                "/api/v1/strategy/review",
+                headers=headers,
+                json={
+                    "status": "approved",
+                    "pair": "EUR/USD",
+                    "timeframe": "M15",
+                    "strategyClass": "ForexMasterStrategy",
+                    "requireOptimization": True,
+                    "dataRevision": automatic_status["report"]["dataRevision"],
+                },
+            )
+            assert reapproved_latest.status_code == 200, reapproved_latest.text
             automatic_main_requests = [
                 request
                 for request in candle_requests[automatic_request_start:]

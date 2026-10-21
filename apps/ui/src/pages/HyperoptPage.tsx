@@ -9,6 +9,7 @@ import {
   getBacktestJob,
   getHyperoptLossFunctions,
   getHyperoptReport,
+  getHyperoptReports,
   getHyperoptStatus,
   getMarketQuote,
   getSetupStatus,
@@ -213,6 +214,12 @@ export function HyperoptPage() {
     enabled: scopeEnabled,
     refetchInterval: () => statusQuery.data?.status === 'running' ? 3000 : false,
   })
+  const reportsQuery = useQuery({
+    queryKey: ['hyperopt-reports', pair, timeframe, strategyClass],
+    queryFn: () => getHyperoptReports(pair, strategyClass, timeframe),
+    enabled: scopeEnabled,
+    refetchInterval: () => statusQuery.data?.status === 'running' ? 3000 : false,
+  })
   const reviewQuery = useQuery({
     queryKey: ['strategy-review', pair, timeframe, strategyClass],
     queryFn: () => getStrategyReview(pair, timeframe, strategyClass),
@@ -228,6 +235,9 @@ export function HyperoptPage() {
     })
     void queryClient.invalidateQueries({
       queryKey: ['hyperopt-report', pair, timeframe, strategyClass],
+    })
+    void queryClient.invalidateQueries({
+      queryKey: ['hyperopt-reports', pair, timeframe, strategyClass],
     })
   }, [pair, queryClient, statusQuery.data?.report?.dataRevision, statusQuery.data?.status, strategyClass, timeframe])
   useEffect(() => {
@@ -279,7 +289,12 @@ export function HyperoptPage() {
   })
   const reviewMutation = useMutation({
     mutationFn: saveStrategyReview,
-    onSuccess: () => void reviewQuery.refetch(),
+    onSuccess: async () => {
+      await Promise.all([
+        reviewQuery.refetch(),
+        reportsQuery.refetch(),
+      ])
+    },
   })
   const downloadMutation = useMutation({
     mutationFn: downloadCandleDateRange,
@@ -301,6 +316,24 @@ export function HyperoptPage() {
   const selectedWorkers = Math.min(workers ?? availableWorkers, availableWorkers)
   const approvedRevision = reviewQuery.data?.approvedRevision
   const approvedHyperopt = approvedRevision?.hyperopt
+  const approvedRevisionMatchesScope = Boolean(
+    approvedRevision
+    && approvedRevision.pair.replace('_', '/').toUpperCase() === pair.replace('_', '/').toUpperCase()
+    && approvedRevision.timeframe.toUpperCase() === timeframe.toUpperCase()
+    && approvedRevision.strategyClass === strategyClass,
+  )
+  const approvedDataRevision = approvedRevisionMatchesScope
+    && typeof approvedHyperopt?.dataRevision === 'string'
+    ? approvedHyperopt.dataRevision
+    : undefined
+  const historyReports = reportsQuery.data?.reports ?? []
+  const latestApprovedReport = historyReports.find(
+    (entry) => entry.report.dataRevision === approvedDataRevision,
+  )
+  const latestUnapprovedReport = historyReports.find(
+    (entry) => entry.report.status === 'completed'
+      && entry.report.dataRevision !== approvedDataRevision,
+  )
   const approvedTrailingStopLossMatches = Boolean(
     approvedRevision
     && approvedRevision.pair === pair
@@ -436,13 +469,14 @@ export function HyperoptPage() {
     })
   }
 
-  const saveReview = (status: 'approved' | 'rejected') => {
+  const saveReview = (status: 'approved' | 'rejected', dataRevision?: string) => {
     reviewMutation.mutate({
       status,
       pair,
       timeframe,
       strategyClass,
       requireOptimization: true,
+      ...(dataRevision ? { dataRevision } : {}),
       notes: status === 'approved'
         ? 'Hyperopt result approved for the selected pair, timeframe, and strategy.'
         : 'Hyperopt result rejected; it must not be used for signal generation.',
@@ -1060,98 +1094,100 @@ export function HyperoptPage() {
               <p className="eyebrow">📊 Results · 03</p>
               <h3>Hyperopt results &amp; validation</h3>
             </div>
-            {report && <span className={`pill ${report.status === 'completed' ? 'positive' : 'neutral'}`}>{report.status}</span>}
+            <span className="pill neutral">{historyReports.length} / 10 results</span>
           </div>
-          {report && (
-            <>
-              <div className="bullet-list">
-                <div><span>Data coverage</span><strong>{report.steps} candles · train {report.trainCandles} / validate {report.validationCandles}</strong></div>
-                <div><span>Validation result</span><strong>{report.validation.netPl} P/L · {report.validation.trades} trades · drawdown {report.validation.drawdown}</strong></div>
-                <div>
-                  <span>Win rate</span>
-                  <strong className={`metric-value ${metricTone(report.validation.winRate, 'win-rate', report.validation.trades)}`}>
-                    {formatPercent(report.validation.winRate)}
-                  </strong>
-                </div>
-                <div>
-                  <span>Return on initial capital</span>
-                  <strong className={`metric-value ${metricTone(report.validation.profitPercent, 'return')}`}>
-                    {formatPercent(report.validation.profitPercent, true)}
-                  </strong>
-                </div>
-                <div><span>Best objective</span><strong>{report.objective}</strong></div>
-                {report.costSettings && (
-                  <div><span>Cost assumptions</span><strong>
-                    Spread {report.costSettings.spread} · Slippage {report.costSettings.slippage} · Financing {report.costSettings.financingRatePerDayPercent}%/day · Commission {report.costSettings.commissionRatePercent}%/side
-                  </strong></div>
-                )}
-                {report.stopLoss && (
-                  <div><span>{report.stopLoss.optimized ? 'Optimized stop distance' : 'Static stop loss'}</span><strong>{report.stopLoss.value} {report.stopLoss.unit} · {report.stopLoss.optimized ? 'selected by Hyperopt' : 'not optimized'}</strong></div>
-                )}
-                <div><span>Trailing stop loss</span><strong>
-                  {report.trailingStopLoss
-                    ? `Enabled · ${formatTrailingStopLoss(report.stopLoss)}`
-                    : 'Disabled'}
-                </strong></div>
-                {report.positionSizing && (
-                  <div><span>Initial position sizing</span><strong>
-                    {report.positionSizing.mode === 'risk'
-                      ? `Risk-based · ${Number(report.positionSizing.riskFraction) * 100}% balance risk`
-                      : `${report.positionSizing.value ?? ''} ${report.positionSizing.unit}`}
-                  </strong></div>
-                )}
-                <div><span>Best parameters</span><strong>{Object.entries(report.bestParameters).map(([key, value]) => `${key}: ${value}`).join(' · ') || 'No tunable parameters'}</strong></div>
-                <div><span>Optimization behavior</span><strong>
-                  ROI {report.optimizeRoi === false ? 'disabled' : 'included'}
-                  {' · strategy exit signals '}
-                  {report.useExitSignal === false ? 'disabled' : 'enabled'}
-                </strong></div>
-                {report.emaTrendCondition && (
-                  <div><span>EMA trend condition</span><strong>
-                    {report.emaTrendCondition.enabled
-                      ? `Enabled · strategy EMA 7 vs ${report.emaTrendCondition.timeframe.toUpperCase()} EMA 9 · chain timeperiod ${report.emaTrendCondition.timeperiod}${report.runSettings?.emaTrendTimeperiodMode === 'automatic' ? ' · selected by Hyperopt ✨' : ''}`
-                      : 'Disabled'}
-                  </strong></div>
-                )}
-                {report.bestMinimalRoi && Object.keys(report.bestMinimalRoi).length > 0 && <div><span>Minimal ROI</span><strong>{Object.entries(report.bestMinimalRoi).map(([key, value]) => `${key}m: ${value}`).join(' · ')}</strong></div>}
-              </div>
-              <div className="strategy-table-wrap">
-                <table className="positions-table">
-                  <thead><tr><th>Rank</th><th>Objective</th><th>Validation P/L</th><th>Win rate</th><th>Return / initial capital</th><th>Drawdown</th><th>Trades</th><th>Parameters</th></tr></thead>
-                  <tbody>{report.candidates.slice(0, 3).map((candidate) => (
-                    <tr
-                      key={candidate.rank}
-                      className={Number(candidate.validationNetPl) > 0 ? 'row-profit' : Number(candidate.validationNetPl) < 0 ? 'row-loss' : undefined}
-                    >
-                      <td>{candidate.rank}</td>
-                      <td>{candidate.objective}</td>
-                      <td>{candidate.validationNetPl}</td>
-                      <td className={metricTone(candidate.validationWinRate, 'win-rate', candidate.validationTrades)}>
-                        {formatPercent(candidate.validationWinRate)}
-                      </td>
-                      <td className={metricTone(candidate.validationProfitPercent, 'return')}>
-                        {formatPercent(candidate.validationProfitPercent, true)}
-                      </td>
-                      <td>{candidate.validationDrawdown}</td>
-                      <td>{candidate.validationTrades}</td>
-                      <td>
-                        {Object.entries(candidate.parameters).map(([key, value]) => `${key}: ${value}`).join(' · ')}
-                        {candidate.emaTrendCondition?.enabled
-                          ? ` · EMA chain: ${candidate.emaTrendCondition.timeperiod}`
-                          : ''}
-                        {candidate.stopLoss ? ` · stop: ${candidate.stopLoss.value} ${candidate.stopLoss.unit ?? 'pips'}` : ''}
-                        {candidate.trailingStopLoss
-                          ? ` · trailing stop: on (${formatTrailingStopLoss(candidate.stopLoss)})`
-                          : ' · trailing stop: off'}
-                      </td>
-                    </tr>
-                  ))}</tbody>
-                </table>
-              </div>
-            </>
+          <div className="hyperopt-result-highlights">
+            <div className="hyperopt-result-highlight approved">
+              <span>✅ Last approved</span>
+              <strong>
+                {latestApprovedReport
+                  ? `${formatUtcDateTime(latestApprovedReport.completedAt)} · ${latestApprovedReport.report.dataRevision}`
+                  : approvedRevision && approvedRevisionMatchesScope
+                    ? `${formatUtcDateTime(approvedRevision.approvedAt)} · ${approvedRevision.strategyClass}`
+                    : 'No approved Hyperopt result'}
+              </strong>
+            </div>
+            <div className="hyperopt-result-highlight pending">
+              <span>🕒 Latest completed, not approved</span>
+              <strong>
+                {latestUnapprovedReport
+                  ? `${formatUtcDateTime(latestUnapprovedReport.completedAt)} · ${latestUnapprovedReport.report.strategyClass ?? latestUnapprovedReport.report.strategy}`
+                  : 'No result waiting for approval'}
+              </strong>
+            </div>
+          </div>
+          {reportsQuery.isPending && <p>Loading recent Hyperopt results…</p>}
+          {reportsQuery.error && <p role="alert">Hyperopt history unavailable: {reportsQuery.error.message}</p>}
+          {!reportsQuery.isPending && historyReports.length === 0 && (
+            <p>No Hyperopt results exist for this pair, timeframe, and strategy yet.</p>
           )}
-          {!report && reportQuery.data?.available === false && <p>No Hyperopt result exists for this pair, timeframe, and strategy yet.</p>}
-          {reportQuery.error && <p role="alert">Hyperopt report unavailable: {reportQuery.error.message}</p>}
+          <div className="hyperopt-result-list">
+            {historyReports.map(({ completedAt, report: result }, index) => {
+              const isApproved = Boolean(
+                result.dataRevision && result.dataRevision === approvedDataRevision,
+              )
+              const isLatestUnapproved = result.dataRevision
+                === latestUnapprovedReport?.report.dataRevision
+              return (
+                <article
+                  className={`hyperopt-result-card${index === 0 ? ' newest' : ''}${isApproved ? ' approved' : ''}`}
+                  key={result.dataRevision || completedAt}
+                >
+                  <div className="hyperopt-result-card-heading">
+                    <div>
+                      <div className="hyperopt-result-badges">
+                        {index === 0 && <span className="hyperopt-result-badge newest">✨ Newest</span>}
+                        {isApproved && <span className="hyperopt-result-badge approved">✅ Approved</span>}
+                        {isLatestUnapproved && <span className="hyperopt-result-badge pending">🕒 Waiting approval</span>}
+                        {result.status !== 'completed' && (
+                          <span className="hyperopt-result-badge failed">⚠️ {result.status}</span>
+                        )}
+                      </div>
+                      <h4>{result.strategyClass ?? result.strategy} · {result.pair} · {result.timeframe}</h4>
+                      <p>🗓️ {formatUtcDateTime(completedAt)} · {result.candidatesTested} candidates · {result.steps} candles</p>
+                    </div>
+                    {result.status === 'completed' && (
+                      <button
+                        className={isApproved ? 'secondary-action' : 'primary-action'}
+                        type="button"
+                        onClick={() => saveReview('approved', result.dataRevision)}
+                        disabled={isApproved || !result.dataRevision || reviewMutation.isPending}
+                      >
+                        {reviewMutation.isPending
+                          ? '⏳ Saving…'
+                          : isApproved
+                            ? '✅ Active approved result'
+                            : '✅ Approve this result'}
+                      </button>
+                    )}
+                  </div>
+                  <div className="hyperopt-result-metrics">
+                    <span>Validation P/L <strong>{result.validation.netPl}</strong></span>
+                    <span>Return <strong className={metricTone(result.validation.profitPercent, 'return')}>{formatPercent(result.validation.profitPercent, true)}</strong></span>
+                    <span>Win rate <strong className={metricTone(result.validation.winRate, 'win-rate', result.validation.trades)}>{formatPercent(result.validation.winRate)}</strong></span>
+                    <span>Drawdown <strong>{result.validation.drawdown}</strong></span>
+                  </div>
+                  <details className="hyperopt-result-details">
+                    <summary>🔍 Expand metrics and optimized parameters</summary>
+                    <div className="bullet-list">
+                      <div><span>Best objective</span><strong>{result.objective}</strong></div>
+                      <div><span>Best parameters</span><strong>{Object.entries(result.bestParameters).map(([key, value]) => `${key}: ${value}`).join(' · ') || 'No tunable parameters'}</strong></div>
+                      {result.bestMinimalRoi && Object.keys(result.bestMinimalRoi).length > 0 && (
+                        <div><span>Minimal ROI</span><strong>{Object.entries(result.bestMinimalRoi).map(([key, value]) => `${key}m: ${value}`).join(' · ')}</strong></div>
+                      )}
+                      {result.stopLoss && (
+                        <div><span>Stop loss</span><strong>{result.stopLoss.value} {result.stopLoss.unit} · {result.stopLoss.optimized ? 'optimized' : 'static'}</strong></div>
+                      )}
+                      <div><span>Trailing stop</span><strong>{result.trailingStopLoss ? 'Enabled' : 'Disabled'}</strong></div>
+                      <div><span>ROI / exit signals</span><strong>ROI {result.optimizeRoi === false ? 'disabled' : 'enabled'} · exit signals {result.useExitSignal === false ? 'disabled' : 'enabled'}</strong></div>
+                      <div><span>Best parameters by candidate</span><strong>{result.candidates.slice(0, 3).map((candidate) => `#${candidate.rank}: ${Object.entries(candidate.parameters).map(([key, value]) => `${key}=${value}`).join(', ')}`).join(' · ') || 'No candidate details'}</strong></div>
+                    </div>
+                  </details>
+                </article>
+              )
+            })}
+          </div>
+          {reviewMutation.error && <p role="alert">Could not approve Hyperopt result: {reviewMutation.error.message}</p>}
         </div>
 
         <div className="panel hyperopt-approval-panel">

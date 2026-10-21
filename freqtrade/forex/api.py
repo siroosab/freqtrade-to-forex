@@ -1241,6 +1241,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         "CREATE TABLE IF NOT EXISTS strategy_hyperopt_reports (scope TEXT PRIMARY KEY, completed_at TEXT NOT NULL, report_json TEXT NOT NULL)"
     )
     revision_db.execute(
+        "CREATE TABLE IF NOT EXISTS strategy_hyperopt_history (scope TEXT NOT NULL, data_revision TEXT NOT NULL, completed_at TEXT NOT NULL, report_json TEXT NOT NULL, PRIMARY KEY (scope, data_revision))"
+    )
+    revision_db.execute(
         "CREATE TABLE IF NOT EXISTS auto_hyperopt_state (id INTEGER PRIMARY KEY CHECK (id = 1), state_json TEXT NOT NULL)"
     )
     revision_db.commit()
@@ -1336,11 +1339,22 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
 
     for report_scope, completed_at, report_json in revision_db.execute(
         "SELECT scope, completed_at, report_json FROM strategy_hyperopt_reports"
-    ):
+    ).fetchall():
+        report = json.loads(report_json)
         HYPEROPT_REPORTS[report_scope] = {
             "completedAt": completed_at,
-            "report": json.loads(report_json),
+            "report": report,
         }
+        revision_db.execute(
+            "INSERT OR IGNORE INTO strategy_hyperopt_history(scope, data_revision, completed_at, report_json) VALUES (?, ?, ?, ?)",
+            (
+                report_scope,
+                str(report.get("dataRevision") or completed_at),
+                completed_at,
+                report_json,
+            ),
+        )
+    revision_db.commit()
 
     saved_auto_hyperopt_state = revision_db.execute(
         "SELECT state_json FROM auto_hyperopt_state WHERE id = 1"
@@ -1429,6 +1443,15 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             revision_db.execute(
                 "INSERT OR REPLACE INTO strategy_hyperopt_reports(scope, completed_at, report_json) VALUES (?, ?, ?)",
                 (pair, completed_at, json.dumps(report, default=str)),
+            )
+            revision_db.execute(
+                "INSERT OR REPLACE INTO strategy_hyperopt_history(scope, data_revision, completed_at, report_json) VALUES (?, ?, ?, ?)",
+                (
+                    pair,
+                    str(report.get("dataRevision") or completed_at),
+                    completed_at,
+                    json.dumps(report, default=str),
+                ),
             )
             revision_db.commit()
 
@@ -5121,15 +5144,58 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             job = HYPEROPT_JOBS.get(scope, {})
             report = job.get("report")
             if job.get("status") == "completed" and isinstance(report, dict):
-                validation = report.get("validation")
-                result = {
-                    "status": "completed",
-                    "completedAt": job.get("completedAt"),
-                    "error": None,
-                    "netPl": (
-                        validation.get("netPl") if isinstance(validation, dict) else None
-                    ),
+                approval_token = create_session_token()
+                approval_csrf_token = create_session_token()
+                ACTIVE_SESSIONS[approval_token] = {
+                    "username": "auto-hyperopt",
+                    "role": "operator",
+                    "csrfToken": approval_csrf_token,
+                    "expiresAt": str(datetime.now(UTC).timestamp() + 3600),
                 }
+                try:
+                    await save_strategy_review(
+                        {
+                            "status": "approved",
+                            "pair": pair,
+                            "timeframe": timeframe,
+                            "strategyClass": strategy_class,
+                            "requireOptimization": True,
+                            "dataRevision": report.get("dataRevision"),
+                            "notes": (
+                                "Automatically approved after successful scheduled "
+                                "Hyperopt validation."
+                            ),
+                        },
+                        user_role="operator",
+                        csrf_token=approval_csrf_token,
+                        session_token=approval_token,
+                    )
+                except Exception as exc:
+                    logger.exception(
+                        "Automatic Hyperopt result approval failed for %s (%s, %s)",
+                        pair,
+                        timeframe,
+                        strategy_class,
+                    )
+                    result = {
+                        "status": "failed",
+                        "completedAt": job.get("completedAt"),
+                        "error": f"Hyperopt completed, but automatic approval failed: {exc}",
+                        "netPl": None,
+                    }
+                    any_failed = True
+                else:
+                    validation = report.get("validation")
+                    result = {
+                        "status": "completed",
+                        "completedAt": job.get("completedAt"),
+                        "error": None,
+                        "netPl": (
+                            validation.get("netPl") if isinstance(validation, dict) else None
+                        ),
+                    }
+                finally:
+                    ACTIVE_SESSIONS.pop(approval_token, None)
             else:
                 result = {
                     "status": str(job.get("status", "failed")),
@@ -5885,6 +5951,27 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             "report": entry["report"],
         }
 
+    @app.get("/api/v1/hyperopt/reports")
+    async def hyperopt_reports(
+        pair: str = "EUR/USD",
+        strategy_class: str = "ForexMasterStrategy",
+        timeframe: str = "M15",
+    ) -> dict:
+        normalized_pair = normalize_pair(pair)
+        scope_key = hyperopt_scope(normalized_pair, strategy_class, timeframe)
+        with AUTO_HYPEROPT_DB_LOCK:
+            rows = revision_db.execute(
+                "SELECT completed_at, report_json FROM strategy_hyperopt_history WHERE scope = ? ORDER BY completed_at DESC, data_revision DESC LIMIT 10",
+                (scope_key,),
+            ).fetchall()
+        return {
+            "pair": normalized_pair,
+            "reports": [
+                {"completedAt": completed_at, "report": json.loads(report_json)}
+                for completed_at, report_json in rows
+            ],
+        }
+
     @app.get("/api/v1/strategy/review")
     async def strategy_review(
         pair: str = "EUR/USD",
@@ -5924,8 +6011,23 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             raise HTTPException(status_code=400, detail=f"Unknown strategy class: {strategy_class}")
         scope_key = hyperopt_scope(pair, strategy_class, timeframe)
         pending = PENDING_HYPEROPT_RESULTS.get(scope_key)
-        report_entry = HYPEROPT_REPORTS.get(scope_key)
-        report = report_entry.get("report") if report_entry else None
+        requested_revision = payload.get("dataRevision")
+        if requested_revision is not None:
+            with AUTO_HYPEROPT_DB_LOCK:
+                report_row = revision_db.execute(
+                    "SELECT report_json FROM strategy_hyperopt_history WHERE scope = ? AND data_revision = ?",
+                    (scope_key, str(requested_revision)),
+                ).fetchone()
+            report = json.loads(report_row[0]) if report_row else None
+        else:
+            report_entry = HYPEROPT_REPORTS.get(scope_key)
+            report = report_entry.get("report") if report_entry else None
+        if (
+            pending is not None
+            and isinstance(report, dict)
+            and pending.get("dataRevision") != report.get("dataRevision")
+        ):
+            pending = None
         if pending is None and isinstance(report, dict):
             pending = {
                 "pair": pair,

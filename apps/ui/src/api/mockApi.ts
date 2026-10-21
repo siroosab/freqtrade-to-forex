@@ -276,6 +276,11 @@ export type HyperoptReport = {
   reportText: string
 }
 
+export type HyperoptReportHistoryEntry = {
+  completedAt: string
+  report: HyperoptReport
+}
+
 export type HyperoptStatus = {
   pair: string
   timeframe?: string
@@ -507,6 +512,13 @@ export async function getHyperoptReport(pair: string, strategyClass: string, tim
   const response = await fetch(buildApiUrl(`/api/v1/hyperopt/report?${params.toString()}`))
   if (!response.ok) return throwApiError(response, 'Hyperopt report unavailable')
   return response.json() as Promise<{ pair: string; available: boolean; completedAt?: string; report?: HyperoptReport }>
+}
+
+export async function getHyperoptReports(pair: string, strategyClass: string, timeframe: string): Promise<{ pair: string; reports: HyperoptReportHistoryEntry[] }> {
+  const params = new URLSearchParams({ pair, strategy_class: strategyClass, timeframe })
+  const response = await fetch(buildApiUrl(`/api/v1/hyperopt/reports?${params.toString()}`))
+  if (!response.ok) return throwApiError(response, 'Hyperopt history unavailable')
+  return response.json() as Promise<{ pair: string; reports: HyperoptReportHistoryEntry[] }>
 }
 
 export async function getHyperoptLossFunctions(): Promise<{ default: string; options: string[] }> {
@@ -1222,7 +1234,7 @@ export async function getStrategyReview(pair: string, timeframe: string, strateg
   return response.json() as Promise<StrategyReview>
 }
 
-export async function saveStrategyReview(review: { status: 'approved' | 'rejected'; pair: string; timeframe: string; strategyClass: string; requireOptimization: true; notes: string }): Promise<StrategyReview> {
+export async function saveStrategyReview(review: { status: 'approved' | 'rejected'; pair: string; timeframe: string; strategyClass: string; requireOptimization: true; notes: string; dataRevision?: string }): Promise<StrategyReview> {
   const response = await fetch(buildApiUrl('/api/v1/strategy/review'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
