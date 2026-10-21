@@ -96,20 +96,20 @@ class ForexEmaCrossStrategy(IStrategy):
             (dataframe["count_low"] > 0)
             & dataframe["count_low"]
             .shift(1)
-            .rolling(5)
+            .rolling(7)
             .apply(lambda x: (x == 0).all(), raw=True)
             .eq(1)
-            & (dataframe["close"] > fast_ema)
+            & (slow_ema > fast_ema)
         )
 
         dataframe["enter_short"] = (
             (dataframe["count_hi"] > 0)
             & dataframe["count_hi"]
             .shift(1)
-            .rolling(5)
+            .rolling(7)
             .apply(lambda x: (x == 0).all(), raw=True)
             .eq(1)
-        ) & (dataframe["close"] < fast_ema)
+        ) & (slow_ema < fast_ema)
 
         return dataframe
 
