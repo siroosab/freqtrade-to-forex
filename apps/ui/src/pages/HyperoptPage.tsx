@@ -143,7 +143,7 @@ export function HyperoptPage() {
   const [emaTrendTimeframe, setEmaTrendTimeframe] = useState<'1h' | '4h'>('1h')
   const [emaTrendTimeperiod, setEmaTrendTimeperiod] = useState(4)
   const [emaTrendTimeperiodMode, setEmaTrendTimeperiodMode] = useState<'fixed' | 'automatic'>('fixed')
-  const [stopLossPips, setStopLossPips] = useState('0.5')
+  const [stopLossPips, setStopLossPips] = useState('25')
   const [backtestStopLossPipsOverride, setBacktestStopLossPipsOverride] = useState<{
     scope: string
     value: string
@@ -696,7 +696,7 @@ export function HyperoptPage() {
                 <option value="units">Fixed units</option>
                 <option value="account_amount">Fixed amount in account currency</option>
               </select>
-              <small>Default: risk-based, {Number(riskFraction) * 100}% of account balance. Size follows the selected pip/percent stop; money stops use the default 0.5-pip sizing distance.</small>
+              <small>Default: risk-based, {Number(riskFraction) * 100}% of account balance. Size follows the selected pip/percent stop; money stops use the default 25-pip sizing distance.</small>
             </label>
             {positionSizeMode === 'units' && (
               <label className="field-block">
@@ -723,7 +723,7 @@ export function HyperoptPage() {
                 <option value="percent">Percent of entry price</option>
                 <option value="money">Money ({quoteQuery.data?.accountCurrency ?? 'account currency'})</option>
               </select>
-              <small>Static per-trade setting; not optimized. Defaults: 0.5 pips, 0.5% of entry price, or 50 {quoteQuery.data?.accountCurrency ?? 'account currency'}.</small>
+              <small>Static per-trade setting; not optimized. Defaults: 25 pips, 0.5% of entry price, or 50 {quoteQuery.data?.accountCurrency ?? 'account currency'}.</small>
             </label>
             <label className="field-block">
               <span>
@@ -752,8 +752,8 @@ export function HyperoptPage() {
                   ? `Default from Hyperopt result: ${reportStopLossPips} pips.`
                   : stopLossMode === 'money'
                   ? 'Default: 50. Converted to a price distance after position size and currency conversion; commissions and financing are additional costs.'
-                  : `Default: ${stopLossMode === 'pips' ? '0.5 pips' : '0.5% of entry price'}.`}
-                {stopLossMode === 'money' && positionSizeMode === 'risk' ? ' Risk-based volume still uses the default 0.5-pip sizing distance.' : ''}
+                  : `Default: ${stopLossMode === 'pips' ? '25 pips' : '0.5% of entry price'}.`}
+                {stopLossMode === 'money' && positionSizeMode === 'risk' ? ' Risk-based volume still uses the default 25-pip sizing distance.' : ''}
               </small>
             </label>
           </div>
@@ -866,7 +866,7 @@ export function HyperoptPage() {
                 <option value="units">Fixed units</option>
                 <option value="account_amount">Fixed amount in account currency</option>
               </select>
-              <small>Default: risk-based, {Number(riskFraction) * 100}% of account balance. Size follows the selected pip/percent stop; money stops use the default 0.5-pip sizing distance.</small>
+              <small>Default: risk-based, {Number(riskFraction) * 100}% of account balance. Size follows the selected pip/percent stop; money stops use the default 25-pip sizing distance.</small>
             </label>
             {positionSizeMode === 'units' && (
               <label className="field-block">
@@ -882,14 +882,65 @@ export function HyperoptPage() {
                 <small>Default: 1,000 {quoteQuery.data?.accountCurrency ?? 'account currency'}.</small>
               </label>
             )}
-            <label className="field-block">
-              <span>Stop distance mode</span>
-              <select value={stopDistanceMode} onChange={(event) => setStopDistanceMode(event.target.value as typeof stopDistanceMode)}>
-                <option value="static">Static</option>
-                <option value="automatic">Automatic (optimize with Hyperopt)</option>
-              </select>
-              <small>Automatic mode searches from 0.5× to 3× the training candles' median true range (minimum 0.1 pip) and saves the best result with the approved strategy.</small>
-            </label>
+            <div className="hyperopt-stop-distance-group">
+              <div className="hyperopt-stop-distance-heading">
+                <span aria-hidden="true">🛡️</span>
+                <div>
+                  <strong>Stop distance</strong>
+                  <small>Choose how the protective stop is set for this optimization.</small>
+                </div>
+              </div>
+              <div className="hyperopt-stop-distance-fields">
+                <label className="field-block">
+                  <span>⚙️ Stop distance mode</span>
+                  <select value={stopDistanceMode} onChange={(event) => setStopDistanceMode(event.target.value as typeof stopDistanceMode)}>
+                    <option value="static">Static</option>
+                    <option value="automatic">Automatic (optimize with Hyperopt)</option>
+                  </select>
+                  <small>Automatic mode searches from 0.5× to 3× the training candles' median true range (minimum 0.1 pip) and saves the best result with the approved strategy.</small>
+                </label>
+                {stopDistanceMode === 'static' ? (
+                  <>
+                    <label className="field-block">
+                      <span>📏 Static stop loss unit</span>
+                      <select value={stopLossMode} onChange={(event) => setStopLossMode(event.target.value as typeof stopLossMode)}>
+                        <option value="pips">Pips</option>
+                        <option value="percent">Percent of entry price</option>
+                        <option value="money">Money ({quoteQuery.data?.accountCurrency ?? 'account currency'})</option>
+                      </select>
+                      <small>Fixed per-trade stop distance; this value is not optimized.</small>
+                    </label>
+                    <label className="field-block">
+                      <span>
+                        🎯 {stopLossMode === 'pips' ? 'Stop distance (pips)' : stopLossMode === 'percent' ? 'Stop distance (% of entry)' : `Maximum price-loss (${quoteQuery.data?.accountCurrency ?? 'account currency'})`}
+                      </span>
+                      <input
+                        type="number"
+                        min="0.000001"
+                        step="any"
+                        value={stopLossValue}
+                        onChange={(event) => {
+                          if (stopLossMode === 'pips') setStopLossPips(event.target.value)
+                          else if (stopLossMode === 'percent') setStopLossPercent(event.target.value)
+                          else setStopLossMoney(event.target.value)
+                        }}
+                      />
+                      <small>
+                        {stopLossMode === 'money'
+                          ? 'Default: 50. Converted to a price distance after position size and currency conversion; commissions and financing are additional costs.'
+                          : `Default: ${stopLossMode === 'pips' ? '25 pips' : '0.5% of entry price'}.`}
+                        {stopLossMode === 'money' && positionSizeMode === 'risk' ? ' Risk-based volume uses the default 25-pip sizing distance.' : ''}
+                      </small>
+                    </label>
+                  </>
+                ) : (
+                  <div className="field-block hyperopt-stop-distance-auto">
+                    <span>✨ Stop distance (pips)</span>
+                    <strong>Selected automatically by Hyperopt for this pair</strong>
+                  </div>
+                )}
+              </div>
+            </div>
             <label className="field-block">
               <span>Trailing stop loss</span>
               <input
@@ -981,46 +1032,6 @@ export function HyperoptPage() {
               <p className="field-block" role="alert">
                 Select H1 or H4 above the strategy timeframe, or disable the EMA condition.
               </p>
-            )}
-            {stopDistanceMode === 'static' ? (
-              <>
-                <label className="field-block">
-                  <span>Static stop loss unit</span>
-                  <select value={stopLossMode} onChange={(event) => setStopLossMode(event.target.value as typeof stopLossMode)}>
-                    <option value="pips">Pips</option>
-                    <option value="percent">Percent of entry price</option>
-                    <option value="money">Money ({quoteQuery.data?.accountCurrency ?? 'account currency'})</option>
-                  </select>
-                  <small>Static per-trade setting; not optimized.</small>
-                </label>
-                <label className="field-block">
-                  <span>
-                    {stopLossMode === 'pips' ? 'Stop distance (pips)' : stopLossMode === 'percent' ? 'Stop distance (% of entry)' : `Maximum price-loss (${quoteQuery.data?.accountCurrency ?? 'account currency'})`}
-                  </span>
-                  <input
-                    type="number"
-                    min="0.000001"
-                    step="any"
-                    value={stopLossValue}
-                    onChange={(event) => {
-                      if (stopLossMode === 'pips') setStopLossPips(event.target.value)
-                      else if (stopLossMode === 'percent') setStopLossPercent(event.target.value)
-                      else setStopLossMoney(event.target.value)
-                    }}
-                  />
-                  <small>
-                    {stopLossMode === 'money'
-                      ? 'Default: 50. Converted to a price distance after position size and currency conversion; commissions and financing are additional costs.'
-                      : `Default: ${stopLossMode === 'pips' ? '0.5 pips' : '0.5% of entry price'}.`}
-                    {stopLossMode === 'money' && positionSizeMode === 'risk' ? ' Risk-based volume still uses the default 0.5-pip sizing distance.' : ''}
-                  </small>
-                </label>
-              </>
-            ) : (
-              <div className="field-block">
-                <span>Stop distance (pips)</span>
-                <strong>Selected automatically by Hyperopt for this pair</strong>
-              </div>
             )}
             <label className="field-block">
               <span>Attempts</span>
