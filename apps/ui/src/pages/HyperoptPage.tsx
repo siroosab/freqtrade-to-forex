@@ -469,17 +469,15 @@ export function HyperoptPage() {
     })
   }
 
-  const saveReview = (status: 'approved' | 'rejected', dataRevision?: string) => {
+  const saveReview = (dataRevision?: string) => {
     reviewMutation.mutate({
-      status,
+      status: 'approved',
       pair,
       timeframe,
       strategyClass,
       requireOptimization: true,
       ...(dataRevision ? { dataRevision } : {}),
-      notes: status === 'approved'
-        ? 'Hyperopt result approved for the selected pair, timeframe, and strategy.'
-        : 'Hyperopt result rejected; it must not be used for signal generation.',
+      notes: 'Hyperopt result approved for the selected pair, timeframe, and strategy.',
     })
   }
 
@@ -1150,7 +1148,7 @@ export function HyperoptPage() {
                       <button
                         className={isApproved ? 'secondary-action' : 'primary-action'}
                         type="button"
-                        onClick={() => saveReview('approved', result.dataRevision)}
+                        onClick={() => saveReview(result.dataRevision)}
                         disabled={isApproved || !result.dataRevision || reviewMutation.isPending}
                       >
                         {reviewMutation.isPending
@@ -1187,41 +1185,8 @@ export function HyperoptPage() {
               )
             })}
           </div>
-          {reviewMutation.error && <p role="alert">Could not approve Hyperopt result: {reviewMutation.error.message}</p>}
-        </div>
-
-        <div className="panel hyperopt-approval-panel">
-          <div className="panel-header compact">
-            <div><p className="eyebrow">04 · User decision</p><h3>Approve optimized strategy</h3></div>
-            <span className={`pill ${reviewQuery.data?.status === 'approved' ? 'positive' : 'neutral'}`}>
-              {reviewQuery.data?.status ?? 'pending'}
-            </span>
-          </div>
-          <p>Approval binds the optimized parameters to this exact pair, timeframe, and strategy. Only an approved revision is used by automatic signal generation and order execution.</p>
-          {reviewQuery.data?.approvedRevision && (
-            <p>
-              Active revision: {reviewQuery.data.approvedRevision.pair} · {reviewQuery.data.approvedRevision.timeframe} · {reviewQuery.data.approvedRevision.strategyClass}
-              {' '}· trailing stop: {reviewQuery.data.approvedRevision.hyperopt?.trailingStopLoss === true
-                ? `enabled (${formatTrailingStopLoss(reviewQuery.data.approvedRevision.hyperopt.stopLoss)})`
-                : 'disabled'}
-              {' '}· ROI: {reviewQuery.data.approvedRevision.hyperopt?.optimizeRoi === false ? 'disabled' : 'enabled'}
-              {' '}· strategy exit signals: {reviewQuery.data.approvedRevision.hyperopt?.useExitSignal === false ? 'disabled' : 'enabled'}
-              {' '}· EMA trend condition: {reviewQuery.data.approvedRevision.hyperopt?.emaTrendCondition?.enabled === false
-                ? 'disabled'
-                : `strategy EMA 7 vs ${(reviewQuery.data.approvedRevision.hyperopt?.emaTrendCondition?.timeframe ?? '1h').toUpperCase()} EMA 9 · chain period ${reviewQuery.data.approvedRevision.hyperopt?.emaTrendCondition?.timeperiod ?? 4}${reviewQuery.data.approvedRevision.hyperopt?.runSettings?.emaTrendTimeperiodMode === 'automatic' ? ' · optimized ✨' : ''}`}
-            </p>
-          )}
-          <div className="summary-grid">
-            <button className="primary-action" type="button" onClick={() => saveReview('approved')} disabled={!report || report.status === 'failed' || reviewMutation.isPending || running}>
-              {reviewMutation.isPending ? 'Saving approval…' : 'Approve hyperopt result'}
-            </button>
-            <button className="secondary-action" type="button" onClick={() => saveReview('rejected')} disabled={!report || reviewMutation.isPending}>
-              Reject result
-            </button>
-          </div>
           {reviewQuery.error && <p role="alert">Approval status unavailable: {reviewQuery.error.message}</p>}
-          {reviewMutation.error && <p role="alert">Approval failed: {reviewMutation.error.message}</p>}
-          {reviewMutation.isSuccess && <p aria-live="polite">Decision saved. The approved strategy configuration is now available to the signal and execution worker.</p>}
+          {reviewMutation.error && <p role="alert">Could not approve Hyperopt result: {reviewMutation.error.message}</p>}
         </div>
       </section>
     </>

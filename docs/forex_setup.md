@@ -141,6 +141,12 @@ and applied to Backtest and runtime signals after approval. Previously
 approved revisions without this setting retain their existing behavior until
 they are re-approved.
 
+Scheduled Hyperopt approval is configured in **Auto Hyperopt → Schedule**.
+Successful scheduled results are automatically approved by default. Select
+**Manual approval** to keep completed runs in the Hyperopt Results list until
+an operator approves a specific result; failed or stopped runs are never
+approved automatically.
+
 Only the exact approved pair/strategy/timeframe revision may produce runtime
 signals. The Review approval stores an active revision snapshot in
 `pair_approved_revisions`, including its Hyperopt parameters. The standalone

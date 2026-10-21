@@ -22,6 +22,7 @@ type ScheduleDraft = {
   enabled: boolean
   weekdays: number[]
   time: string
+  approvalMode: 'automatic' | 'manual'
   workers: number
   pairs: string[]
 }
@@ -35,6 +36,7 @@ function scheduleDraft(schedule: AutoHyperoptSchedule): ScheduleDraft {
     enabled: schedule.enabled,
     weekdays: schedule.weekdays,
     time: schedule.time,
+    approvalMode: schedule.approvalMode ?? 'automatic',
     workers: schedule.workers,
     pairs: schedule.pairs.map(pairKey),
   }
@@ -137,6 +139,7 @@ export function AutoHyperoptPage() {
   const currentEnabled = currentDraft?.enabled ?? false
   const currentWeekdays = currentDraft?.weekdays ?? [0, 3]
   const currentTime = currentDraft?.time ?? '12:00'
+  const currentApprovalMode = currentDraft?.approvalMode ?? 'automatic'
   const currentWorkers = currentDraft?.workers ?? scheduleQuery.data?.availableWorkers ?? 1
   const currentSelectedPairs = currentDraft?.pairs ?? []
 
@@ -160,6 +163,7 @@ export function AutoHyperoptPage() {
         enabled: false,
         weekdays: [0, 3],
         time: '12:00',
+        approvalMode: 'automatic',
         workers: scheduleQuery.data?.availableWorkers ?? 1,
         pairs: [],
       }
@@ -180,6 +184,7 @@ export function AutoHyperoptPage() {
         enabled: false,
         weekdays: [0, 3],
         time: '12:00',
+        approvalMode: 'automatic',
         workers: scheduleQuery.data?.availableWorkers ?? 1,
         pairs: [],
       }
@@ -198,6 +203,7 @@ export function AutoHyperoptPage() {
       enabled: currentEnabled,
       weekdays: currentWeekdays,
       time: currentTime,
+      approvalMode: currentApprovalMode,
       workers: currentWorkers,
       pairs: selectedPairDetails,
     })
@@ -342,6 +348,7 @@ export function AutoHyperoptPage() {
                       enabled: false,
                       weekdays: [0, 3],
                       time: '12:00',
+                      approvalMode: 'automatic',
                       workers: schedule?.availableWorkers ?? 1,
                       pairs: [],
                     }),
@@ -380,6 +387,7 @@ export function AutoHyperoptPage() {
                       enabled: false,
                       weekdays: [0, 3],
                       time: '12:00',
+                      approvalMode: 'automatic',
                       workers: schedule?.availableWorkers ?? 1,
                       pairs: [],
                     }),
@@ -402,6 +410,7 @@ export function AutoHyperoptPage() {
                       enabled: false,
                       weekdays: [0, 3],
                       time: '12:00',
+                      approvalMode: 'automatic',
                       workers: schedule?.availableWorkers ?? 1,
                       pairs: [],
                     }),
@@ -415,6 +424,32 @@ export function AutoHyperoptPage() {
                 </select>
                 <small>
                   Available to Hyperopt: {schedule?.availableWorkers ?? 1}. One CPU is reserved for live trading and the UI when possible; a single-CPU server can use one worker. This limit applies to every pair in the queue.
+                </small>
+              </label>
+              <label className="auto-hyperopt-time">
+                <span className="auto-hyperopt-field-label">✅ Hyperopt result approval</span>
+                <select
+                  value={currentApprovalMode}
+                  onChange={(event) => setDraft((current) => ({
+                    ...(current ?? currentDraft ?? {
+                      enabled: false,
+                      weekdays: [0, 3],
+                      time: '12:00',
+                      approvalMode: 'automatic',
+                      workers: schedule?.availableWorkers ?? 1,
+                      pairs: [],
+                    }),
+                    approvalMode: event.target.value === 'manual' ? 'manual' : 'automatic',
+                  }))}
+                  disabled={activeQueue}
+                >
+                  <option value="automatic">🤖 Automatically approve each successful run (default)</option>
+                  <option value="manual">🕒 Add to Results and require manual approval</option>
+                </select>
+                <small>
+                  {currentApprovalMode === 'automatic'
+                    ? 'Successful scheduled results become the active approved strategy immediately.'
+                    : 'Successful scheduled results appear in Results · 03 and stay unapproved until you approve them.'}
                 </small>
               </label>
             </div>

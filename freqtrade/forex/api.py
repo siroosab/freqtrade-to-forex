@@ -826,6 +826,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         "enabled": False,
         "weekdays": [],
         "time": "12:00",
+        "approvalMode": "automatic",
         "workers": hyperopt_worker_limit(),
         "pairs": [],
         "queue": {"status": "idle"},
@@ -1367,6 +1368,15 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         else:
             if isinstance(restored_auto_state, dict):
                 AUTO_HYPEROPT_STATE.update(restored_auto_state)
+                restored_approval_mode = AUTO_HYPEROPT_STATE.get("approvalMode")
+                if not isinstance(restored_approval_mode, str) or restored_approval_mode not in {
+                    "automatic",
+                    "manual",
+                }:
+                    logger.warning(
+                        "Resetting invalid persisted automatic Hyperopt approval mode"
+                    )
+                    AUTO_HYPEROPT_STATE["approvalMode"] = "automatic"
                 saved_workers = AUTO_HYPEROPT_STATE.get("workers")
                 if (
                     isinstance(saved_workers, bool)
@@ -4801,10 +4811,17 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             and local_now.weekday() in AUTO_HYPEROPT_STATE.get("weekdays", [])
             and local_now.strftime("%H:%M") >= str(AUTO_HYPEROPT_STATE.get("time", "12:00"))
         )
+        approval_mode = AUTO_HYPEROPT_STATE.get("approvalMode")
+        if not isinstance(approval_mode, str) or approval_mode not in {
+            "automatic",
+            "manual",
+        }:
+            approval_mode = "automatic"
         return {
             "enabled": AUTO_HYPEROPT_STATE.get("enabled") is True,
             "weekdays": list(AUTO_HYPEROPT_STATE.get("weekdays", [])),
             "time": str(AUTO_HYPEROPT_STATE.get("time", "12:00")),
+            "approvalMode": approval_mode,
             "workers": configured_workers,
             "availableWorkers": available_workers,
             "timezone": "server-local",
@@ -4873,6 +4890,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             for item in AUTO_HYPEROPT_STATE.get("pairs", [])
             if isinstance(item, dict)
         ]
+        approval_mode = AUTO_HYPEROPT_STATE.get("approvalMode", "automatic")
         AUTO_HYPEROPT_STATE["queue"] = {
             "status": "running",
             "startedAt": datetime.now().astimezone().isoformat(),
@@ -5144,58 +5162,58 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             job = HYPEROPT_JOBS.get(scope, {})
             report = job.get("report")
             if job.get("status") == "completed" and isinstance(report, dict):
-                approval_token = create_session_token()
-                approval_csrf_token = create_session_token()
-                ACTIVE_SESSIONS[approval_token] = {
-                    "username": "auto-hyperopt",
-                    "role": "operator",
-                    "csrfToken": approval_csrf_token,
-                    "expiresAt": str(datetime.now(UTC).timestamp() + 3600),
+                validation = report.get("validation")
+                result = {
+                    "status": "completed",
+                    "completedAt": job.get("completedAt"),
+                    "error": None,
+                    "netPl": (
+                        validation.get("netPl") if isinstance(validation, dict) else None
+                    ),
                 }
-                try:
-                    await save_strategy_review(
-                        {
-                            "status": "approved",
-                            "pair": pair,
-                            "timeframe": timeframe,
-                            "strategyClass": strategy_class,
-                            "requireOptimization": True,
-                            "dataRevision": report.get("dataRevision"),
-                            "notes": (
-                                "Automatically approved after successful scheduled "
-                                "Hyperopt validation."
-                            ),
-                        },
-                        user_role="operator",
-                        csrf_token=approval_csrf_token,
-                        session_token=approval_token,
-                    )
-                except Exception as exc:
-                    logger.exception(
-                        "Automatic Hyperopt result approval failed for %s (%s, %s)",
-                        pair,
-                        timeframe,
-                        strategy_class,
-                    )
-                    result = {
-                        "status": "failed",
-                        "completedAt": job.get("completedAt"),
-                        "error": f"Hyperopt completed, but automatic approval failed: {exc}",
-                        "netPl": None,
+                if approval_mode == "automatic":
+                    approval_token = create_session_token()
+                    approval_csrf_token = create_session_token()
+                    ACTIVE_SESSIONS[approval_token] = {
+                        "username": "auto-hyperopt",
+                        "role": "operator",
+                        "csrfToken": approval_csrf_token,
+                        "expiresAt": str(datetime.now(UTC).timestamp() + 3600),
                     }
-                    any_failed = True
-                else:
-                    validation = report.get("validation")
-                    result = {
-                        "status": "completed",
-                        "completedAt": job.get("completedAt"),
-                        "error": None,
-                        "netPl": (
-                            validation.get("netPl") if isinstance(validation, dict) else None
-                        ),
-                    }
-                finally:
-                    ACTIVE_SESSIONS.pop(approval_token, None)
+                    try:
+                        await save_strategy_review(
+                            {
+                                "status": "approved",
+                                "pair": pair,
+                                "timeframe": timeframe,
+                                "strategyClass": strategy_class,
+                                "requireOptimization": True,
+                                "dataRevision": report.get("dataRevision"),
+                                "notes": (
+                                    "Automatically approved after successful scheduled "
+                                    "Hyperopt validation."
+                                ),
+                            },
+                            user_role="operator",
+                            csrf_token=approval_csrf_token,
+                            session_token=approval_token,
+                        )
+                    except Exception as exc:
+                        logger.exception(
+                            "Automatic Hyperopt result approval failed for %s (%s, %s)",
+                            pair,
+                            timeframe,
+                            strategy_class,
+                        )
+                        result = {
+                            "status": "failed",
+                            "completedAt": job.get("completedAt"),
+                            "error": f"Hyperopt completed, but automatic approval failed: {exc}",
+                            "netPl": None,
+                        }
+                        any_failed = True
+                    finally:
+                        ACTIVE_SESSIONS.pop(approval_token, None)
             else:
                 result = {
                     "status": str(job.get("status", "failed")),
@@ -5260,6 +5278,15 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         schedule_time = str(payload.get("time", ""))
         if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", schedule_time):
             raise HTTPException(status_code=400, detail="time must use the HH:MM format")
+        approval_mode = payload.get("approvalMode", "automatic")
+        if not isinstance(approval_mode, str) or approval_mode not in {
+            "automatic",
+            "manual",
+        }:
+            raise HTTPException(
+                status_code=400,
+                detail="approvalMode must be automatic or manual",
+            )
         requested_pairs = payload.get("pairs")
         if not isinstance(requested_pairs, list):
             raise HTTPException(status_code=400, detail="pairs must be a list")
@@ -5301,6 +5328,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "enabled": enabled,
                 "weekdays": weekdays,
                 "time": schedule_time,
+                "approvalMode": approval_mode,
                 "workers": workers,
                 "pairs": selected_pairs,
             }
@@ -5346,6 +5374,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "enabled": enabled,
                 "weekdays": weekdays,
                 "time": schedule_time,
+                "approvalMode": approval_mode,
                 "workers": workers,
                 "pairs": selected_pairs,
             },

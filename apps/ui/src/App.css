@@ -5613,10 +5613,6 @@
   margin-top: 10px;
 }
 
-.hyperopt-approval-panel {
-  grid-column: 1 / -1;
-}
-
 @media (max-width: 680px) {
   .hyperopt-result-highlights {
     grid-template-columns: 1fr;
@@ -5633,11 +5629,6 @@
   .hyperopt-result-metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-}
-
-.hyperopt-approval-panel .summary-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  max-width: 560px;
 }
 
 .hyperopt-panel-header {

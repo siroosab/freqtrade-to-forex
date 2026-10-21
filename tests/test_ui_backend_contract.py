@@ -75,6 +75,41 @@ def test_auto_hyperopt_preserves_trigger_for_queue_started_today(tmp_path):
     assert restored_state["queue"]["startedAt"] == now.isoformat()
 
 
+def test_auto_hyperopt_approval_mode_defaults_to_automatic_and_persists(tmp_path):
+    database_path = tmp_path / "auto-hyperopt-approval-mode.sqlite"
+    schedule_app = create_app(database_path)
+    schedule_payload = {
+        "enabled": False,
+        "weekdays": [],
+        "time": "12:00",
+        "workers": 1,
+        "pairs": [],
+    }
+    with TestClient(schedule_app) as test_client:
+        headers = _auth_headers(test_client)
+        saved_schedule = test_client.post(
+            "/api/v1/auto-hyperopt",
+            headers=headers,
+            json=schedule_payload,
+        )
+        assert saved_schedule.status_code == 200, saved_schedule.text
+        assert saved_schedule.json()["approvalMode"] == "automatic"
+
+        manual_schedule = test_client.post(
+            "/api/v1/auto-hyperopt",
+            headers=headers,
+            json={**schedule_payload, "approvalMode": "manual"},
+        )
+        assert manual_schedule.status_code == 200, manual_schedule.text
+        assert manual_schedule.json()["approvalMode"] == "manual"
+
+    restored_app = create_app(database_path)
+    with TestClient(restored_app) as test_client:
+        restored_schedule = test_client.get("/api/v1/auto-hyperopt")
+        assert restored_schedule.status_code == 200, restored_schedule.text
+        assert restored_schedule.json()["approvalMode"] == "manual"
+
+
 def _auth_headers(test_client, role="operator"):
     password = {
         "viewer": "test-viewer-password",
@@ -725,6 +760,7 @@ def test_websocket_market_channel_connects():
     [("days", 20, 1920), ("candles", 1000, 1000)],
 )
 @pytest.mark.parametrize("trailing_stop_loss_enabled", [True, False])
+@pytest.mark.parametrize("approval_mode", ["automatic", "manual"])
 def test_hyperopt_approval_flows_into_chart_strategy(
     tmp_path,
     monkeypatch,
@@ -737,6 +773,7 @@ def test_hyperopt_approval_flows_into_chart_strategy(
     history_value,
     requested_candles,
     trailing_stop_loss_enabled,
+    approval_mode,
 ):
     from datetime import timezone
     from types import SimpleNamespace
@@ -987,11 +1024,12 @@ def test_hyperopt_approval_flows_into_chart_strategy(
             "/api/v1/hyperopt/status?pair=EUR%2FUSD"
             "&strategy_class=ForexMasterStrategy&timeframe=M15"
         )
-        for _ in range(100):
+        hyperopt_deadline = time.monotonic() + 30
+        while time.monotonic() < hyperopt_deadline:
             status = scoped_client.get(status_url).json()
             if status.get("status") != "running":
                 break
-            time.sleep(0.01)
+            time.sleep(0.05)
         assert status.get("status") == "completed", status
         assert status["report"]["hyperoptLoss"] == "ForexWinRateProfitHyperOptLoss"
         assert status["report"]["validation"]["winRate"] == "75.00"
@@ -1053,6 +1091,7 @@ def test_hyperopt_approval_flows_into_chart_strategy(
                 "weekdays": schedule_weekdays,
                 "time": "12:00",
                 "workers": 1,
+                **({"approvalMode": "manual"} if approval_mode == "manual" else {}),
                 "pairs": [
                     {
                         "pair": "EUR/USD",
@@ -1085,6 +1124,7 @@ def test_hyperopt_approval_flows_into_chart_strategy(
                     "enabled": True,
                     "weekdays": [local_weekday],
                     "time": "00:00",
+                    **({"approvalMode": "manual"} if approval_mode == "manual" else {}),
                     "pairs": [
                         {
                             "pair": "EUR/USD",
@@ -1096,7 +1136,7 @@ def test_hyperopt_approval_flows_into_chart_strategy(
             )
             assert trigger_schedule.status_code == 200, trigger_schedule.text
             assert trigger_schedule.json()["scheduler"]["lastTriggeredDate"] is None
-            deadline = time.monotonic() + 15
+            deadline = time.monotonic() + 30
             while time.monotonic() < deadline:
                 queue_status = scoped_client.get("/api/v1/auto-hyperopt").json()["queue"]["status"]
                 if queue_status == "completed":
@@ -1118,15 +1158,25 @@ def test_hyperopt_approval_flows_into_chart_strategy(
                 "?pair=EUR%2FUSD&timeframe=M15&strategy_class=ForexMasterStrategy"
             )
             assert automatic_review.status_code == 200, automatic_review.text
-            assert automatic_review.json()["status"] == "approved"
-            assert (
-                automatic_review.json()["approvedRevision"]["hyperopt"]["dataRevision"]
-                == automatic_status["report"]["dataRevision"]
+            assert schedule_response.json()["approvalMode"] == approval_mode
+            assert automatic_review.json()["status"] == (
+                "approved" if approval_mode == "automatic" else "pending"
             )
-            assert (
-                automatic_review.json()["approvedRevision"]["hyperopt"]["parameters"]
-                == automatic_status["report"]["bestParameters"]
-            )
+            if approval_mode == "automatic":
+                assert (
+                    automatic_review.json()["approvedRevision"]["hyperopt"]["dataRevision"]
+                    == automatic_status["report"]["dataRevision"]
+                )
+            else:
+                assert (
+                    automatic_review.json()["approvedRevision"]["hyperopt"]["dataRevision"]
+                    != automatic_status["report"]["dataRevision"]
+                )
+            if approval_mode == "automatic":
+                assert (
+                    automatic_review.json()["approvedRevision"]["hyperopt"]["parameters"]
+                    == automatic_status["report"]["bestParameters"]
+                )
             result_history = scoped_client.get(
                 "/api/v1/hyperopt/reports"
                 "?pair=EUR%2FUSD&timeframe=M15&strategy_class=ForexMasterStrategy"

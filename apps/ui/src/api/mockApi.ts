@@ -314,6 +314,7 @@ export type AutoHyperoptSchedule = {
   enabled: boolean
   weekdays: number[]
   time: string
+  approvalMode: 'automatic' | 'manual'
   workers: number
   availableWorkers: number
   timezone: 'server-local'
@@ -537,6 +538,7 @@ export async function saveAutoHyperoptSchedule(schedule: {
   enabled: boolean
   weekdays: number[]
   time: string
+  approvalMode: 'automatic' | 'manual'
   workers: number
   pairs: AutoHyperoptPair[]
 }): Promise<AutoHyperoptSchedule> {
