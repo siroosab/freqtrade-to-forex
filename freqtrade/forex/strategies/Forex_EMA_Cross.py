@@ -27,7 +27,7 @@ class ForexEmaCrossStrategy(IStrategy):
     stoploss = -0.50
     process_only_new_candles = True
     use_exit_signal = True
-
+    #Entry
     entry_fast_ema_index = CategoricalParameter(
         list(range(5, 7)),
         default=6,
@@ -39,10 +39,17 @@ class ForexEmaCrossStrategy(IStrategy):
         space="buy",
     )
     entry_ema_timeperiod = CategoricalParameter(  #ema_timeperiod
-        list(range(7, 9)),
-        default=8,
+        list(range(12, 16)),
+        default=14,
         space="buy",
     )
+    rolling_mean = CategoricalParameter(
+        list(range(3, 14)),
+        default=5,
+        space="buy",
+    )
+
+    #Exit
     exit_fast_ema_index = CategoricalParameter(
         list(range(3, 5)),
         default=4,
@@ -93,22 +100,22 @@ class ForexEmaCrossStrategy(IStrategy):
         #dataframe["enter_long"] = qtpylib.crossed_above(fast_ema, slow_ema).fillna(False)
         #dataframe["enter_short"] = qtpylib.crossed_below(fast_ema, slow_ema).fillna(False)
         dataframe["enter_long"] = (
-            (dataframe["count_low"] > 0)
-            & dataframe["count_low"]
-            .shift(1)
-            .rolling(7)
-            .apply(lambda x: (x == 0).all(), raw=True)
-            .eq(1)
-            & (slow_ema > fast_ema)
+        (dataframe["count_low"] > 0)
+        & dataframe["count_low"]
+        .shift(1)
+        .rolling(self.rolling_mean.value)
+        .apply(lambda x: (x == 0).all(), raw=True)
+        .eq(1)
+        & (slow_ema > fast_ema)
         )
 
         dataframe["enter_short"] = (
-            (dataframe["count_hi"] > 0)
-            & dataframe["count_hi"]
-            .shift(1)
-            .rolling(7)
-            .apply(lambda x: (x == 0).all(), raw=True)
-            .eq(1)
+        (dataframe["count_hi"] > 0)
+        & dataframe["count_hi"]
+        .shift(1)
+        .rolling(self.rolling_mean.value)
+        .apply(lambda x: (x == 0).all(), raw=True)
+        .eq(1)
         ) & (slow_ema < fast_ema)
 
         return dataframe
