@@ -1216,7 +1216,7 @@
 }
 
 .broker-positions-table {
-  min-width: 850px;
+  min-width: 940px;
 }
 
 .broker-positions-table td.positive {
@@ -1227,6 +1227,77 @@
 .broker-positions-table td.negative {
   color: #fca5a5;
   font-weight: 700;
+}
+
+.positions-sync-status {
+  color: #86efac;
+  font-size: 0.73rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.position-side-badge,
+.position-stop-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 5px 9px;
+  font-size: 0.7rem;
+  font-weight: 800;
+  letter-spacing: 0.025em;
+  white-space: nowrap;
+}
+
+.position-side-badge.long {
+  border-color: rgba(52, 211, 153, 0.32);
+  background: rgba(16, 185, 129, 0.13);
+  color: #86efac;
+}
+
+.position-side-badge.short {
+  border-color: rgba(251, 113, 133, 0.34);
+  background: rgba(244, 63, 94, 0.13);
+  color: #fda4af;
+}
+
+.position-protection {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 125px;
+}
+
+.position-stop-badge.trailing {
+  border-color: rgba(56, 189, 248, 0.34);
+  background: rgba(14, 165, 233, 0.14);
+  color: #7dd3fc;
+}
+
+.position-stop-badge.fixed {
+  border-color: rgba(167, 139, 250, 0.32);
+  background: rgba(139, 92, 246, 0.13);
+  color: #c4b5fd;
+}
+
+.position-stop-badge.unprotected {
+  border-color: rgba(251, 191, 36, 0.34);
+  background: rgba(245, 158, 11, 0.12);
+  color: #fcd34d;
+}
+
+.position-protection strong {
+  color: #e2e8f0;
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.position-protection small {
+  color: #94a3b8;
+  font-size: 0.67rem;
+  font-variant-numeric: tabular-nums;
 }
 
 .manual-position-row {

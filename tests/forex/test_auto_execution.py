@@ -10,6 +10,8 @@ from freqtrade.forex.api import create_app
 from freqtrade.forex.auto_execution import (
     AutoExecutionError,
     OandaAutoStrategyExecutor,
+    _adaptive_trailing_distance,
+    _candle_frame,
 )
 from freqtrade.forex.config import OandaSettings
 from freqtrade.forex.models import (
@@ -987,13 +989,13 @@ async def test_short_trailing_stop_activates_using_ask_after_profitable_move(
     assert client.order_modifications == [
         (
             "auto-short-trailing",
-            {"trailing_stop_loss_distance": "0.0005", "instrument": "EUR_USD"},
+            {"trailing_stop_loss_distance": "0.00035", "instrument": "EUR_USD"},
         )
     ]
 
 
 @pytest.mark.asyncio
-async def test_existing_trailing_stop_is_not_replaced_or_reset(
+async def test_existing_trailing_stop_tightens_when_profit_grows(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -1005,7 +1007,49 @@ async def test_existing_trailing_stop_is_not_replaced_or_reset(
             "instrument": "EUR_USD",
             "currentUnits": "1000",
             "price": "1.0990",
-            "trailingStopLossOrder": {"id": "existing-trailing"},
+            "trailingStopLossOrder": {
+                "id": "existing-trailing",
+                "distance": "0.0005",
+                "trailingStopValue": "1.0995",
+            },
+            "tradeClientExtensions": {"tag": "auto"},
+        }
+    ]
+    executor = _executor(client)
+    executor.setup["pair_approved_revisions"]["EUR_USD"]["hyperopt"] = {
+        "stopLoss": {"mode": "pips", "value": "5.0", "optimized": True},
+        "trailingStopLoss": True,
+    }
+
+    results = await executor.run_cycle()
+
+    assert results[0]["status"] == "trailing_updated"
+    assert client.order_modifications == [
+        (
+            "auto-trailing",
+            {"trailing_stop_loss_distance": "0.00034", "instrument": "EUR_USD"},
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_tightened_distance_never_moves_existing_stop_backwards(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _strategy_directory(tmp_path, monkeypatch)
+    client = FakeOandaClient(_candles("long"))
+    client.open_trades = [
+        {
+            "id": "auto-trailing",
+            "instrument": "EUR_USD",
+            "currentUnits": "1000",
+            "price": "1.0990",
+            "trailingStopLossOrder": {
+                "id": "existing-trailing",
+                "distance": "0.0005",
+                "trailingStopValue": "1.0998",
+            },
             "tradeClientExtensions": {"tag": "auto"},
         }
     ]
@@ -1018,6 +1062,100 @@ async def test_existing_trailing_stop_is_not_replaced_or_reset(
     await executor.run_cycle()
 
     assert client.order_modifications == []
+
+
+def test_adaptive_trailing_distance_tightens_with_profit_and_elapsed_time() -> None:
+    instrument = OandaInstrument(
+        name="EUR_USD",
+        display_name="EUR/USD",
+        pip_location=-4,
+        display_precision=5,
+        trade_units_precision=0,
+        minimum_trade_size=Decimal(1),
+    )
+    candles = _candle_frame(_candles("long"))
+    base_distance = Decimal("0.0005")
+
+    initial_distance = _adaptive_trailing_distance(
+        base_distance,
+        candles,
+        instrument,
+        profit_pips=Decimal(10),
+        age_hours=Decimal(0),
+    )
+    profit_tightened_distance = _adaptive_trailing_distance(
+        base_distance,
+        candles,
+        instrument,
+        profit_pips=Decimal(40),
+        age_hours=Decimal(0),
+    )
+    age_tightened_distance = _adaptive_trailing_distance(
+        base_distance,
+        candles,
+        instrument,
+        profit_pips=Decimal(10),
+        age_hours=Decimal(24),
+    )
+    mature_distance = _adaptive_trailing_distance(
+        base_distance,
+        candles,
+        instrument,
+        profit_pips=Decimal(40),
+        age_hours=Decimal(24),
+    )
+
+    assert profit_tightened_distance < initial_distance < base_distance
+    assert age_tightened_distance < initial_distance
+    assert mature_distance < min(profit_tightened_distance, age_tightened_distance)
+
+
+def test_adaptive_trailing_distance_responds_to_pair_volatility() -> None:
+    instrument = OandaInstrument(
+        name="EUR_USD",
+        display_name="EUR/USD",
+        pip_location=-4,
+        display_precision=5,
+        trade_units_precision=0,
+        minimum_trade_size=Decimal(1),
+    )
+    start = datetime(2026, 10, 3, 17, 45, tzinfo=UTC)
+
+    def candle_frame(range_size: str):
+        half_range = Decimal(range_size)
+        candles = [
+            OandaCandle(
+                time=(start + timedelta(minutes=index * 5)).isoformat().replace(
+                    "+00:00", "Z"
+                ),
+                complete=True,
+                open=Decimal("1.1000"),
+                high=Decimal("1.1000") + half_range,
+                low=Decimal("1.1000") - half_range,
+                close=Decimal("1.1000"),
+                volume=0,
+            )
+            for index in range(15)
+        ]
+        return _candle_frame(candles)
+
+    base_distance = Decimal("0.002")
+    quiet_market_distance = _adaptive_trailing_distance(
+        base_distance,
+        candle_frame("0.0001"),
+        instrument,
+        profit_pips=Decimal(0),
+        age_hours=Decimal(0),
+    )
+    volatile_market_distance = _adaptive_trailing_distance(
+        base_distance,
+        candle_frame("0.001"),
+        instrument,
+        profit_pips=Decimal(0),
+        age_hours=Decimal(0),
+    )
+
+    assert quiet_market_distance < volatile_market_distance <= base_distance
 
 
 @pytest.mark.asyncio
@@ -1427,6 +1565,8 @@ def test_broker_positions_show_the_live_trailing_stop_price(tmp_path, monkeypatc
 
     assert response.status_code == 200, response.text
     assert response.json()["open"][0]["stopLoss"] == "1.33195"
+    assert response.json()["open"][0]["stopLossType"] == "trailing"
+    assert response.json()["open"][0]["trailingStopDistance"] == "0.00070"
 
 
 def test_auto_execution_reports_missing_stop_loss_for_all_configured_pairs(

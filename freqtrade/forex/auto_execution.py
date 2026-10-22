@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from datetime import UTC, datetime
 from decimal import ROUND_DOWN, ROUND_UP, Decimal, InvalidOperation
@@ -277,6 +278,7 @@ class OandaAutoStrategyExecutor:
             [trade for trade in automated_trades if trade in open_trades],
             price,
             parameters,
+            candles,
         )
         if trailing_result is not None:
             return trailing_result
@@ -422,6 +424,7 @@ class OandaAutoStrategyExecutor:
         automated_trades: list[dict[str, Any]],
         price: OandaPrice,
         parameters: dict[str, Any],
+        candles: pd.DataFrame,
     ) -> dict[str, object] | None:
         if not automated_trades or parameters.get("trailingStopLoss") is not True:
             return None
@@ -445,31 +448,20 @@ class OandaAutoStrategyExecutor:
         metadata = metadata_values[0]
         distance = _oanda_trailing_distance(trailing_pips, metadata)
         for trade in automated_trades:
-            if trade.get("trailingStopLossOrder"):
-                continue
-            try:
-                entry = Decimal(str(trade.get("price", "")))
-            except (InvalidOperation, TypeError, ValueError) as exc:
-                raise AutoExecutionError(
-                    f"OANDA returned an invalid entry price for {pair}"
-                ) from exc
-            if not entry.is_finite() or entry <= 0:
-                raise AutoExecutionError(f"OANDA returned an invalid entry price for {pair}")
-            side = _trade_side(trade)
-            executable_price = price.bid if side == "long" else price.ask
-            activation_buffer = price.spread + metadata.pip_size
-            activation_distance = distance + activation_buffer
-            is_in_profit = (
-                executable_price >= entry + activation_distance
-                if side == "long"
-                else executable_price <= entry - activation_distance
+            update = _adaptive_trailing_stop_update(
+                trade,
+                price,
+                metadata,
+                distance,
+                candles,
             )
-            if not is_in_profit:
+            if update is None:
                 continue
+            old_distance, formatted_distance = update
             try:
                 await self.client.modify_trade_orders(
                     str(trade.get("id", "")),
-                    trailing_stop_loss_distance=metadata.format_trailing_stop_distance(distance),
+                    trailing_stop_loss_distance=formatted_distance,
                     instrument=instrument,
                 )
             except (OandaAPIError, OSError, InvalidOperation, ValueError) as exc:
@@ -486,10 +478,12 @@ class OandaAutoStrategyExecutor:
                 "timeframe": timeframe,
                 "signal": "—",
                 "candleTime": candle_time,
-                "status": "trailing_activated",
+                "status": "trailing_updated" if old_distance is not None else "trailing_activated",
                 "tradeId": trade.get("id"),
-                "trailingStopLossDistance": metadata.format_trailing_stop_distance(distance),
-                "activationBuffer": str(activation_buffer),
+                "trailingStopLossDistance": formatted_distance,
+                "previousTrailingStopLossDistance": (
+                    str(old_distance) if old_distance is not None else None
+                ),
             }
         return None
 
@@ -999,6 +993,143 @@ def _oanda_trailing_distance(value: Decimal, instrument: OandaInstrument) -> Dec
         return instrument.round_trailing_stop_distance(value * instrument.pip_size)
     except ValueError as exc:
         raise AutoExecutionError(str(exc)) from exc
+
+
+def _adaptive_trailing_stop_update(
+    trade: dict[str, Any],
+    price: OandaPrice,
+    instrument: OandaInstrument,
+    base_distance: Decimal,
+    candles: pd.DataFrame,
+) -> tuple[Decimal | None, str] | None:
+    try:
+        entry = Decimal(str(trade.get("price", "")))
+    except (InvalidOperation, TypeError, ValueError) as exc:
+        raise AutoExecutionError("OANDA returned an invalid trailing-stop entry price") from exc
+    if not entry.is_finite() or entry <= 0:
+        raise AutoExecutionError("OANDA returned an invalid trailing-stop entry price")
+
+    side = _trade_side(trade)
+    executable_price = price.bid if side == "long" else price.ask
+    existing_trailing = trade.get("trailingStopLossOrder")
+    previous_stop_price: Decimal | None = None
+    if existing_trailing is not None:
+        if not isinstance(existing_trailing, dict):
+            return None
+        try:
+            old_distance = Decimal(str(existing_trailing.get("distance", "")))
+            previous_stop_price = Decimal(
+                str(existing_trailing.get("trailingStopValue", ""))
+            )
+        except (InvalidOperation, TypeError, ValueError):
+            return None
+        if (
+            not old_distance.is_finite()
+            or old_distance <= 0
+            or not previous_stop_price.is_finite()
+            or previous_stop_price <= 0
+        ):
+            return None
+    else:
+        activation_distance = base_distance + price.spread + instrument.pip_size
+        is_in_profit = (
+            executable_price >= entry + activation_distance
+            if side == "long"
+            else executable_price <= entry - activation_distance
+        )
+        if not is_in_profit:
+            return None
+        old_distance = None
+
+    profit_pips = max(
+        Decimal(0),
+        (executable_price - entry if side == "long" else entry - executable_price)
+        / instrument.pip_size,
+    )
+    adaptive_distance = _adaptive_trailing_distance(
+        base_distance,
+        candles,
+        instrument,
+        profit_pips=profit_pips,
+        age_hours=_trade_age_hours(trade, price.time),
+    )
+    formatted_distance = instrument.format_trailing_stop_distance(adaptive_distance)
+    if old_distance is not None and Decimal(formatted_distance) >= old_distance:
+        return None
+    if previous_stop_price is not None:
+        next_stop_price = (
+            executable_price - Decimal(formatted_distance)
+            if side == "long"
+            else executable_price + Decimal(formatted_distance)
+        )
+        if (
+            next_stop_price <= previous_stop_price
+            if side == "long"
+            else next_stop_price >= previous_stop_price
+        ):
+            return None
+    return old_distance, formatted_distance
+
+
+def _trade_age_hours(trade: dict[str, Any], observed_at: str) -> Decimal:
+    opened_at_value = trade.get("openTime")
+    if not opened_at_value:
+        return Decimal(0)
+    try:
+        opened_at = datetime.fromisoformat(str(opened_at_value))
+        observed = datetime.fromisoformat(observed_at)
+    except ValueError:
+        return Decimal(0)
+    if opened_at.tzinfo is None:
+        opened_at = opened_at.replace(tzinfo=UTC)
+    if observed.tzinfo is None:
+        observed = observed.replace(tzinfo=UTC)
+    elapsed_seconds = max(0.0, (observed - opened_at).total_seconds())
+    return Decimal(str(elapsed_seconds / 3600))
+
+
+def _adaptive_trailing_distance(
+    base_distance: Decimal,
+    candles: pd.DataFrame,
+    instrument: OandaInstrument,
+    *,
+    profit_pips: Decimal,
+    age_hours: Decimal,
+) -> Decimal:
+    if len(candles) < 2:
+        raise AutoExecutionError(
+            "At least two completed candles are required for trailing-stop ATR"
+        )
+    high = candles["high"].astype(float)
+    low = candles["low"].astype(float)
+    close = candles["close"].astype(float)
+    true_range = pd.concat(
+        (
+            high - low,
+            (high - close.shift()).abs(),
+            (low - close.shift()).abs(),
+        ),
+        axis=1,
+    ).max(axis=1)
+    atr = true_range.ewm(alpha=1 / 14, adjust=False, min_periods=2).mean().iloc[-1]
+    if not math.isfinite(atr) or atr <= 0:
+        raise AutoExecutionError("A valid ATR could not be calculated for the trailing stop")
+
+    volatility_distance = Decimal(str(atr)) * 2
+    volatility_adjusted_distance = min(base_distance, volatility_distance)
+    base_pips = base_distance / instrument.pip_size
+    profit_factor = max(
+        Decimal("0.5"),
+        Decimal(1) / (Decimal(1) + max(Decimal(0), profit_pips) / (base_pips * 4)),
+    )
+    age_factor = max(
+        Decimal("0.75"),
+        Decimal(1) - min(max(Decimal(0), age_hours), Decimal(24)) / Decimal(96),
+    )
+    return min(
+        base_distance,
+        volatility_adjusted_distance * profit_factor * age_factor,
+    )
 
 
 def _reported_units(units: Decimal) -> int | str:

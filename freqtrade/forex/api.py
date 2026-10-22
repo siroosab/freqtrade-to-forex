@@ -1552,6 +1552,13 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             if trailing_stop_loss
             else stop_loss.get("price")
         )
+        stop_loss_type = (
+            "trailing"
+            if trailing_stop_loss
+            else "fixed"
+            if stop_loss
+            else "none"
+        )
         return {
             "id": str(trade.get("id", "")),
             "symbol": normalize_pair(instrument),
@@ -1561,6 +1568,10 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             "currentPrice": current_price,
             "exitPrice": str(trade.get("averageClosePrice", "")) or None,
             "stopLoss": str(stop_loss_price or "") or None,
+            "stopLossType": stop_loss_type,
+            "trailingStopDistance": (
+                str(trailing_stop_loss.get("distance", "")) or None
+            ),
             "takeProfit": str(take_profit.get("price", "")) or None,
             "pnl": str(trade.get("realizedPL" if closed else "unrealizedPL", "0")),
             "openedAt": trade.get("openTime"),

@@ -108,6 +108,29 @@ request.` are retried up to three times after the initial attempt, with increasi
 delays, before the failure is reported. Other authorization errors are not retried;
 verify the selected environment, account, and token permissions if the error persists.
 
+### Adaptive trailing stop
+
+When the approved revision enables trailing stop loss, the worker first keeps
+the broker's protective fixed stop in place. Once the executable quote covers
+the approved trailing distance plus spread and one pip, it activates OANDA's
+native trailing stop. On later worker cycles (about every 15 seconds), it may
+reduce that distance using the latest completed candles' 14-period Wilder ATR,
+current profit, and trade age:
+
+- The volatility component caps the approved distance at two ATRs.
+- The profit component gradually reduces the distance as profit grows, down to
+  half of the volatility-adjusted distance.
+- The age component reduces it by up to 25% during the first 24 hours.
+
+The worker rounds the result up to the instrument's precision and broker
+minimum. It only submits a change when the resulting distance is strictly
+smaller than the current one, so volatility or a pullback cannot widen a stop
+that is already protecting more profit. The broker continues to host the
+trailing stop; if the broker update fails, the existing order remains in
+place and the failure is reported. Dashboard **Trade monitor** labels fixed
+and trailing protection separately, shows the active stop and trailing gap,
+and displays the latest broker-data sync time.
+
 ## Pair strategies and research runs
 
 In Setup, assign each configured pair its own candle timeframe and strategy

@@ -27,6 +27,7 @@ function formatExecutionResultStatus(status: string): { label: string; icon: str
     filled: { label: 'Order filled', icon: '✅', tone: 'success' },
     closed: { label: 'Position closed', icon: '✅', tone: 'success' },
     trailing_activated: { label: 'Trailing stop active', icon: '🛡️', tone: 'success' },
+    trailing_updated: { label: 'Trailing stop tightened', icon: '🔄', tone: 'success' },
     blocked: { label: 'Entry blocked', icon: '⛔', tone: 'warning' },
     not_filled: { label: 'Order not filled', icon: '⏳', tone: 'warning' },
     close_not_filled: { label: 'Close not filled', icon: '⏳', tone: 'warning' },
@@ -518,6 +519,11 @@ export function DashboardPage() {
                 <p className="eyebrow">Broker positions</p>
                 <h3>💹 Trade monitor</h3>
               </div>
+              <span className="positions-sync-status" aria-live="polite">
+                {positionsQuery.dataUpdatedAt
+                  ? `🟢 Live · Updated ${new Date(positionsQuery.dataUpdatedAt).toLocaleTimeString()}`
+                  : '🔄 Connecting to broker…'}
+              </span>
               <div className="segmented" role="tablist" aria-label="Trade status">
                 <button type="button" role="tab" aria-selected={positionView === 'open'} className={positionView === 'open' ? 'segment active' : 'segment'} onClick={() => setPositionView('open')}>Open</button>
                 <button type="button" role="tab" aria-selected={positionView === 'closed'} className={positionView === 'closed' ? 'segment active' : 'segment'} onClick={() => setPositionView('closed')}>Closed</button>
@@ -530,7 +536,7 @@ export function DashboardPage() {
                 <thead>
                   <tr>
                     <th>Source</th><th>Symbol</th><th>Side</th><th>Units</th><th>Entry</th>
-                    <th>{positionView === 'open' ? 'Current' : 'Exit'}</th><th>Stop</th><th>TP</th><th>P/L {positionsQuery.data?.accountCurrency ? `(${positionsQuery.data.accountCurrency})` : ''}</th><th>Action</th>
+                    <th>{positionView === 'open' ? 'Current' : 'Exit'}</th><th>Protection</th><th>TP</th><th>P/L {positionsQuery.data?.accountCurrency ? `(${positionsQuery.data.accountCurrency})` : ''}</th><th>Action</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -538,11 +544,29 @@ export function DashboardPage() {
                     <tr key={position.id} className={position.manual ? 'manual-position-row' : undefined}>
                       <td><span className={position.manual ? 'manual-trade-tag' : 'strategy-trade-tag'}>{position.manual ? 'Manual' : position.source === 'auto' ? 'Auto strategy' : 'Strategy'}</span></td>
                       <td>{position.symbol}</td>
-                      <td className={position.side === 'BUY' ? 'long' : 'short'}>{position.side}</td>
+                      <td>
+                        <span className={`position-side-badge ${position.side === 'BUY' ? 'long' : 'short'}`}>
+                          {position.side === 'BUY' ? '🟢 ▲ LONG' : '🔴 ▼ SHORT'}
+                        </span>
+                      </td>
                       <td>{Number(position.units).toLocaleString()}</td>
                       <td>{position.entryPrice || '—'}</td>
                       <td>{positionView === 'open' ? position.currentPrice ?? '—' : position.exitPrice ?? '—'}</td>
-                      <td>{position.stopLoss ?? '—'}</td>
+                      <td>
+                        <div className="position-protection">
+                          <span className={`position-stop-badge ${position.stopLossType === 'trailing' ? 'trailing' : position.stopLossType === 'none' || (!position.stopLossType && !position.stopLoss) ? 'unprotected' : 'fixed'}`}>
+                            {position.stopLossType === 'trailing'
+                              ? '🛡️ Trailing SL · Active'
+                              : position.stopLossType === 'none' || (!position.stopLossType && !position.stopLoss)
+                                ? '⚠️ No stop'
+                                : '🔒 Fixed SL'}
+                          </span>
+                          <strong>{position.stopLoss ?? '—'}</strong>
+                          {position.stopLossType === 'trailing' && position.trailingStopDistance && (
+                            <small>Gap {position.trailingStopDistance}</small>
+                          )}
+                        </div>
+                      </td>
                       <td>{position.takeProfit ?? '—'}</td>
                       <td className={Number(position.pnl) < 0 ? 'negative' : 'positive'}>{Number(position.pnl) > 0 ? '+' : ''}{position.pnl}</td>
                       <td>{positionView === 'open' && (position.manual || position.source === 'auto') && userRole !== 'viewer' ? <div className="trade-actions">{position.manual && <button className="modify-position-button" type="button" onClick={() => { setModifyError(null); setModifyStopLoss(position.stopLoss ?? ''); setModifyTakeProfit(position.takeProfit ?? ''); setModifyTrailingStopPips(''); setModifyPositionTarget(position) }}>Modify</button>}<button className="close-position-button" type="button" onClick={() => { setCloseError(null); setCloseTarget(position) }}>Close</button></div> : positionView === 'closed' ? <span className="muted-cell">Closed</span> : '—'}</td>
