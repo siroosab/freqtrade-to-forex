@@ -1,4 +1,5 @@
 import json
+import time
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
@@ -1458,6 +1459,18 @@ def test_auto_execution_api_requires_approved_strategy_before_enable(
     monkeypatch.setenv("OANDA_EXECUTION_MODE", "practice")
     monkeypatch.setenv("OANDA_INSTRUMENTS", "EUR_USD")
     monkeypatch.setenv("OANDA_RISK_CONFIG_PATH", str(tmp_path / "risk-config.json"))
+    monkeypatch.setattr(
+        "freqtrade.forex.api.STRATEGY_EXECUTION_PENDING_CHECK_INTERVAL",
+        0.01,
+    )
+
+    async def no_op_cycle(self):
+        return []
+
+    monkeypatch.setattr(
+        "freqtrade.forex.api.OandaAutoStrategyExecutor.run_cycle",
+        no_op_cycle,
+    )
     (tmp_path / "config.json").write_text(
         '{"pair_strategies": {}, "pair_timeframes": {}, "pair_approved_revisions": {}}',
         encoding="utf-8",
@@ -1499,6 +1512,38 @@ def test_auto_execution_api_requires_approved_strategy_before_enable(
             json={"enabled": True},
             headers=_auth_headers(client),
         )
+        deferred_enable = client.post(
+            "/api/v1/strategy/auto-execution",
+            json={"enabled": True, "deferUntilReady": True},
+            headers=_auth_headers(client),
+        )
+        deferred_status = client.get("/api/v1/strategy/auto-execution")
+
+        ready_setup = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
+        ready_setup["pair_strategies"] = {"EUR_USD": "ForexMasterStrategy"}
+        ready_setup["pair_timeframes"] = {"EUR_USD": "5m"}
+        ready_setup["pair_approved_revisions"] = {
+            "EUR_USD": {
+                "pair": "EUR/USD",
+                "strategyClass": "ForexMasterStrategy",
+                "timeframe": "5m",
+            }
+        }
+        (tmp_path / "config.json").write_text(json.dumps(ready_setup), encoding="utf-8")
+        deadline = time.monotonic() + 2
+        auto_started = False
+        while time.monotonic() < deadline:
+            if client.get("/api/v1/strategy/auto-execution").json()["enabled"]:
+                auto_started = True
+                break
+            time.sleep(0.01)
+        assert auto_started, "automatic execution did not start after readiness became complete"
+
+        disable_deferred = client.post(
+            "/api/v1/strategy/auto-execution",
+            json={"enabled": False},
+            headers=_auth_headers(client),
+        )
         state_path = tmp_path / "auto-execution.json"
         state_path.write_text(
             '{"enabled": true, "lastCycleAt": "2026-10-15T10:00:00Z", '
@@ -1538,6 +1583,14 @@ def test_auto_execution_api_requires_approved_strategy_before_enable(
     assert "units" not in restored_other_pair.json()
     assert enable.status_code == 409
     assert "approved strategy revision" in enable.json()["detail"]
+    assert deferred_enable.status_code == 200, deferred_enable.text
+    assert deferred_enable.json()["enabled"] is False
+    assert deferred_enable.json()["pendingStart"] is True
+    assert deferred_enable.json()["workerRunning"] is True
+    assert deferred_status.json()["pendingStart"] is True
+    assert "approved strategy revision" in deferred_status.json()["lastError"]
+    assert disable_deferred.status_code == 200
+    assert disable_deferred.json()["pendingStart"] is False
     assert active_status.status_code == 200
     assert active_status.json()["enabled"] is True
     assert active_status.json()["environment"] == "practice"

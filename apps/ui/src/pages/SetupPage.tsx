@@ -33,7 +33,7 @@ export function SetupPage() {
   const setupBaselineLoaded = useRef(false)
   const mutation = useMutation({ mutationFn: saveSetup })
   const instrumentsMutation = useMutation({ mutationFn: saveSetupInstruments })
-  const startExecutionMutation = useMutation({ mutationFn: () => setAutoExecution(true) })
+  const startExecutionMutation = useMutation({ mutationFn: () => setAutoExecution(true, true) })
   const discoveryMutation = useMutation({ mutationFn: discoverSetupAccounts })
   const runtimeQuery = useQuery({ queryKey: ['setup-runtime'], queryFn: getRuntimeStatus })
   const strategiesQuery = useQuery({ queryKey: ['available-strategies'], queryFn: getAvailableStrategies })
@@ -137,8 +137,10 @@ export function SetupPage() {
     setError(null)
     setSaveMessage(null)
     if (canSavePairsOnly) {
+      let pairsSaved = false
       try {
         const result = await instrumentsMutation.mutateAsync(form.instruments.map(normalizeSetupInstrument))
+        pairsSaved = true
         const saved = savedSetupQuery.data
         if (!saved?.configured) throw new Error('Pair save completed, but the active setup is unavailable.')
         const normalizedInstruments = result.instruments.map(normalizeSetupInstrument)
@@ -147,8 +149,18 @@ export function SetupPage() {
         setSelectedInstruments(normalizedInstruments.map((item) => item.replace(/_/g, '/')))
         queryClient.setQueryData<SetupStatus>(['setup-status'], updatedSetup)
         setSaveMessage(`✅ ${normalizedInstruments.length} trading pair${normalizedInstruments.length === 1 ? '' : 's'} saved to the bot configuration.`)
+        if (startAfterSave) {
+          const status = await startExecutionMutation.mutateAsync()
+          queryClient.setQueryData(['auto-execution-status'], status)
+          setSaveMessage('✅ Trading pairs saved. Automatic execution is queued and will start after all strategy approvals and risk controls are complete.')
+        }
       } catch (reason) {
-        setError(reason instanceof Error ? reason.message : 'Trading pairs could not be saved')
+        if (pairsSaved) {
+          setError(`Trading pairs were saved, but automatic execution could not be queued: ${reason instanceof Error ? reason.message : 'request rejected'}`)
+          setSaveMessage('Trading pairs were saved, but the automatic start request could not be queued.')
+        } else {
+          setError(reason instanceof Error ? reason.message : 'Trading pairs could not be saved')
+        }
       }
       return
     }
@@ -170,12 +182,13 @@ export function SetupPage() {
     if (startAfterSave) {
       try {
         const status = await startExecutionMutation.mutateAsync()
-        if (!status.enabled) {
-          throw new Error('The server did not confirm that automatic execution was enabled.')
+        if (!status.enabled && !status.pendingStart) {
+          throw new Error('The server did not confirm that automatic execution was enabled or queued.')
         }
-        setSaveMessage(
-          `Setup saved. Automatic ${form.environment} strategy execution is enabled; waiting for the first strategy cycle.`,
-        )
+        queryClient.setQueryData(['auto-execution-status'], status)
+        setSaveMessage(status.pendingStart
+          ? 'Setup saved. Automatic execution is queued and will start after all strategy approvals and risk controls are complete.'
+          : `Setup saved. Automatic ${form.environment} strategy execution is enabled; waiting for the first strategy cycle.`)
         void autoExecutionQuery.refetch()
       } catch (reason) {
         void autoExecutionQuery.refetch()
@@ -250,7 +263,7 @@ export function SetupPage() {
     && hasPairChanges
     && !form.token.trim()
     && !selectedAccountId
-    && !startAfterSave,
+    ,
   )
 
   const runRuntimeAction = (action: 'reload' | 'resume' | 'pause' | 'stop') => {
@@ -488,8 +501,8 @@ export function SetupPage() {
                 onChange={(event) => setStartAfterSave(event.target.checked)}
               />
               <span>
-                Start automatic strategy execution immediately after saving. The server will
-                require an approved strategy revision and complete risk controls for every pair.
+                Enable automatic strategy execution after saving. Trading starts automatically
+                only after every pair has an approved strategy revision and complete risk controls.
                 {form.environment === 'live' && userRole !== 'admin'
                   ? ' Live execution can only be started from an admin session.'
                   : ''}
@@ -509,7 +522,9 @@ export function SetupPage() {
               {autoExecutionQuery.data && (
                 <>
                   <span>
-                    {autoExecutionQuery.data.enabled
+                    {autoExecutionQuery.data.pendingStart
+                      ? 'Queued · waiting for strategy approvals and complete risk controls'
+                      : autoExecutionQuery.data.enabled
                       ? `Active · ${autoExecutionQuery.data.environment}${autoExecutionQuery.data.workerRunning ? '' : ' · Worker stopped'}`
                       : 'Not active'}
                   </span>
@@ -517,11 +532,13 @@ export function SetupPage() {
                     <small>Last strategy cycle: {new Date(autoExecutionQuery.data.lastCycleAt).toLocaleString()}</small>
                   )}
                   {autoExecutionQuery.data.lastError && (
-                    <small className="setup-error" role="alert">
-                      {autoExecutionQuery.data.enabled
-                        ? `Execution is enabled, but the latest cycle reported an error: ${autoExecutionQuery.data.lastError}`
-                        : `Automatic execution did not start: ${autoExecutionQuery.data.lastError}`}
-                    </small>
+                    autoExecutionQuery.data.pendingStart
+                      ? <small role="status">{autoExecutionQuery.data.lastError}</small>
+                      : <small className="setup-error" role="alert">
+                          {autoExecutionQuery.data.enabled
+                            ? `Execution is enabled, but the latest cycle reported an error: ${autoExecutionQuery.data.lastError}`
+                            : `Automatic execution did not start: ${autoExecutionQuery.data.lastError}`}
+                        </small>
                   )}
                 </>
               )}
@@ -535,7 +552,7 @@ export function SetupPage() {
             <div className="setup-footer">
               <span className="setup-secure-note">{form.environment === 'live' ? 'Live account · server-side config' : 'Practice environment · server-side config'}</span>
               <button className="primary-action setup-submit" type="submit" disabled={savedSetupQuery.isLoading || !hasSetupChanges || mutation.isPending || instrumentsMutation.isPending || startExecutionMutation.isPending || (!canSavePairsOnly && (!selectedAccount || !form.accountConfirmed || (form.environment === 'live' && (!form.liveConfirmed || userRole !== 'admin')) || (startAfterSave && form.environment === 'live' && userRole !== 'admin'))) || form.instruments.length === 0}>
-                {instrumentsMutation.isPending ? 'Saving trading pairs…' : mutation.isPending ? 'Saving configuration...' : startExecutionMutation.isPending ? 'Starting strategy execution...' : startAfterSave ? `Save and start ${form.environment === 'live' ? 'Live' : 'Practice'} trading` : `Save ${form.environment === 'live' ? 'Live' : 'Practice'} mode`}
+                {instrumentsMutation.isPending ? 'Saving trading pairs…' : mutation.isPending ? 'Saving configuration...' : startExecutionMutation.isPending ? 'Queuing automatic execution…' : startAfterSave ? `Save + queue ${form.environment === 'live' ? 'Live' : 'Practice'} trading` : `Save ${form.environment === 'live' ? 'Live' : 'Practice'} mode`}
               </button>
             </div>
           </form>

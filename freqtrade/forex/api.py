@@ -76,6 +76,7 @@ logger = logging.getLogger(__name__)
 
 
 SYSTEMD_SERVICE_NAME = "freqtrade-forex"
+STRATEGY_EXECUTION_PENDING_CHECK_INTERVAL = 15
 
 
 def _parse_hyperopt_workers(value: object) -> int:
@@ -1021,8 +1022,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
 
     async def stop_strategy_execution() -> bool:
         state = read_strategy_execution_state()
-        was_enabled = state.get("enabled") is True
+        was_enabled = state.get("enabled") is True or state.get("pendingStart") is True
         state["enabled"] = False
+        state["pendingStart"] = False
         write_strategy_execution_state(state)
         current_task = app.state.strategy_execution_task
         if current_task is not None and not current_task.done():
@@ -1074,11 +1076,106 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             )
             return await executor.run_cycle()
 
+    def automatic_execution_preflight_issues(
+        settings: OandaSettings,
+    ) -> list[str]:
+        setup_path, _ = resolve_setup_paths()
+        setup = load_forex_config(setup_path)
+        configured_pairs = set(settings.instruments)
+        approved = setup.get("pair_approved_revisions", {})
+        strategies = setup.get("pair_strategies", {})
+        timeframes = setup.get("pair_timeframes", {})
+        preflight_issues: list[str] = []
+        if not configured_pairs:
+            preflight_issues.append("Configure at least one trading pair in Setup")
+        for instrument in configured_pairs:
+            pair_key = instrument.upper().replace("/", "_")
+            pair = instrument.replace("_", "/").upper()
+            revision = approved.get(pair_key) if isinstance(approved, dict) else None
+            if (
+                not isinstance(revision, dict)
+                or revision.get("pair") != pair
+                or revision.get("strategyClass")
+                != (strategies.get(pair_key) if isinstance(strategies, dict) else None)
+                or not revision.get("timeframe")
+                or freqtrade_timeframe(str(revision.get("timeframe", "")))
+                != freqtrade_timeframe(
+                    str(timeframes.get(pair_key, "")) if isinstance(timeframes, dict) else ""
+                )
+            ):
+                preflight_issues.append(
+                    f"{pair} needs a current approved strategy revision"
+                )
+            risk = effective_risk_config_for_pair(pair)
+            if not risk.get("stopLoss"):
+                preflight_issues.append(
+                    str(
+                        risk.get("stopLossIssue")
+                        or f"Configure a stop loss for {pair} in Risk controls"
+                    )
+                )
+            else:
+                try:
+                    stop_loss_value = Decimal(str(risk["stopLoss"]))
+                except (InvalidOperation, TypeError, ValueError):
+                    stop_loss_value = Decimal(0)
+                if (
+                    not stop_loss_value.is_finite()
+                    or stop_loss_value <= 0
+                    or risk.get("stopLossMode") not in {"price", "pips", "percent"}
+                ):
+                    preflight_issues.append(
+                        f"Configure a valid positive price, pips, or percent stop loss for {pair}"
+                    )
+            if str(risk.get("side", "NONE")).upper() not in {
+                "LONG",
+                "SHORT",
+                "BOTH",
+                "NONE",
+            }:
+                preflight_issues.append(
+                    f"Configure an allowed entry side for {pair} in Risk controls"
+                )
+            if not risk.get("maxExposure"):
+                preflight_issues.append(f"Configure maximum exposure for {pair}")
+
+        runtime_state_path = Path("user_data/oanda/runtime-state.json")
+        if runtime_state_path.exists():
+            try:
+                runtime_state = json.loads(runtime_state_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                logger.exception("Could not read runtime state during auto-execution preflight")
+                preflight_issues.append(f"Runtime control state is unavailable: {exc}")
+            else:
+                if runtime_state.get("state") != "running":
+                    preflight_issues.append(
+                        "Resume runtime controls before enabling strategy execution"
+                    )
+        return preflight_issues
+
     async def auto_execution_loop() -> None:
         while True:
             state = read_strategy_execution_state()
-            if state.get("enabled") is not True:
+            pending_start = state.get("pendingStart") is True
+            if state.get("enabled") is not True and not pending_start:
                 return
+            if pending_start:
+                try:
+                    settings = OandaSettings.from_environment()
+                    issues = automatic_execution_preflight_issues(settings)
+                except (ValueError, HTTPException) as exc:
+                    issues = [str(getattr(exc, "detail", exc))]
+                if issues:
+                    state["enabled"] = False
+                    state["lastError"] = "Waiting for setup readiness: " + "; ".join(issues)
+                    write_strategy_execution_state(state)
+                    await asyncio.sleep(STRATEGY_EXECUTION_PENDING_CHECK_INTERVAL)
+                    continue
+                state["pendingStart"] = False
+                state["enabled"] = True
+                state["lastError"] = None
+                state["startedAt"] = datetime.now(timezone.utc).isoformat()
+                write_strategy_execution_state(state)
             runtime_state_path = Path("user_data/oanda/runtime-state.json")
             if runtime_state_path.exists():
                 try:
@@ -4206,7 +4303,9 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         task = app.state.strategy_execution_task
         worker_running = task is not None and not task.done()
         last_error = state.get("lastError")
-        if state.get("enabled") is True and not worker_running:
+        if state.get("pendingStart") is True and not worker_running:
+            last_error = last_error or "Automatic execution is queued but its worker is not running"
+        elif state.get("enabled") is True and not worker_running:
             last_error = last_error or "Automatic execution is enabled but its worker is not running"
             if task is not None and not task.cancelled():
                 task_error = task.exception()
@@ -4220,6 +4319,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             last_error = str(exc)
         return {
             "enabled": state.get("enabled") is True,
+            "pendingStart": state.get("pendingStart") is True,
             "workerRunning": worker_running,
             "environment": environment,
             "lastCycleAt": state.get("lastCycleAt"),
@@ -4238,7 +4338,11 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         enabled = payload.get("enabled")
         if not isinstance(enabled, bool):
             raise HTTPException(status_code=400, detail="enabled must be a boolean")
+        defer_until_ready = payload.get("deferUntilReady", False)
+        if not isinstance(defer_until_ready, bool):
+            raise HTTPException(status_code=400, detail="deferUntilReady must be a boolean")
         state = read_strategy_execution_state()
+        settings: OandaSettings | None = None
         if enabled:
             try:
                 settings = OandaSettings.from_environment()
@@ -4259,96 +4363,45 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     status_code=403,
                     detail="Enabling automatic execution for a Live account requires admin role",
                 )
-            setup_path, _ = resolve_setup_paths()
-            setup = load_forex_config(setup_path)
-            configured_pairs = set(settings.instruments)
-            approved = setup.get("pair_approved_revisions", {})
-            strategies = setup.get("pair_strategies", {})
-            timeframes = setup.get("pair_timeframes", {})
-            preflight_issues: list[str] = []
-            for instrument in configured_pairs:
-                pair_key = instrument.upper().replace("/", "_")
-                pair = instrument.replace("_", "/").upper()
-                revision = approved.get(pair_key) if isinstance(approved, dict) else None
-                if (
-                    not isinstance(revision, dict)
-                    or revision.get("pair") != pair
-                    or revision.get("strategyClass")
-                    != (strategies.get(pair_key) if isinstance(strategies, dict) else None)
-                    or not revision.get("timeframe")
-                    or freqtrade_timeframe(str(revision.get("timeframe", "")))
-                    != freqtrade_timeframe(
-                        str(timeframes.get(pair_key, "")) if isinstance(timeframes, dict) else ""
-                    )
-                ):
-                    preflight_issues.append(
-                        f"{pair} needs a current approved strategy revision"
-                    )
-                risk = effective_risk_config_for_pair(pair)
-                if not risk.get("stopLoss"):
-                    preflight_issues.append(
-                        str(
-                            risk.get("stopLossIssue")
-                            or f"Configure a stop loss for {pair} in Risk controls"
-                        )
-                    )
-                else:
-                    try:
-                        stop_loss_value = Decimal(str(risk["stopLoss"]))
-                    except (InvalidOperation, TypeError, ValueError):
-                        stop_loss_value = Decimal(0)
-                    if (
-                        not stop_loss_value.is_finite()
-                        or stop_loss_value <= 0
-                        or risk.get("stopLossMode") not in {"price", "pips", "percent"}
-                    ):
-                        preflight_issues.append(
-                            f"Configure a valid positive price, pips, or percent stop loss for {pair}"
-                        )
-                if str(risk.get("side", "NONE")).upper() not in {
-                    "LONG",
-                    "SHORT",
-                    "BOTH",
-                    "NONE",
-                }:
-                    preflight_issues.append(
-                        f"Configure an allowed entry side for {pair} in Risk controls"
-                    )
-                if not risk.get("maxExposure"):
-                    preflight_issues.append(f"Configure maximum exposure for {pair}")
+            preflight_issues = automatic_execution_preflight_issues(settings)
             if preflight_issues:
                 preflight_error = (
                     "Automatic execution was not started. Fix these settings: "
                     + "; ".join(preflight_issues)
                 )
-                state["enabled"] = False
-                state["lastError"] = preflight_error
-                write_strategy_execution_state(state)
-                raise HTTPException(
-                    status_code=409,
-                    detail=preflight_error,
-                )
-            runtime_state_path = Path("user_data/oanda/runtime-state.json")
-            if runtime_state_path.exists():
-                try:
-                    runtime_state = json.loads(runtime_state_path.read_text(encoding="utf-8"))
-                except (OSError, json.JSONDecodeError) as exc:
-                    raise HTTPException(
-                        status_code=500,
-                        detail=f"Runtime control state is unavailable: {exc}",
-                    ) from exc
-                if runtime_state.get("state") != "running":
+                if not defer_until_ready:
+                    state["enabled"] = False
+                    state["pendingStart"] = False
+                    state["lastError"] = preflight_error
+                    write_strategy_execution_state(state)
                     raise HTTPException(
                         status_code=409,
-                        detail="Resume runtime controls before enabling strategy execution",
+                        detail=preflight_error,
                     )
-        state["enabled"] = enabled
-        state["lastError"] = None
+                state["pendingStart"] = True
+                state["enabled"] = False
+                state["lastError"] = "Waiting for setup readiness: " + "; ".join(preflight_issues)
+            elif defer_until_ready:
+                state["pendingStart"] = True
+                state["enabled"] = False
+                state["lastError"] = "Automatic execution is queued and will start when readiness checks pass"
+            else:
+                state["pendingStart"] = False
+                state["enabled"] = True
+                state["lastError"] = None
+        else:
+            state["pendingStart"] = False
+        state["enabled"] = enabled and not defer_until_ready
+        if enabled and not defer_until_ready:
+            state["lastError"] = None
+        if not enabled:
+            state["lastError"] = None
         write_strategy_execution_state(state)
         current_task = app.state.strategy_execution_task
-        if enabled and (current_task is None or current_task.done()):
+        should_run_worker = enabled or state.get("pendingStart") is True
+        if should_run_worker and (current_task is None or current_task.done()):
             app.state.strategy_execution_task = asyncio.create_task(auto_execution_loop())
-        elif not enabled and current_task is not None and not current_task.done():
+        elif not should_run_worker and current_task is not None and not current_task.done():
             current_task.cancel()
             try:
                 await current_task
@@ -4358,20 +4411,22 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         record_audit_event(
             "strategy.auto_execution",
             details={
-                "enabled": enabled,
-                "environment": settings.environment.value if enabled else None,
+                "enabled": state["enabled"],
+                "pendingStart": state.get("pendingStart") is True,
+                "environment": settings.environment.value if enabled and settings else None,
             },
             username=(resolve_session_user(session_token) or {}).get("username", "anonymous"),
             role=user_role,
             allowed=True,
         )
         return {
-            "enabled": enabled,
+            "enabled": state["enabled"] is True,
+            "pendingStart": state.get("pendingStart") is True,
             "workerRunning": (
                 app.state.strategy_execution_task is not None
                 and not app.state.strategy_execution_task.done()
             ),
-            "environment": settings.environment.value if enabled else None,
+            "environment": settings.environment.value if should_run_worker and settings else None,
             "lastCycleAt": state.get("lastCycleAt"),
             "lastError": state.get("lastError"),
             "results": state.get("results", []),
@@ -7121,7 +7176,10 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "Automatic strategy execution will remain stopped because its state is invalid"
             )
         else:
-            if strategy_execution_state.get("enabled") is True:
+            if (
+                strategy_execution_state.get("enabled") is True
+                or strategy_execution_state.get("pendingStart") is True
+            ):
                 app.state.strategy_execution_task = asyncio.create_task(auto_execution_loop())
 
     @app.on_event("shutdown")

@@ -436,6 +436,7 @@ export type AutoExecutionResult = {
 
 export type AutoExecutionStatus = {
   enabled: boolean
+  pendingStart?: boolean
   workerRunning: boolean
   environment: string
   lastCycleAt?: string | null
@@ -451,13 +452,14 @@ export async function getAutoExecutionStatus(): Promise<AutoExecutionStatus> {
 
 export async function setAutoExecution(
   enabled: boolean,
+  deferUntilReady = false,
 ): Promise<AutoExecutionStatus> {
   const response = await fetch(buildApiUrl('/api/v1/strategy/auto-execution'), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ enabled }),
+    body: JSON.stringify({ enabled, deferUntilReady }),
   })
   if (!response.ok) {
     let detail = 'Automatic strategy execution update rejected'
