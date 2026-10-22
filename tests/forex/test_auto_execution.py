@@ -962,6 +962,51 @@ async def test_trailing_stop_stays_unmodified_until_profit_covers_distance_and_b
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("entry_price", "expected_status"),
+    [
+        ("1.09901", "not_activated"),
+        ("1.0990", "trailing_activated"),
+    ],
+)
+async def test_trailing_stop_starts_at_about_ten_pips_profit(
+    tmp_path,
+    monkeypatch,
+    entry_price,
+    expected_status,
+) -> None:
+    _strategy_directory(tmp_path, monkeypatch)
+    client = FakeOandaClient(_candles("long"))
+    client.open_trades = [
+        {
+            "id": "auto-early-trailing",
+            "instrument": "EUR_USD",
+            "currentUnits": "1000",
+            "price": entry_price,
+            "tradeClientExtensions": {"tag": "auto"},
+        }
+    ]
+    executor = _executor(client)
+    executor.setup["pair_approved_revisions"]["EUR_USD"]["hyperopt"] = {
+        "stopLoss": {"mode": "pips", "value": "40"},
+        "trailingStopLoss": True,
+    }
+
+    results = await executor.run_cycle()
+
+    if expected_status == "not_activated":
+        assert client.order_modifications == []
+    else:
+        assert results[0]["status"] == "trailing_activated"
+        assert client.order_modifications == [
+            (
+                "auto-early-trailing",
+                {"trailing_stop_loss_distance": "0.0009", "instrument": "EUR_USD"},
+            )
+        ]
+
+
+@pytest.mark.asyncio
 async def test_short_trailing_stop_activates_using_ask_after_profitable_move(
     tmp_path,
     monkeypatch,
@@ -973,7 +1018,7 @@ async def test_short_trailing_stop_activates_using_ask_after_profitable_move(
             "id": "auto-short-trailing",
             "instrument": "EUR_USD",
             "currentUnits": "-1000",
-            "price": "1.1011",
+            "price": "1.1012",
             "tradeClientExtensions": {"tag": "auto"},
         }
     ]
@@ -989,13 +1034,13 @@ async def test_short_trailing_stop_activates_using_ask_after_profitable_move(
     assert client.order_modifications == [
         (
             "auto-short-trailing",
-            {"trailing_stop_loss_distance": "0.00035", "instrument": "EUR_USD"},
+            {"trailing_stop_loss_distance": "0.00034", "instrument": "EUR_USD"},
         )
     ]
 
 
 @pytest.mark.asyncio
-async def test_existing_trailing_stop_tightens_when_profit_grows(
+async def test_existing_trailing_stop_tightens_after_early_activation(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -1006,18 +1051,18 @@ async def test_existing_trailing_stop_tightens_when_profit_grows(
             "id": "auto-trailing",
             "instrument": "EUR_USD",
             "currentUnits": "1000",
-            "price": "1.0990",
+            "price": "1.0989",
             "trailingStopLossOrder": {
                 "id": "existing-trailing",
-                "distance": "0.0005",
-                "trailingStopValue": "1.0995",
+                "distance": "0.0009",
+                "trailingStopValue": "1.0991",
             },
             "tradeClientExtensions": {"tag": "auto"},
         }
     ]
     executor = _executor(client)
     executor.setup["pair_approved_revisions"]["EUR_USD"]["hyperopt"] = {
-        "stopLoss": {"mode": "pips", "value": "5.0", "optimized": True},
+        "stopLoss": {"mode": "pips", "value": "40"},
         "trailingStopLoss": True,
     }
 
@@ -1027,7 +1072,7 @@ async def test_existing_trailing_stop_tightens_when_profit_grows(
     assert client.order_modifications == [
         (
             "auto-trailing",
-            {"trailing_stop_loss_distance": "0.00034", "instrument": "EUR_USD"},
+            {"trailing_stop_loss_distance": "0.00082", "instrument": "EUR_USD"},
         )
     ]
 

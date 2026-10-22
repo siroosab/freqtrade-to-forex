@@ -111,15 +111,18 @@ verify the selected environment, account, and token permissions if the error per
 ### Adaptive trailing stop
 
 When the approved revision enables trailing stop loss, the worker first keeps
-the broker's protective fixed stop in place. Once the executable quote covers
-the approved trailing distance plus spread and one pip, it activates OANDA's
-native trailing stop. On later worker cycles (about every 15 seconds), it may
-reduce that distance using the latest completed candles' 14-period Wilder ATR,
-current profit, and trade age:
+the broker's protective fixed stop in place. It activates OANDA's native
+trailing stop when executable profit reaches about 10 pips. If the broker's
+minimum trailing distance requires more room, activation waits until profit
+covers that minimum plus one pip. The initial trailing gap is capped so the
+first step locks at least about one pip when broker limits allow it. On later
+worker cycles (about every 15 seconds), it may reduce that distance using the
+latest completed candles' 14-period Wilder ATR, current profit, and trade age:
 
 - The volatility component caps the approved distance at two ATRs.
 - The profit component gradually reduces the distance as profit grows, down to
-  half of the volatility-adjusted distance.
+  half of the volatility-adjusted distance; a separate profit-progress cap
+  keeps narrowing the gap from its first step as profit grows.
 - The age component reduces it by up to 25% during the first 24 hours.
 
 The worker rounds the result up to the instrument's precision and broker

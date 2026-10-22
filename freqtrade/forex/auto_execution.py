@@ -1011,8 +1011,22 @@ def _adaptive_trailing_stop_update(
 
     side = _trade_side(trade)
     executable_price = price.bid if side == "long" else price.ask
+    profit_pips = max(
+        Decimal(0),
+        (executable_price - entry if side == "long" else entry - executable_price)
+        / instrument.pip_size,
+    )
     existing_trailing = trade.get("trailingStopLossOrder")
     previous_stop_price: Decimal | None = None
+    minimum_distance = (
+        instrument.round_trailing_stop_distance(instrument.minimum_trailing_stop_distance)
+        if instrument.minimum_trailing_stop_distance is not None
+        else Decimal(0)
+    )
+    activation_profit_pips = max(
+        Decimal(10),
+        minimum_distance / instrument.pip_size + Decimal(1),
+    )
     if existing_trailing is not None:
         if not isinstance(existing_trailing, dict):
             return None
@@ -1031,27 +1045,26 @@ def _adaptive_trailing_stop_update(
         ):
             return None
     else:
-        activation_distance = base_distance + price.spread + instrument.pip_size
-        is_in_profit = (
-            executable_price >= entry + activation_distance
-            if side == "long"
-            else executable_price <= entry - activation_distance
-        )
-        if not is_in_profit:
+        if profit_pips < activation_profit_pips:
             return None
         old_distance = None
 
-    profit_pips = max(
-        Decimal(0),
-        (executable_price - entry if side == "long" else entry - executable_price)
-        / instrument.pip_size,
-    )
     adaptive_distance = _adaptive_trailing_distance(
         base_distance,
         candles,
         instrument,
         profit_pips=profit_pips,
         age_hours=_trade_age_hours(trade, price.time),
+    )
+    profit_tightening_cap = (
+        (activation_profit_pips - Decimal(1))
+        * instrument.pip_size
+        * activation_profit_pips
+        / max(profit_pips, activation_profit_pips)
+    )
+    adaptive_distance = max(
+        minimum_distance,
+        min(adaptive_distance, profit_tightening_cap),
     )
     formatted_distance = instrument.format_trailing_stop_distance(adaptive_distance)
     if old_distance is not None and Decimal(formatted_distance) >= old_distance:
