@@ -1072,6 +1072,21 @@ export async function saveSetup(payload: SetupPayload): Promise<SetupStatus> {
   return response.json() as Promise<SetupStatus>
 }
 
+export async function saveSetupInstruments(
+  instruments: string[],
+): Promise<{ environment: 'practice' | 'live'; instruments: string[] }> {
+  const response = await fetch(buildApiUrl('/api/v1/setup/pairs'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ instruments }),
+  })
+  if (!response.ok) {
+    const detail = (await response.json().catch(() => ({}))) as { detail?: string }
+    throw new Error(detail.detail ?? 'Trading pairs could not be saved')
+  }
+  return response.json() as Promise<{ environment: 'practice' | 'live'; instruments: string[] }>
+}
+
 export type RuntimeStatus = {
   state: 'running' | 'paused' | 'stopped'
   reloadPending: boolean

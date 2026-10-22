@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ChangeEvent, FormEvent } from 'react'
-import { controlRuntime, controlSystemdService, discoverSetupAccounts, getAvailableStrategies, getAutoExecutionStatus, getRuntimeStatus, getSetupFileUrl, getSetupInstruments, getSetupStatus, getSystemdServiceStatus, saveSetup, setAutoExecution, setPortfolioCockpitVisibility, uploadSetupFile, type SetupAccount, type SetupPayload, type SetupStatus, type SystemdServiceAction } from '../api/mockApi'
+import { controlRuntime, controlSystemdService, discoverSetupAccounts, getAvailableStrategies, getAutoExecutionStatus, getRuntimeStatus, getSetupFileUrl, getSetupInstruments, getSetupStatus, getSystemdServiceStatus, saveSetup, saveSetupInstruments, setAutoExecution, setPortfolioCockpitVisibility, uploadSetupFile, type SetupAccount, type SetupPayload, type SetupStatus, type SystemdServiceAction } from '../api/mockApi'
 import { useUiStore } from '../store/useUiStore'
 
 function normalizeSetupInstrument(instrument: string) {
@@ -32,6 +32,7 @@ export function SetupPage() {
   const [instrumentSearch, setInstrumentSearch] = useState('')
   const setupBaselineLoaded = useRef(false)
   const mutation = useMutation({ mutationFn: saveSetup })
+  const instrumentsMutation = useMutation({ mutationFn: saveSetupInstruments })
   const startExecutionMutation = useMutation({ mutationFn: () => setAutoExecution(true) })
   const discoveryMutation = useMutation({ mutationFn: discoverSetupAccounts })
   const runtimeQuery = useQuery({ queryKey: ['setup-runtime'], queryFn: getRuntimeStatus })
@@ -135,6 +136,22 @@ export function SetupPage() {
     event.preventDefault()
     setError(null)
     setSaveMessage(null)
+    if (canSavePairsOnly) {
+      try {
+        const result = await instrumentsMutation.mutateAsync(form.instruments.map(normalizeSetupInstrument))
+        const saved = savedSetupQuery.data
+        if (!saved?.configured) throw new Error('Pair save completed, but the active setup is unavailable.')
+        const normalizedInstruments = result.instruments.map(normalizeSetupInstrument)
+        const updatedSetup = { ...saved, environment: result.environment, instruments: normalizedInstruments }
+        setForm((current) => ({ ...current, instruments: normalizedInstruments }))
+        setSelectedInstruments(normalizedInstruments.map((item) => item.replace(/_/g, '/')))
+        queryClient.setQueryData<SetupStatus>(['setup-status'], updatedSetup)
+        setSaveMessage(`✅ ${normalizedInstruments.length} trading pair${normalizedInstruments.length === 1 ? '' : 's'} saved to the bot configuration.`)
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : 'Trading pairs could not be saved')
+      }
+      return
+    }
     if (
       startAfterSave &&
       form.environment === 'live' &&
@@ -220,6 +237,21 @@ export function SetupPage() {
       || currentInstruments.join(',') !== savedInstruments.join(',')
       || Boolean(form.token.trim() && form.accountConfirmed)
   }, [form.accountConfirmed, form.environment, form.instruments, form.token, savedSetupQuery.data])
+  const hasPairChanges = useMemo(() => {
+    const saved = savedSetupQuery.data
+    if (!saved?.configured) return false
+    const currentInstruments = form.instruments.map(normalizeSetupInstrument).sort()
+    const savedInstruments = saved.instruments.map(normalizeSetupInstrument).sort()
+    return currentInstruments.join(',') !== savedInstruments.join(',')
+  }, [form.instruments, savedSetupQuery.data])
+  const canSavePairsOnly = Boolean(
+    savedSetupQuery.data?.configured
+    && form.environment === savedSetupQuery.data.environment
+    && hasPairChanges
+    && !form.token.trim()
+    && !selectedAccountId
+    && !startAfterSave,
+  )
 
   const runRuntimeAction = (action: 'reload' | 'resume' | 'pause' | 'stop') => {
     if (action === 'stop' && !window.confirm('Stop the bot completely? New trades and open-trade management will both be disabled.')) return
@@ -332,8 +364,12 @@ export function SetupPage() {
             {form.environment === 'live' && <p className="setup-live-note field-wide">Live uses the real OANDA API and can place orders against real funds. Saving and starting require the account confirmation below, an explicit start confirmation, and an admin session. Test using Practice first.</p>}
             <label className="field-block field-wide">
               <span>OANDA {form.environment === 'live' ? 'Live' : 'Practice'} token</span>
-              <input type="password" autoComplete="new-password" required value={form.token} onChange={(event) => { discoveryMutation.reset(); setAccounts([]); setSelectedAccountId(''); setForm((current) => ({ ...current, token: event.target.value, accountId: '', accountTypeCode: '', accountConfirmed: false, liveConfirmed: false })) }} />
-              <small>Sent to OANDA only for read-only account discovery. Saved on this server only after confirmation.</small>
+              <input type="password" autoComplete="new-password" required={!canSavePairsOnly} value={form.token} onChange={(event) => { discoveryMutation.reset(); setAccounts([]); setSelectedAccountId(''); setForm((current) => ({ ...current, token: event.target.value, accountId: '', accountTypeCode: '', accountConfirmed: false, liveConfirmed: false })) }} />
+              <small>
+                {savedSetupQuery.data?.configured
+                  ? 'Leave blank when saving pair changes only; the server will securely use the saved OANDA account.'
+                  : 'Sent to OANDA only for read-only account discovery. Saved on this server only after confirmation.'}
+              </small>
             </label>
             <div className="field-wide discovery-action"><button type="button" className="primary-action" onClick={discoverAccounts} disabled={!form.token.trim() || discoveryMutation.isPending}>{discoveryMutation.isPending ? 'Checking OANDA...' : 'Discover accounts'}</button>{discoveryMutation.isPending && <span>Reading account types and summaries. No trading request will be sent.</span>}</div>
 
@@ -498,8 +534,8 @@ export function SetupPage() {
             {saveMessage && <p className="setup-operation-message field-wide" role="status">{saveMessage}</p>}
             <div className="setup-footer">
               <span className="setup-secure-note">{form.environment === 'live' ? 'Live account · server-side config' : 'Practice environment · server-side config'}</span>
-              <button className="primary-action setup-submit" type="submit" disabled={savedSetupQuery.isLoading || !hasSetupChanges || mutation.isPending || startExecutionMutation.isPending || !selectedAccount || !form.accountConfirmed || form.instruments.length === 0 || (form.environment === 'live' && (!form.liveConfirmed || userRole !== 'admin')) || (startAfterSave && form.environment === 'live' && userRole !== 'admin')}>
-                {mutation.isPending ? 'Saving configuration...' : startExecutionMutation.isPending ? 'Starting strategy execution...' : startAfterSave ? `Save and start ${form.environment === 'live' ? 'Live' : 'Practice'} trading` : `Save ${form.environment === 'live' ? 'Live' : 'Practice'} mode`}
+              <button className="primary-action setup-submit" type="submit" disabled={savedSetupQuery.isLoading || !hasSetupChanges || mutation.isPending || instrumentsMutation.isPending || startExecutionMutation.isPending || (!canSavePairsOnly && (!selectedAccount || !form.accountConfirmed || (form.environment === 'live' && (!form.liveConfirmed || userRole !== 'admin')) || (startAfterSave && form.environment === 'live' && userRole !== 'admin'))) || form.instruments.length === 0}>
+                {instrumentsMutation.isPending ? 'Saving trading pairs…' : mutation.isPending ? 'Saving configuration...' : startExecutionMutation.isPending ? 'Starting strategy execution...' : startAfterSave ? `Save and start ${form.environment === 'live' ? 'Live' : 'Practice'} trading` : `Save ${form.environment === 'live' ? 'Live' : 'Practice'} mode`}
               </button>
             </div>
           </form>

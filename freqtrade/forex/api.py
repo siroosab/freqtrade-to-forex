@@ -3966,6 +3966,78 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             "tokenConfigured": True,
         }
 
+    @app.post("/api/v1/setup/pairs")
+    async def save_setup_pairs(
+        payload: dict,
+        user_role: str | None = Header(default=None, alias="X-User-Role"),
+        csrf_token: str | None = Header(default=None, alias="X-CSRF-Token"),
+        session_token: str | None = Header(default=None, alias="X-Session-Token"),
+    ) -> dict:
+        validate_write_access(user_role, csrf_token, session_token)
+        raw_instruments = payload.get("instruments")
+        if not isinstance(raw_instruments, list):
+            raise HTTPException(status_code=400, detail="instruments must be a list")
+        instruments = list(dict.fromkeys(
+            str(item).strip().upper().replace("/", "_")
+            for item in raw_instruments
+            if str(item).strip()
+        ))
+        if not instruments:
+            raise HTTPException(status_code=400, detail="at least one instrument is required")
+
+        config_path, _ = resolve_setup_paths()
+        current = load_forex_config(config_path)
+        exchange = current.get("exchange", {})
+        if not isinstance(exchange, dict):
+            raise HTTPException(status_code=409, detail="No valid OANDA setup is configured")
+        token = str(exchange.get("oanda_token", "")).strip()
+        account_id = str(exchange.get("account_id", "")).strip()
+        environment_name = str(exchange.get("oanda_environment", "practice")).strip().lower()
+        if not token or not account_id:
+            raise HTTPException(
+                status_code=409,
+                detail="Connect an OANDA account before saving its trading pairs",
+            )
+        try:
+            environment = OandaEnvironment(environment_name)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=409, detail="Configured OANDA environment is invalid"
+            ) from exc
+        try:
+            async with OandaClient(token, account_id, environment) as client:
+                metadata = await client.get_instruments()
+        except OandaAPIError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        available_instruments = {
+            str(getattr(instrument, "name", "") or "").strip().upper()
+            for instrument in metadata
+        }
+        unavailable = sorted(set(instruments) - available_instruments)
+        if unavailable:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported OANDA instrument(s): {', '.join(unavailable)}",
+            )
+
+        exchange["pair_whitelist"] = instruments
+        current["exchange"] = exchange
+        await stop_strategy_execution()
+        saved_path = save_forex_config(current, config_path)
+        record_audit_event(
+            "setup.pairs_saved",
+            details={"environment": environment.value, "instruments": instruments},
+            allowed=True,
+        )
+        return {
+            "configPath": str(saved_path),
+            "environment": environment.value,
+            "instruments": instruments,
+        }
+
     @app.get("/api/v1/setup/runtime")
     async def setup_runtime_status() -> dict:
         state_path = Path("user_data/oanda/runtime-state.json")

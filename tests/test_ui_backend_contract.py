@@ -2931,6 +2931,74 @@ def test_setup_instruments_uses_saved_account_for_signed_in_users(monkeypatch, t
     assert "saved-secret-token" not in response.text
 
 
+def test_setup_pairs_saves_validated_pairs_to_active_config(monkeypatch, tmp_path):
+    config_path = tmp_path / "config.json"
+    original_config = {
+        "live_trading_approved": False,
+        "exchange": {
+            "name": "oanda",
+            "oanda_token": "saved-secret-token",
+            "account_id": "saved-account",
+            "oanda_environment": "practice",
+            "pair_whitelist": ["EUR_USD"],
+            "oanda_risk_fraction": "0.025",
+        },
+        "pair_timeframes": {"EUR_USD": "5m"},
+    }
+    config_path.write_text(json.dumps(original_config), encoding="utf-8")
+    monkeypatch.setenv("OANDA_CONFIG_PATH", str(config_path))
+
+    class FakeOandaClient:
+        def __init__(self, token, account_id, environment):
+            assert token == "saved-secret-token"
+            assert account_id == "saved-account"
+            assert environment.value == "practice"
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def get_instruments(self):
+            return [
+                type("Instrument", (), {"name": "EUR_USD"})(),
+                type("Instrument", (), {"name": "GBP_USD"})(),
+                type("Instrument", (), {"name": "USD_JPY"})(),
+            ]
+
+    monkeypatch.setattr("freqtrade.forex.api.OandaClient", FakeOandaClient)
+    headers = _auth_headers(client)
+
+    assert client.post(
+        "/api/v1/setup/pairs",
+        json={"instruments": ["GBP_USD"]},
+    ).status_code == 401
+
+    invalid = client.post(
+        "/api/v1/setup/pairs",
+        json={"instruments": ["EUR_USD", "XAU_USD"]},
+        headers=headers,
+    )
+    assert invalid.status_code == 400
+    assert json.loads(config_path.read_text(encoding="utf-8")) == original_config
+
+    response = client.post(
+        "/api/v1/setup/pairs",
+        json={"instruments": ["GBP/USD", "USD_JPY", "GBP_USD"]},
+        headers=headers,
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["instruments"] == ["GBP_USD", "USD_JPY"]
+    assert "saved-secret-token" not in response.text
+    saved_config = json.loads(config_path.read_text(encoding="utf-8"))
+    assert saved_config["exchange"]["pair_whitelist"] == ["GBP_USD", "USD_JPY"]
+    assert saved_config["exchange"]["oanda_risk_fraction"] == "0.025"
+    assert saved_config["pair_timeframes"] == {"EUR_USD": "5m"}
+    assert client.get("/api/v1/setup/status").json()["instruments"] == ["GBP_USD", "USD_JPY"]
+
+
 def test_setup_runtime_and_file_endpoints_work_with_configured_paths(monkeypatch, tmp_path):
     config_path = tmp_path / "config" / "custom-config.json"
     strategy_path = tmp_path / "strategies" / "custom_strategy.py"
