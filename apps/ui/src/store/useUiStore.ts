@@ -38,7 +38,7 @@ type OrdersFeed = Array<{
   risk: string
 }>
 
-const DEFAULT_INSTRUMENTS = ['EUR/USD', 'GBP/USD', 'USD/JPY']
+const DEFAULT_INSTRUMENTS: string[] = []
 
 const normalizeInstrumentValue = (value: string) => {
   const cleaned = String(value ?? '').trim().toUpperCase()

@@ -16,7 +16,7 @@ export function OrdersPage() {
     retry: false,
   })
   const availablePairs = useUiStore((state) => state.selectedInstruments)
-  const [selectedPair, setSelectedPair] = useState(availablePairs[0] ?? 'EUR/USD')
+  const [selectedPair, setSelectedPair] = useState(availablePairs[0] ?? '')
   const pair = availablePairs.length && !availablePairs.includes(selectedPair)
     ? availablePairs[0]
     : selectedPair
@@ -30,7 +30,7 @@ export function OrdersPage() {
     queryKey: ['orders-chart', pair, timeframe, countMultiplier],
     queryFn: () => getOrdersChart(pair, timeframe, chartCandleCount(countMultiplier)),
     refetchInterval: 30000,
-    enabled: !setupQuery.isLoading,
+    enabled: !setupQuery.isLoading && Boolean(pair),
   })
   const orders = ordersQuery.data?.orders ?? []
 
@@ -60,8 +60,9 @@ export function OrdersPage() {
       <section className="panel page-panel">
         <div className="panel-header compact">
           <div><p className="eyebrow">Market context</p><h3>Signals and trade map</h3></div>
-          <div className="chart-controls"><select aria-label="Chart pair" value={pair} onChange={(event) => setSelectedPair(event.target.value)}>{(availablePairs.length ? availablePairs : ['EUR/USD','GBP/USD','USD/JPY']).map((item) => <option key={item} value={item}>{item}</option>)}</select><ChartDataControls timeframe={timeframe} countMultiplier={countMultiplier} onTimeframeChange={setTimeframeOverride} onCountMultiplierChange={setCountMultiplier} /></div>
+          <div className="chart-controls"><select aria-label="Chart pair" value={pair} onChange={(event) => setSelectedPair(event.target.value)}>{availablePairs.length ? availablePairs.map((item) => <option key={item} value={item}>{item}</option>) : <option value="" disabled>No configured pairs</option>}</select><ChartDataControls timeframe={timeframe} countMultiplier={countMultiplier} onTimeframeChange={setTimeframeOverride} onCountMultiplierChange={setCountMultiplier} /></div>
         </div>
+        {!availablePairs.length && <p className="orders-source-note">No trading pairs are configured. Add at least one pair in Setup to view market data.</p>}
         {chartQuery.isLoading && <p>Loading broker candles and approved strategy signals…</p>}
         {chartQuery.isError && <p role="alert">{chartQuery.error instanceof Error ? chartQuery.error.message : 'Chart data unavailable from the broker API.'}</p>}
         {chartQuery.data && <ForexChart data={chartQuery.data} />}

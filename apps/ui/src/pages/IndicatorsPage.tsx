@@ -25,7 +25,7 @@ function formatIndicatorValue(value: number | null | undefined) {
 
 export function IndicatorsPage() {
   const availablePairs = useUiStore((state) => state.selectedInstruments)
-  const [selectedPair, setSelectedPair] = useState(availablePairs[0] ?? 'EUR/USD')
+  const [selectedPair, setSelectedPair] = useState(availablePairs[0] ?? '')
   const pair = availablePairs.length && !availablePairs.includes(selectedPair)
     ? availablePairs[0]
     : selectedPair
@@ -39,7 +39,7 @@ export function IndicatorsPage() {
     queryKey: ['indicator-chart', pair, timeframe, countMultiplier],
     queryFn: () => getOrdersChart(pair, timeframe, chartCandleCount(countMultiplier)),
     refetchInterval: 30_000,
-    enabled: !setupQuery.isLoading,
+    enabled: !setupQuery.isLoading && Boolean(pair),
     retry: false,
   })
   const [selectedIndicators, setSelectedIndicators] = useState<string[]>([])
@@ -85,7 +85,9 @@ export function IndicatorsPage() {
           </div>
           <div className="chart-controls">
             <select aria-label="Chart pair" value={pair} onChange={(event) => setSelectedPair(event.target.value)}>
-              {(availablePairs.length ? availablePairs : ['EUR/USD', 'GBP/USD', 'USD/JPY']).map((item) => <option key={item} value={item}>{item}</option>)}
+              {availablePairs.length
+                ? availablePairs.map((item) => <option key={item} value={item}>{item}</option>)
+                : <option value="" disabled>No configured pairs</option>}
             </select>
             <ChartDataControls
               timeframe={timeframe}
@@ -97,6 +99,7 @@ export function IndicatorsPage() {
           </div>
         </div>
 
+        {!availablePairs.length && <p className="indicator-empty-note">No trading pairs are configured. Add at least one pair in Setup to view indicators.</p>}
         {chartQuery.isLoading && <p>Loading candles and calculating strategy indicators…</p>}
         {chartQuery.isError && (
           <p role="alert">{chartQuery.error instanceof Error ? chartQuery.error.message : 'Chart and indicator data is unavailable.'}</p>

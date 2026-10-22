@@ -1026,15 +1026,15 @@ export async function setPortfolioCockpitVisibility(
 }
 
 export async function getSetupInstruments(payload: {
-  token: string
-  accountId: string
+  token?: string
+  accountId?: string
   environment: 'practice' | 'live'
 }): Promise<{ environment: 'practice' | 'live'; accountId: string; instruments: SetupInstrument[] }> {
-  const params = new URLSearchParams({
-    token: payload.token,
-    account_id: payload.accountId,
-    environment: payload.environment,
-  })
+  const params = new URLSearchParams({ environment: payload.environment })
+  if (payload.token && payload.accountId) {
+    params.set('token', payload.token)
+    params.set('account_id', payload.accountId)
+  }
   const response = await fetch(buildApiUrl(`/api/v1/setup/instruments?${params.toString()}`))
   if (!response.ok) {
     const detail = (await response.json().catch(() => ({}))) as { detail?: string }

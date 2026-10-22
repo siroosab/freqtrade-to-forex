@@ -150,7 +150,7 @@ export function DashboardPage() {
   const brokerQuote = quoteQuery.data
   const displayQuote = brokerQuote ?? market?.instruments.find((item) => item.pair === instrument)
 
-  const instrumentOptions = selectedInstruments.length ? selectedInstruments : ['EUR/USD', 'GBP/USD', 'USD/JPY']
+  const instrumentOptions = selectedInstruments
   const activeInstrument = instrumentOptions.includes(instrument) ? instrument : instrumentOptions[0] ?? 'EUR/USD'
 
   useEffect(() => {

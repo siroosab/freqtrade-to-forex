@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { useEffect, useState } from 'react'
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
-import { logoutUser } from '../api/mockApi'
+import { getSetupStatus, logoutUser } from '../api/mockApi'
 import { ExecutionStatusPanel } from './ExecutionStatusPanel'
 import { ServerStatusPanel } from './ServerStatusPanel'
 import { ServerTime } from './ServerTime'
@@ -30,6 +31,18 @@ export function Layout() {
   const connectionState = useUiStore((state) => state.connectionState)
   const userRole = useUiStore((state) => state.userRole)
   const setUserRole = useUiStore((state) => state.setUserRole)
+  const setSelectedInstruments = useUiStore((state) => state.setSelectedInstruments)
+  const setupQuery = useQuery({ queryKey: ['setup-status'], queryFn: getSetupStatus })
+
+  useEffect(() => {
+    if (!setupQuery.data) return
+    setSelectedInstruments(
+      setupQuery.data.configured
+        ? setupQuery.data.instruments.map((instrument) => instrument.replace(/_/g, '/'))
+        : [],
+    )
+  }, [setSelectedInstruments, setupQuery.data])
+
   const signOut = async () => {
     let warning: string | undefined
     try {

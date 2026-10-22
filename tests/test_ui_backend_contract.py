@@ -2880,6 +2880,57 @@ def test_setup_instruments_endpoint_lists_supported_pairs(monkeypatch):
     assert payload["instruments"][0]["priority"] in {"high", "priority"}
 
 
+def test_setup_instruments_uses_saved_account_for_signed_in_users(monkeypatch, tmp_path):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "exchange": {
+                    "oanda_token": "saved-secret-token",
+                    "account_id": "saved-account",
+                    "oanda_environment": "practice",
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OANDA_CONFIG_PATH", str(config_path))
+
+    class FakeOandaClient:
+        def __init__(self, token, account_id, environment):
+            assert token == "saved-secret-token"
+            assert account_id == "saved-account"
+            assert environment.value == "practice"
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def get_instruments(self):
+            return [
+                type("Instrument", (), {"name": "EUR_USD", "display_name": "EUR/USD"})(),
+                type("Instrument", (), {"name": "EUR_GBP", "display_name": "EUR/GBP"})(),
+                type("Instrument", (), {"name": "XAU_USD", "display_name": "Gold"})(),
+            ]
+
+    monkeypatch.setattr("freqtrade.forex.api.OandaClient", FakeOandaClient)
+
+    assert client.get("/api/v1/setup/instruments").status_code == 401
+    response = client.get("/api/v1/setup/instruments", headers=_auth_headers(client))
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["accountId"] == "saved-account"
+    assert [item["name"] for item in payload["instruments"]] == [
+        "EUR_USD",
+        "EUR_GBP",
+        "XAU_USD",
+    ]
+    assert "saved-secret-token" not in response.text
+
+
 def test_setup_runtime_and_file_endpoints_work_with_configured_paths(monkeypatch, tmp_path):
     config_path = tmp_path / "config" / "custom-config.json"
     strategy_path = tmp_path / "strategies" / "custom_strategy.py"
@@ -2952,6 +3003,8 @@ def test_setup_runtime_and_file_endpoints_work_with_configured_paths(monkeypatch
     assert payload["executionMode"] == "practice"
     assert payload["showPortfolioCockpit"] is True
     assert payload["accountTypeCode"] == "003"
+    saved_config = json.loads(config_path.read_text(encoding="utf-8"))
+    assert saved_config["exchange"]["pair_whitelist"] == ["EUR_USD", "GBP_USD"]
     assert payload["pairStrategies"] == {
         "EUR_USD": "ForexMasterStrategy",
         "GBP_USD": "ForexMasterStrategy",

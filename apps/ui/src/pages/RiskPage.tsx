@@ -106,7 +106,7 @@ export function RiskPage() {
   const queryClient = useQueryClient()
   const { data, isLoading, isError } = useQuery({ queryKey: ['risk'], queryFn: getRiskSummary })
   const availablePairs = useUiStore((state) => state.selectedInstruments)
-  const [pair, setPair] = useState(availablePairs[0] ?? 'EUR/USD')
+  const [pair, setPair] = useState(availablePairs[0] ?? '')
   const selectedPair = availablePairs.length && !availablePairs.includes(pair) ? availablePairs[0] : pair
   const setupQuery = useQuery({ queryKey: ['setup-status'], queryFn: getSetupStatus })
   const selectedPairKey = selectedPair.replace(/\//g, '_').toUpperCase()
@@ -132,23 +132,25 @@ export function RiskPage() {
   const timeframe = timeframeOverride
     ?? chartTimeframeFromStrategy(pairTimeframe, 'M15')
   const [countMultiplier, setCountMultiplier] = useState(1)
-  const configQuery = useQuery({ queryKey: ['risk-config', selectedPair], queryFn: () => getRiskConfig(selectedPair) })
+  const configQuery = useQuery({ queryKey: ['risk-config', selectedPair], queryFn: () => getRiskConfig(selectedPair), enabled: Boolean(selectedPair) })
   const chartQuery = useQuery({
     queryKey: ['risk-chart', selectedPair, timeframe, countMultiplier],
     queryFn: () => getOrdersChart(selectedPair, timeframe, chartCandleCount(countMultiplier)),
     refetchInterval: 30000,
-    enabled: !setupQuery.isLoading,
+    enabled: !setupQuery.isLoading && Boolean(selectedPair),
   })
   const volatilityQuery = useQuery({
     queryKey: ['risk-volatility', selectedPair],
     queryFn: () => getOrdersChart(selectedPair, 'D', 30),
     refetchInterval: 300000,
+    enabled: Boolean(selectedPair),
   })
   const quoteQuery = useQuery({
     queryKey: ['risk-live-quote', selectedPair],
     queryFn: () => getMarketQuote(selectedPair),
     refetchInterval: 3000,
     retry: false,
+    enabled: Boolean(selectedPair),
   })
   const positionsQuery = useQuery({
     queryKey: ['broker-positions'],
@@ -395,7 +397,8 @@ export function RiskPage() {
       </section>}
 
       <section className="panel page-panel">
-        <div className="panel-header compact"><div><p className="eyebrow">Risk map</p><h3>Price-based protection</h3></div><div className="chart-controls"><select aria-label="Risk pair" value={selectedPair} onChange={(event) => setPair(event.target.value)}>{(availablePairs.length ? availablePairs : ['EUR/USD', 'GBP/USD', 'USD/JPY']).map((item) => <option key={item} value={item}>{item}</option>)}</select><ChartDataControls timeframe={timeframe} countMultiplier={countMultiplier} onTimeframeChange={setTimeframeOverride} onCountMultiplierChange={setCountMultiplier} /></div></div>
+        <div className="panel-header compact"><div><p className="eyebrow">Risk map</p><h3>Price-based protection</h3></div><div className="chart-controls"><select aria-label="Risk pair" value={selectedPair} onChange={(event) => setPair(event.target.value)}>{availablePairs.length ? availablePairs.map((item) => <option key={item} value={item}>{item}</option>) : <option value="" disabled>No configured pairs</option>}</select><ChartDataControls timeframe={timeframe} countMultiplier={countMultiplier} onTimeframeChange={setTimeframeOverride} onCountMultiplierChange={setCountMultiplier} /></div></div>
+        {!availablePairs.length && <p className="risk-helper">No trading pairs are configured. Add at least one pair in Setup to view risk controls.</p>}
         <p className="risk-helper">Select a protection level, then click the chart. Prices and trade status below are refreshed from OANDA.</p>
         <div className="chart-controls risk-click-controls"><button type="button" className={selection === 'stopLoss' ? 'selected' : ''} onClick={() => setSelection('stopLoss')}>Set stop loss</button><button type="button" className={selection === 'takeProfit' ? 'selected' : ''} onClick={() => setSelection('takeProfit')}>Set take profit</button><button type="button" className={selection === 'averageEntry' ? 'selected' : ''} onClick={() => setSelection('averageEntry')}>Set average entry</button></div>
         {chartQuery.isLoading && <p>Loading OANDA chart…</p>}

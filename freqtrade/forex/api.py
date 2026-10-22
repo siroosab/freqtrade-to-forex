@@ -3632,7 +3632,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
         exchange = persisted.get("exchange", {})
         token = exchange.get("oanda_token", "")
         account_id = exchange.get("account_id", "")
-        instruments = exchange.get("pair_whitelist", ["EUR_USD", "GBP_USD"])
+        instruments = exchange.get("pair_whitelist", [])
         pair_timeframes = persisted.get("pair_timeframes", {})
         pair_strategies = persisted.get("pair_strategies", {})
         return {
@@ -3680,12 +3680,32 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
     async def setup_instruments(
         token: str | None = None,
         account_id: str | None = None,
-        environment: str = "practice",
+        environment: str | None = None,
         accountId: str | None = None,
+        user_role: str | None = Header(default=None, alias="X-User-Role"),
+        session_token: str | None = Header(default=None, alias="X-Session-Token"),
     ) -> dict:
         token_value = str(token or "").strip()
         account_value = str(account_id or accountId or "").strip()
-        environment_name = str(environment or "practice").strip().lower()
+        if not token_value and not account_value:
+            session_user = resolve_session_user(session_token)
+            if session_user is None:
+                raise HTTPException(status_code=401, detail="Sign in to view configured OANDA instruments")
+            if user_role != session_user["role"]:
+                raise HTTPException(
+                    status_code=403, detail="Forbidden: session role does not match request role"
+                )
+            config_path, _ = resolve_setup_paths()
+            configured_exchange = load_forex_config(config_path).get("exchange", {})
+            token_value = str(configured_exchange.get("oanda_token", "")).strip()
+            account_value = str(configured_exchange.get("account_id", "")).strip()
+            environment_name = str(
+                environment or configured_exchange.get("oanda_environment", "practice")
+            ).strip().lower()
+        else:
+            if not token_value or not account_value:
+                raise HTTPException(status_code=400, detail="token and account_id are required together")
+            environment_name = str(environment or "practice").strip().lower()
         if not token_value or not account_value:
             raise HTTPException(status_code=400, detail="token and account_id are required")
         if environment_name not in {"practice", "live"}:
