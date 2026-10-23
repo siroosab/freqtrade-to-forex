@@ -53,6 +53,10 @@
   color: #e2e8f0;
 }
 
+.sidebar-toggle {
+  display: none;
+}
+
 .nav {
   display: flex;
   flex-direction: column;
@@ -61,6 +65,9 @@
 }
 
 .nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   border: none;
   background: transparent;
   color: #a5b4cf;
@@ -69,6 +76,15 @@
   border-radius: 12px;
   font-size: 0.96rem;
   transition: all 0.2s ease;
+  text-decoration: none;
+}
+
+.nav-item-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 1.25rem;
+  flex: 0 0 1.25rem;
+  font-size: 1rem;
 }
 
 .nav-item:hover,
@@ -3667,6 +3683,89 @@
 }
 
 @media (max-width: 760px) {
+  .sidebar {
+    padding: 12px 16px;
+  }
+
+  .brand-block {
+    gap: 11px;
+    padding: 0;
+    border-bottom: none;
+  }
+
+  .brand-mark {
+    width: 42px;
+    height: 42px;
+    flex: 0 0 42px;
+    border-radius: 13px;
+  }
+
+  .brand-copy {
+    min-width: 0;
+    flex: 1;
+  }
+
+  .brand-block h1 {
+    font-size: 1rem;
+  }
+
+  .sidebar-toggle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    min-height: 40px;
+    padding: 0 13px;
+    border: 1px solid rgba(125, 211, 252, 0.24);
+    border-radius: 13px;
+    background: linear-gradient(135deg, rgba(14, 165, 233, 0.16), rgba(124, 58, 237, 0.18));
+    color: #e0f2fe;
+    font-size: 0.8rem;
+    font-weight: 700;
+    white-space: nowrap;
+  }
+
+  .sidebar-toggle:focus-visible {
+    outline: 2px solid #7dd3fc;
+    outline-offset: 3px;
+  }
+
+  .sidebar-toggle > span:first-child {
+    font-size: 1rem;
+  }
+
+  .sidebar-collapsed .brand-copy .eyebrow,
+  .sidebar-collapsed .brand-copy .server-time-brand,
+  .sidebar-collapsed .sidebar-content {
+    display: none;
+  }
+
+  .sidebar-expanded .brand-block {
+    padding-bottom: 12px;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+  }
+
+  .sidebar-expanded .nav {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+    gap: 8px;
+    margin-top: 14px;
+  }
+
+  .sidebar-expanded .nav-item {
+    min-width: 0;
+    padding: 10px 11px;
+    font-size: 0.84rem;
+  }
+
+  .sidebar-expanded .server-panel {
+    margin-top: 16px;
+  }
+
+  .sidebar-expanded .mini-panel {
+    margin-top: 16px;
+  }
+
   .risk-side-options {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }

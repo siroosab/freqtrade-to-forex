@@ -9,25 +9,27 @@ import { useUiStore } from '../store/useUiStore'
 
 type NavItem = {
   label: string
+  icon: string
   to: string
   requiresRole?: 'operator' | 'admin'
 }
 
 const navItems: NavItem[] = [
-  { label: 'Overview', to: '/' },
-  { label: 'Market', to: '/market' },
-  { label: 'Strategies', to: '/strategies', requiresRole: 'operator' },
-  { label: 'Orders', to: '/orders', requiresRole: 'operator' },
-  { label: 'Indicators', to: '/indicators', requiresRole: 'operator' },
-  { label: 'Hyperopt', to: '/hyperopt', requiresRole: 'operator' },
-  { label: 'Auto Hyperopt', to: '/auto-hyperopt', requiresRole: 'operator' },
-  { label: 'Risk', to: '/risk' },
-  { label: 'Settings', to: '/settings', requiresRole: 'admin' },
+  { label: 'Overview', icon: '📊', to: '/' },
+  { label: 'Market', icon: '🌍', to: '/market' },
+  { label: 'Strategies', icon: '🧠', to: '/strategies', requiresRole: 'operator' },
+  { label: 'Orders', icon: '🧾', to: '/orders', requiresRole: 'operator' },
+  { label: 'Indicators', icon: '📈', to: '/indicators', requiresRole: 'operator' },
+  { label: 'Hyperopt', icon: '🔬', to: '/hyperopt', requiresRole: 'operator' },
+  { label: 'Auto Hyperopt', icon: '🤖', to: '/auto-hyperopt', requiresRole: 'operator' },
+  { label: 'Risk', icon: '🛡️', to: '/risk' },
+  { label: 'Settings', icon: '⚙️', to: '/settings', requiresRole: 'admin' },
 ]
 
 export function Layout() {
   const navigate = useNavigate()
   const [serverTimestamp, setServerTimestamp] = useState<string | null>(null)
+  const [isSidebarExpanded, setIsSidebarExpanded] = useState(false)
   const connectionState = useUiStore((state) => state.connectionState)
   const userRole = useUiStore((state) => state.userRole)
   const setUserRole = useUiStore((state) => state.setUserRole)
@@ -60,56 +62,75 @@ export function Layout() {
 
   return (
     <div className="app-shell">
-      <aside className="sidebar">
+      <aside className={`sidebar ${isSidebarExpanded ? 'sidebar-expanded' : 'sidebar-collapsed'}`}>
         <div className="brand-block">
           <div className="brand-mark">FX</div>
-          <div>
-            <p className="eyebrow">FOREX OPERATIONS</p>
+          <div className="brand-copy">
+            <p className="eyebrow">🌐 FOREX OPERATIONS</p>
             <h1>FX Control</h1>
             <ServerTime key={serverTimestamp ?? 'waiting'} timestamp={serverTimestamp} variant="brand" />
           </div>
+          <button
+            aria-controls="sidebar-content"
+            aria-expanded={isSidebarExpanded}
+            aria-label={isSidebarExpanded ? 'Collapse navigation menu' : 'Expand navigation menu'}
+            className="sidebar-toggle"
+            onClick={() => setIsSidebarExpanded((expanded) => !expanded)}
+            type="button"
+          >
+            <span aria-hidden="true">{isSidebarExpanded ? '✕' : '☰'}</span>
+            <span>{isSidebarExpanded ? 'Close' : 'Menu'}</span>
+          </button>
         </div>
 
-        <nav className="nav">
-          {navItems.map((item) => {
-            const allowed = item.requiresRole ? userRole === item.requiresRole || userRole === 'admin' : true
-            if (!allowed) {
-              return null
-            }
+        <div className="sidebar-content" id="sidebar-content">
+          <nav aria-label="Main navigation" className="nav">
+            {navItems.map((item) => {
+              const allowed = item.requiresRole ? userRole === item.requiresRole || userRole === 'admin' : true
+              if (!allowed) {
+                return null
+              }
 
-            return (
-              <NavLink key={item.to} to={item.to} className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-                {item.label}
-              </NavLink>
-            )
-          })}
-        </nav>
+              return (
+                <NavLink
+                  key={item.to}
+                  to={item.to}
+                  className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
+                  onClick={() => setIsSidebarExpanded(false)}
+                >
+                  <span aria-hidden="true" className="nav-item-icon">{item.icon}</span>
+                  <span>{item.label}</span>
+                </NavLink>
+              )
+            })}
+          </nav>
 
-        <ServerStatusPanel onTimestampChange={setServerTimestamp} />
+          <ServerStatusPanel onTimestampChange={setServerTimestamp} />
 
-        <div className="mini-panel">
-          <p className="eyebrow">Execution Mode</p>
-          <ExecutionStatusPanel />
+          <div className="mini-panel">
+            <p className="eyebrow">Execution Mode</p>
+            <ExecutionStatusPanel />
 
-          <div className="mini-meta">
-            <span>Broker</span>
-            <strong>OANDA</strong>
+            <div className="mini-meta">
+              <span>Broker</span>
+              <strong>OANDA</strong>
+            </div>
+            <div className="mini-meta">
+              <span>Storage</span>
+              <strong>SQLite / Postgres</strong>
+            </div>
+            <div className="mini-meta">
+              <span>Socket</span>
+              <strong>{connectionState}</strong>
+            </div>
+            <div className="mini-meta">
+              <span>Role</span>
+              <strong>{userRole}</strong>
+            </div>
+            <button className="secondary-button" onClick={() => void signOut()} type="button">
+              Sign out
+            </button>
           </div>
-          <div className="mini-meta">
-            <span>Storage</span>
-            <strong>SQLite / Postgres</strong>
-          </div>
-          <div className="mini-meta">
-            <span>Socket</span>
-            <strong>{connectionState}</strong>
-          </div>
-          <div className="mini-meta">
-            <span>Role</span>
-            <strong>{userRole}</strong>
-          </div>
-          <button className="secondary-button" onClick={() => void signOut()} type="button">
-            Sign out
-          </button>
         </div>
       </aside>
 
