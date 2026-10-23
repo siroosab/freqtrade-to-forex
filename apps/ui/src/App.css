@@ -6376,6 +6376,66 @@
   font-size: 0.82rem;
 }
 
+.hyperopt-exit-options-group {
+  grid-column: 1 / -1;
+  min-width: 0;
+  padding: 15px;
+  border: 1px solid rgba(167, 139, 250, 0.28);
+  border-radius: 17px;
+  background:
+    radial-gradient(circle at 100% 0, rgba(124, 58, 237, 0.14), transparent 40%),
+    linear-gradient(145deg, rgba(49, 32, 84, 0.34), rgba(15, 23, 42, 0.72));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
+}
+
+.hyperopt-exit-options-heading {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  margin-bottom: 13px;
+}
+
+.hyperopt-exit-options-heading > span {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid rgba(167, 139, 250, 0.28);
+  border-radius: 13px;
+  background: rgba(124, 58, 237, 0.18);
+  font-size: 1.1rem;
+}
+
+.hyperopt-exit-options-heading h4 {
+  margin: 0;
+  color: #ddd6fe;
+  font-size: 0.9rem;
+}
+
+.hyperopt-exit-options-heading p {
+  margin: 4px 0 0;
+  color: #a5b4c9;
+  font-size: 0.73rem;
+}
+
+.hyperopt-exit-options-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  align-items: stretch;
+  gap: 12px;
+}
+
+.hyperopt-exit-options-fields .field-block {
+  height: 100%;
+  border-color: rgba(167, 139, 250, 0.15);
+  background: rgba(2, 6, 23, 0.34);
+}
+
+.hyperopt-exit-options-fields .trailing-stop-checkbox {
+  accent-color: #a78bfa;
+}
+
 @media (max-width: 760px) {
   .hyperopt-stop-distance-fields {
     grid-template-columns: 1fr;
@@ -6383,10 +6443,8 @@
 }
 
 .hyperopt-action-bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 18px;
+  display: grid;
+  gap: 16px;
   margin: 8px 0 20px;
   padding: 16px;
   border: 1px solid rgba(56, 189, 248, 0.22);
@@ -6394,6 +6452,13 @@
   background:
     linear-gradient(110deg, rgba(14, 165, 233, 0.1), rgba(124, 58, 237, 0.1)),
     rgba(2, 6, 23, 0.42);
+}
+
+.hyperopt-action-heading {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.8fr) minmax(0, 1.8fr);
+  align-items: start;
+  gap: 18px;
 }
 
 .hyperopt-action-copy {
@@ -6412,9 +6477,88 @@
   font-size: 0.75rem;
 }
 
+.hyperopt-run-settings {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.hyperopt-run-settings .field-block {
+  display: grid;
+  align-content: start;
+  gap: 7px;
+  min-width: 0;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(56, 189, 248, 0.16);
+  border-radius: 12px;
+  background: rgba(2, 6, 23, 0.3);
+}
+
+.hyperopt-run-settings .field-block > span {
+  color: #bae6fd;
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.hyperopt-run-settings .field-block small {
+  color: #94a3b8;
+  font-size: 0.68rem;
+  line-height: 1.45;
+}
+
+.hyperopt-run-progress {
+  display: grid;
+  gap: 8px;
+}
+
+.hyperopt-run-progress-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #cbd5e1;
+  font-size: 0.78rem;
+  font-weight: 650;
+}
+
+.hyperopt-run-progress-label strong {
+  color: #67e8f9;
+  font-variant-numeric: tabular-nums;
+}
+
+.hyperopt-progress-bar {
+  display: block;
+  width: 100%;
+  height: 11px;
+  overflow: hidden;
+  appearance: none;
+  border: 1px solid rgba(56, 189, 248, 0.2);
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.9);
+  color: #34d399;
+}
+
+.hyperopt-progress-bar::-webkit-progress-bar {
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.9);
+}
+
+.hyperopt-progress-bar::-webkit-progress-value {
+  border-radius: 999px;
+  background: linear-gradient(90deg, #38bdf8, #34d399);
+  transition: width 0.35s ease;
+}
+
+.hyperopt-progress-bar::-moz-progress-bar {
+  border-radius: 999px;
+  background: linear-gradient(90deg, #38bdf8, #34d399);
+  transition: width 0.35s ease;
+}
+
 .hyperopt-action-buttons {
   display: flex;
-  flex: none;
+  justify-content: flex-end;
   gap: 10px;
 }
 
@@ -6443,9 +6587,8 @@
 }
 
 @media (max-width: 760px) {
-  .hyperopt-action-bar {
-    align-items: stretch;
-    flex-direction: column;
+  .hyperopt-action-heading {
+    grid-template-columns: 1fr;
   }
 
   .hyperopt-action-buttons {

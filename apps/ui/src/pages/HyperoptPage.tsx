@@ -319,6 +319,11 @@ export function HyperoptPage() {
     ?? autoHyperoptQuery.data?.availableWorkers
     ?? 1
   const selectedWorkers = Math.min(workers ?? availableWorkers, availableWorkers)
+  const completedAttempts = statusQuery.data?.attemptsCompleted ?? 0
+  const totalAttempts = statusQuery.data?.attemptsTotal ?? 0
+  const progressPercent = totalAttempts > 0
+    ? Math.min(100, Math.max(0, completedAttempts / totalAttempts * 100))
+    : 0
   const approvedRevision = reviewQuery.data?.approvedRevision
   const approvedHyperopt = approvedRevision?.hyperopt
   const approvedRevisionMatchesScope = Boolean(
@@ -946,42 +951,62 @@ export function HyperoptPage() {
                 )}
               </div>
             </div>
-            <label className="field-block">
-              <span>Trailing stop loss</span>
-              <input
-                className="trailing-stop-checkbox"
-                type="checkbox"
-                checked={trailingStopLoss}
-                onChange={(event) => setTrailingStopLoss(event.target.checked)}
-              />
-              <small>
-                When enabled, Hyperopt evaluates a trailing stop using the selected stop distance. Approved trades use OANDA's native trailing-stop order; when disabled, the fixed stop loss remains in effect.
-              </small>
-            </label>
-            <label className="field-block">
-              <span>Include ROI in optimization</span>
-              <input
-                className="trailing-stop-checkbox"
-                type="checkbox"
-                checked={optimizeRoi}
-                onChange={(event) => setOptimizeRoi(event.target.checked)}
-              />
-              <small>
-                When enabled, Hyperopt searches ROI targets and includes the approved ROI schedule in Backtest and live trading. Disabled means ROI exits are off, regardless of the strategy default.
-              </small>
-            </label>
-            <label className="field-block">
-              <span>Use strategy exit signals</span>
-              <input
-                className="trailing-stop-checkbox"
-                type="checkbox"
-                checked={useExitSignal}
-                onChange={(event) => setUseExitSignal(event.target.checked)}
-              />
-              <small>
-                When enabled, signal-based and explicit strategy exits are evaluated. The approved setting overrides the strategy default in Backtest and live trading.
-              </small>
-            </label>
+            <section className="hyperopt-exit-options-group" aria-labelledby="hyperopt-exit-options-title">
+              <div className="hyperopt-exit-options-heading">
+                <span aria-hidden="true">🎛️</span>
+                <div>
+                  <h4 id="hyperopt-exit-options-title">Exit strategy &amp; objective</h4>
+                  <p>Choose which exit behavior and scoring goal Hyperopt should evaluate.</p>
+                </div>
+              </div>
+              <div className="hyperopt-exit-options-fields">
+                <label className="field-block">
+                  <span>Trailing stop loss</span>
+                  <input
+                    className="trailing-stop-checkbox"
+                    type="checkbox"
+                    checked={trailingStopLoss}
+                    onChange={(event) => setTrailingStopLoss(event.target.checked)}
+                  />
+                  <small>
+                    When enabled, Hyperopt evaluates a trailing stop using the selected stop distance. Approved trades use OANDA's native trailing-stop order; when disabled, the fixed stop loss remains in effect.
+                  </small>
+                </label>
+                <label className="field-block">
+                  <span>Include ROI in optimization</span>
+                  <input
+                    className="trailing-stop-checkbox"
+                    type="checkbox"
+                    checked={optimizeRoi}
+                    onChange={(event) => setOptimizeRoi(event.target.checked)}
+                  />
+                  <small>
+                    When enabled, Hyperopt searches ROI targets and includes the approved ROI schedule in Backtest and live trading. Disabled means ROI exits are off, regardless of the strategy default.
+                  </small>
+                </label>
+                <label className="field-block">
+                  <span>Use strategy exit signals</span>
+                  <input
+                    className="trailing-stop-checkbox"
+                    type="checkbox"
+                    checked={useExitSignal}
+                    onChange={(event) => setUseExitSignal(event.target.checked)}
+                  />
+                  <small>
+                    When enabled, signal-based and explicit strategy exits are evaluated. The approved setting overrides the strategy default in Backtest and live trading.
+                  </small>
+                </label>
+                <label className="field-block">
+                  <span>Objective</span>
+                  <select value={lossFunction} onChange={(event) => setLossFunction(event.target.value)}>
+                    {(lossFunctionsQuery.data?.options ?? [lossFunction]).map((item) => <option key={item}>{item}</option>)}
+                  </select>
+                  <small>
+                    Validation score = 0.6 × win-rate% + 8 × return% − 1.5 × drawdown% − 0.5 per missing trade below 10.
+                  </small>
+                </label>
+              </div>
+            </section>
             <section className="hyperopt-ema-condition-group" aria-labelledby="hyperopt-ema-condition-title">
               <div className="hyperopt-ema-condition-heading">
                 <div>
@@ -1044,49 +1069,55 @@ export function HyperoptPage() {
                 Select H1, H4, or D1 above the strategy timeframe, or disable the EMA condition.
               </p>
             )}
-            <label className="field-block">
-              <span>Attempts</span>
-              <input type="number" min="1" max="900" value={attempts} onChange={(event) => setAttempts(Number(event.target.value))} />
-            </label>
-            <label className="field-block">
-              <span>CPU worker processes</span>
-              <select value={selectedWorkers} onChange={(event) => setWorkers(Number(event.target.value))}>
-                {Array.from({ length: availableWorkers }, (_, index) => index + 1).map((count) => (
-                  <option key={count} value={count}>{count}</option>
-                ))}
-              </select>
-              <small>
-                Available to Hyperopt: {availableWorkers}. One CPU is reserved for live trading and the UI when possible; a single-CPU server can use one worker.
-              </small>
-            </label>
-            <label className="field-block">
-              <span>Objective</span>
-              <select value={lossFunction} onChange={(event) => setLossFunction(event.target.value)}>
-                {(lossFunctionsQuery.data?.options ?? [lossFunction]).map((item) => <option key={item}>{item}</option>)}
-              </select>
-              <small>
-                Validation score = 0.6 × win-rate% + 8 × return% − 1.5 × drawdown% − 0.5 per missing trade below 10.
-              </small>
-            </label>
           </div>
           {quoteQuery.error && <p role="alert">Could not load the default broker spread: {quoteQuery.error.message}</p>}
           {setupQuery.error && <p role="alert">Could not load the account risk default: {setupQuery.error.message}</p>}
-          {running && statusQuery.data && (
-            <p aria-live="polite">Progress: {statusQuery.data.attemptsCompleted} / {statusQuery.data.attemptsTotal} attempts</p>
-          )}
           {statusQuery.data?.error && <p role="alert">Hyperopt failed: {statusQuery.data.error}</p>}
           {hyperoptMutation.error && <p role="alert">Hyperopt request failed: {hyperoptMutation.error.message}</p>}
           {statusQuery.error && <p role="alert">Hyperopt status failed: {statusQuery.error.message}</p>}
           {stopMutation.error && <p role="alert">Stop request failed: {stopMutation.error.message}</p>}
           <div className="hyperopt-action-bar">
-            <div className="hyperopt-action-copy">
-              <strong>{running ? '🔄 Optimization in progress' : '🚀 Ready to optimize?'}</strong>
-              <small>
-                {running
-                  ? 'Stop the current run if you need to change course.'
-                  : 'Start a run with the selected settings, or stop an active run.'}
-              </small>
+            <div className="hyperopt-action-heading">
+              <div className="hyperopt-action-copy">
+                <strong>{running ? '🔄 Optimization in progress' : '🚀 Ready to optimize?'}</strong>
+                <small>
+                  {running
+                    ? 'Stop the current run if you need to change course.'
+                    : 'Choose the run size, then start or stop an optimization.'}
+                </small>
+              </div>
+              <div className="hyperopt-run-settings">
+                <label className="field-block">
+                  <span>🔁 Attempts</span>
+                  <input type="number" min="1" max="900" value={attempts} onChange={(event) => setAttempts(Number(event.target.value))} />
+                </label>
+                <label className="field-block">
+                  <span>🖥️ CPU worker processes</span>
+                  <select value={selectedWorkers} onChange={(event) => setWorkers(Number(event.target.value))}>
+                    {Array.from({ length: availableWorkers }, (_, index) => index + 1).map((count) => (
+                      <option key={count} value={count}>{count}</option>
+                    ))}
+                  </select>
+                  <small>
+                    {availableWorkers} available. One CPU is reserved for live trading and the UI when possible; a single-CPU server can use one worker.
+                  </small>
+                </label>
+              </div>
             </div>
+            {running && statusQuery.data && (
+              <div className="hyperopt-run-progress" aria-live="polite">
+                <div className="hyperopt-run-progress-label">
+                  <span>📊 Progress: {completedAttempts} / {totalAttempts} attempts</span>
+                  <strong>{Math.round(progressPercent)}%</strong>
+                </div>
+                <progress
+                  className="hyperopt-progress-bar"
+                  max="100"
+                  value={progressPercent}
+                  aria-label="Hyperopt attempts progress"
+                />
+              </div>
+            )}
             <div className="hyperopt-action-buttons">
               <button
                 className="primary-action hyperopt-start-action"
