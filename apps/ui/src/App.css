@@ -6100,11 +6100,24 @@
   font-size: 0.74rem;
 }
 
-.hyperopt-result-card-heading > button {
+.hyperopt-result-actions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.hyperopt-result-actions > button {
   flex: 0 0 auto;
   min-height: 38px;
   padding: 8px 12px;
   font-size: 0.75rem;
+}
+
+.hyperopt-result-delete {
+  border-color: rgba(248, 113, 113, 0.4);
+  color: #fecaca;
 }
 
 .hyperopt-result-badges {
@@ -6194,7 +6207,8 @@
     flex-direction: column;
   }
 
-  .hyperopt-result-card-heading > button {
+  .hyperopt-result-actions {
+    align-items: stretch;
     width: 100%;
   }
 

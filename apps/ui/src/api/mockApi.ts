@@ -532,6 +532,25 @@ export async function getHyperoptReports(pair: string, strategyClass: string, ti
   return response.json() as Promise<{ pair: string; reports: HyperoptReportHistoryEntry[] }>
 }
 
+export async function deleteHyperoptReport(payload: {
+  pair: string
+  strategyClass: string
+  timeframe: string
+  dataRevision: string
+}): Promise<{ pair: string; dataRevision: string; deleted: boolean }> {
+  const params = new URLSearchParams({
+    pair: payload.pair,
+    strategy_class: payload.strategyClass,
+    timeframe: payload.timeframe,
+    data_revision: payload.dataRevision,
+  })
+  const response = await fetch(buildApiUrl(`/api/v1/hyperopt/reports?${params.toString()}`), {
+    method: 'DELETE',
+  })
+  if (!response.ok) return throwApiError(response, 'Hyperopt result deletion rejected')
+  return response.json() as Promise<{ pair: string; dataRevision: string; deleted: boolean }>
+}
+
 export async function getHyperoptLossFunctions(): Promise<{ default: string; options: string[] }> {
   const response = await fetch(buildApiUrl('/api/v1/hyperopt/loss-functions'))
   if (!response.ok) return throwApiError(response, 'Hyperopt loss functions unavailable')

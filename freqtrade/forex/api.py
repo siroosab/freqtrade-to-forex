@@ -6228,6 +6228,53 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             ],
         }
 
+    @app.delete("/api/v1/hyperopt/reports")
+    async def delete_hyperopt_report(
+        pair: str = "EUR/USD",
+        strategy_class: str = "ForexMasterStrategy",
+        timeframe: str = "M15",
+        data_revision: str = "",
+        user_role: str | None = Header(default=None, alias="X-User-Role"),
+        csrf_token: str | None = Header(default=None, alias="X-CSRF-Token"),
+        session_token: str | None = Header(default=None, alias="X-Session-Token"),
+    ) -> dict:
+        validate_write_access(user_role, csrf_token, session_token)
+        if not data_revision:
+            raise HTTPException(status_code=400, detail="Hyperopt data revision is required")
+        normalized_pair = normalize_pair(pair)
+        scope_key = hyperopt_scope(normalized_pair, strategy_class, timeframe)
+        with AUTO_HYPEROPT_DB_LOCK:
+            report_row = revision_db.execute(
+                "SELECT 1 FROM strategy_hyperopt_history "
+                "WHERE scope = ? AND data_revision = ?",
+                (scope_key, data_revision),
+            ).fetchone()
+            if report_row is None:
+                raise HTTPException(status_code=404, detail="Hyperopt result was not found")
+            revision_db.execute(
+                "DELETE FROM strategy_hyperopt_history WHERE scope = ? AND data_revision = ?",
+                (scope_key, data_revision),
+            )
+            current_row = revision_db.execute(
+                "SELECT completed_at, report_json FROM strategy_hyperopt_reports WHERE scope = ?",
+                (scope_key,),
+            ).fetchone()
+            current_report_is_deleted = False
+            if current_row:
+                current_report = json.loads(current_row[1])
+                current_revision = str(current_report.get("dataRevision") or current_row[0])
+                if current_revision == data_revision:
+                    current_report_is_deleted = True
+                    revision_db.execute(
+                        "DELETE FROM strategy_hyperopt_reports WHERE scope = ?",
+                        (scope_key,),
+                    )
+            revision_db.commit()
+
+        if current_report_is_deleted:
+            HYPEROPT_REPORTS.pop(scope_key, None)
+        return {"pair": normalized_pair, "dataRevision": data_revision, "deleted": True}
+
     @app.get("/api/v1/strategy/review")
     async def strategy_review(
         pair: str = "EUR/USD",

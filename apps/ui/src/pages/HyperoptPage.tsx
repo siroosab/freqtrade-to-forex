@@ -2,6 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import {
   clearCandleCache,
+  deleteHyperoptReport,
   downloadCandleDateRange,
   getAutoHyperoptSchedule,
   getCandleCacheInventory,
@@ -298,6 +299,15 @@ export function HyperoptPage() {
       await Promise.all([
         reviewQuery.refetch(),
         reportsQuery.refetch(),
+      ])
+    },
+  })
+  const deleteReportMutation = useMutation({
+    mutationFn: deleteHyperoptReport,
+    onSuccess: async () => {
+      await Promise.all([
+        reportsQuery.refetch(),
+        reportQuery.refetch(),
       ])
     },
   })
@@ -1197,20 +1207,39 @@ export function HyperoptPage() {
                       <h4>{result.strategyClass ?? result.strategy} · {result.pair} · {result.timeframe}</h4>
                       <p>🗓️ {formatUtcDateTime(completedAt)} · {result.candidatesTested} candidates · {result.steps} candles</p>
                     </div>
-                    {result.status === 'completed' && (
+                    <div className="hyperopt-result-actions">
+                      {result.status === 'completed' && (
+                        <button
+                          className={isApproved ? 'secondary-action' : 'primary-action'}
+                          type="button"
+                          onClick={() => saveReview(result.dataRevision)}
+                          disabled={isApproved || !result.dataRevision || reviewMutation.isPending}
+                        >
+                          {reviewMutation.isPending
+                            ? '⏳ Saving…'
+                            : isApproved
+                              ? '✅ Active approved result'
+                              : '✅ Approve this result'}
+                        </button>
+                      )}
                       <button
-                        className={isApproved ? 'secondary-action' : 'primary-action'}
+                        className="secondary-action hyperopt-result-delete"
                         type="button"
-                        onClick={() => saveReview(result.dataRevision)}
-                        disabled={isApproved || !result.dataRevision || reviewMutation.isPending}
+                        onClick={() => {
+                          if (!window.confirm('Delete this Hyperopt result from history? This does not change the currently approved strategy.')) return
+                          deleteReportMutation.mutate({
+                            pair,
+                            strategyClass,
+                            timeframe,
+                            dataRevision: result.dataRevision,
+                          })
+                        }}
+                        disabled={!result.dataRevision || deleteReportMutation.isPending}
+                        aria-label={`Delete Hyperopt result ${result.strategyClass ?? result.strategy} ${result.pair} ${completedAt}`}
                       >
-                        {reviewMutation.isPending
-                          ? '⏳ Saving…'
-                          : isApproved
-                            ? '✅ Active approved result'
-                            : '✅ Approve this result'}
+                        {deleteReportMutation.isPending ? '⏳ Deleting…' : '🗑️ Delete result'}
                       </button>
-                    )}
+                    </div>
                   </div>
                   <div className="hyperopt-result-metrics">
                     <span>Validation P/L <strong>{result.validation.netPl}</strong></span>
@@ -1263,6 +1292,7 @@ export function HyperoptPage() {
           </div>
           {reviewQuery.error && <p role="alert">Approval status unavailable: {reviewQuery.error.message}</p>}
           {reviewMutation.error && <p role="alert">Could not approve Hyperopt result: {reviewMutation.error.message}</p>}
+          {deleteReportMutation.error && <p role="alert">Could not delete Hyperopt result: {deleteReportMutation.error.message}</p>}
         </div>
       </section>
     </>

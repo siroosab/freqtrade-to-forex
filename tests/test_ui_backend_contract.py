@@ -75,6 +75,65 @@ def test_auto_hyperopt_preserves_trigger_for_queue_started_today(tmp_path):
     assert restored_state["queue"]["startedAt"] == now.isoformat()
 
 
+def test_hyperopt_report_deletion_persists_and_removes_current_report(tmp_path):
+    database_path = tmp_path / "hyperopt-report-deletion.sqlite"
+    create_app(database_path)
+    scope = "EUR/USD|ForexMasterStrategy|M15"
+    report = {
+        "dataRevision": "revision-1",
+        "status": "completed",
+        "strategyClass": "ForexMasterStrategy",
+    }
+    with sqlite3.connect(database_path) as database:
+        database.execute(
+            "INSERT INTO strategy_hyperopt_reports(scope, completed_at, report_json) "
+            "VALUES (?, ?, ?)",
+            (scope, "2026-10-23T12:00:00+00:00", json.dumps(report)),
+        )
+        database.execute(
+            "INSERT INTO strategy_hyperopt_history(scope, data_revision, completed_at, report_json) "
+            "VALUES (?, ?, ?, ?)",
+            (scope, "revision-1", "2026-10-23T12:00:00+00:00", json.dumps(report)),
+        )
+
+    restored_app = create_app(database_path)
+    with TestClient(restored_app) as test_client:
+        headers = _auth_headers(test_client)
+        response = test_client.delete(
+            "/api/v1/hyperopt/reports"
+            "?pair=EUR%2FUSD&timeframe=M15&strategy_class=ForexMasterStrategy"
+            "&data_revision=revision-1",
+            headers=headers,
+        )
+        assert response.status_code == 200, response.text
+        assert response.json() == {
+            "pair": "EUR/USD",
+            "dataRevision": "revision-1",
+            "deleted": True,
+        }
+        history = test_client.get(
+            "/api/v1/hyperopt/reports"
+            "?pair=EUR%2FUSD&timeframe=M15&strategy_class=ForexMasterStrategy"
+        )
+        assert history.status_code == 200, history.text
+        assert history.json()["reports"] == []
+        current = test_client.get(
+            "/api/v1/hyperopt/report"
+            "?pair=EUR%2FUSD&timeframe=M15&strategy_class=ForexMasterStrategy"
+        )
+        assert current.status_code == 200, current.text
+        assert current.json()["available"] is False
+
+    reloaded_app = create_app(database_path)
+    with TestClient(reloaded_app) as test_client:
+        history = test_client.get(
+            "/api/v1/hyperopt/reports"
+            "?pair=EUR%2FUSD&timeframe=M15&strategy_class=ForexMasterStrategy"
+        )
+        assert history.status_code == 200, history.text
+        assert history.json()["reports"] == []
+
+
 def test_auto_hyperopt_approval_mode_defaults_to_automatic_and_persists(tmp_path):
     database_path = tmp_path / "auto-hyperopt-approval-mode.sqlite"
     schedule_app = create_app(database_path)
