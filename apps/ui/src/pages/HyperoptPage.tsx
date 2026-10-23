@@ -1192,6 +1192,16 @@ export function HyperoptPage() {
                     <div className="bullet-list">
                       <div><span>Best objective</span><strong>{result.objective}</strong></div>
                       <div><span>Best parameters</span><strong>{Object.entries(result.bestParameters).map(([key, value]) => `${key}: ${value}`).join(' · ') || 'No tunable parameters'}</strong></div>
+                      {result.emaTrendCondition?.enabled && (
+                        <div>
+                          <span>Best EMA trend condition</span>
+                          <strong>
+                            {result.emaTrendCondition.timeframe.toUpperCase()} · period {result.emaTrendCondition.timeperiod}
+                            {` · Long: low > EMA(high, ${result.emaTrendCondition.timeperiod})`}
+                            {` · Short: high < EMA(low, ${result.emaTrendCondition.timeperiod})`}
+                          </strong>
+                        </div>
+                      )}
                       {result.bestMinimalRoi && Object.keys(result.bestMinimalRoi).length > 0 && (
                         <div><span>Minimal ROI</span><strong>{Object.entries(result.bestMinimalRoi).map(([key, value]) => `${key}m: ${value}`).join(' · ')}</strong></div>
                       )}
@@ -1201,6 +1211,19 @@ export function HyperoptPage() {
                       <div><span>Trailing stop</span><strong>{result.trailingStopLoss ? 'Enabled' : 'Disabled'}</strong></div>
                       <div><span>ROI / exit signals</span><strong>ROI {result.optimizeRoi === false ? 'disabled' : 'enabled'} · exit signals {result.useExitSignal === false ? 'disabled' : 'enabled'}</strong></div>
                       <div><span>Best parameters by candidate</span><strong>{result.candidates.slice(0, 3).map((candidate) => `#${candidate.rank}: ${Object.entries(candidate.parameters).map(([key, value]) => `${key}=${value}`).join(', ')}`).join(' · ') || 'No candidate details'}</strong></div>
+                      {result.emaTrendCondition?.enabled && (
+                        <div>
+                          <span>EMA settings by top candidate</span>
+                          <strong>
+                            {result.candidates.slice(0, 3).map((candidate) => {
+                              const condition = candidate.emaTrendCondition
+                              return condition
+                                ? `#${candidate.rank}: ${condition.timeframe.toUpperCase()} EMA(high/low) ${condition.timeperiod}`
+                                : `#${candidate.rank}: EMA settings unavailable`
+                            }).join(' · ') || 'No candidate details'}
+                          </strong>
+                        </div>
+                      )}
                     </div>
                   </details>
                 </article>

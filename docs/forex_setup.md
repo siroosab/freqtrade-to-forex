@@ -167,7 +167,9 @@ used only after it has closed. The selected timeframe must be strictly higher
 than the strategy timeframe. The condition is evaluated during Manual and
 Scheduled Hyperopt; scheduled runs reuse the approved period. The chosen
 setting is saved with the manual result and applied to Backtest and runtime
-signals after approval. Previously approved revisions without this setting
+signals after approval. The expanded Hyperopt result shows the winning
+timeframe and period with both entry formulas, plus the EMA settings for the
+top-ranked candidates. Previously approved revisions without this setting
 retain their existing behavior until they are re-approved.
 
 Scheduled Hyperopt approval is configured in **Auto Hyperopt → Schedule**.
