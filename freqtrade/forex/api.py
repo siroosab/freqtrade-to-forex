@@ -18,6 +18,7 @@ import sys
 import threading
 from contextlib import suppress
 from contextvars import ContextVar
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from functools import partial
@@ -1045,7 +1046,15 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             raise ValueError("Complete and confirm the OANDA account in Setup first")
         if settings.environment.value not in {"practice", "live"}:
             raise ValueError("Setup must select the Practice or Live account")
-        instruments = tuple(settings.instruments)
+        pair_issues = automatic_execution_pair_issues(settings)
+        instruments = tuple(
+            instrument
+            for instrument in settings.instruments
+            if not pair_issues.get(instrument.replace("_", "/").upper())
+        )
+        if not instruments:
+            return []
+        settings = replace(settings, instruments=instruments)
         risk_configs = {
             instrument.replace("_", "/").upper(): dict(
                 effective_risk_config_for_pair(instrument.replace("_", "/"))
@@ -1076,21 +1085,19 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             )
             return await executor.run_cycle()
 
-    def automatic_execution_preflight_issues(
+    def automatic_execution_pair_issues(
         settings: OandaSettings,
-    ) -> list[str]:
+    ) -> dict[str, list[str]]:
         setup_path, _ = resolve_setup_paths()
         setup = load_forex_config(setup_path)
-        configured_pairs = set(settings.instruments)
         approved = setup.get("pair_approved_revisions", {})
         strategies = setup.get("pair_strategies", {})
         timeframes = setup.get("pair_timeframes", {})
-        preflight_issues: list[str] = []
-        if not configured_pairs:
-            preflight_issues.append("Configure at least one trading pair in Setup")
-        for instrument in configured_pairs:
+        pair_issues: dict[str, list[str]] = {}
+        for instrument in settings.instruments:
             pair_key = instrument.upper().replace("/", "_")
             pair = instrument.replace("_", "/").upper()
+            issues: list[str] = []
             revision = approved.get(pair_key) if isinstance(approved, dict) else None
             if (
                 not isinstance(revision, dict)
@@ -1103,12 +1110,12 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     str(timeframes.get(pair_key, "")) if isinstance(timeframes, dict) else ""
                 )
             ):
-                preflight_issues.append(
+                issues.append(
                     f"{pair} needs a current approved strategy revision"
                 )
             risk = effective_risk_config_for_pair(pair)
             if not risk.get("stopLoss"):
-                preflight_issues.append(
+                issues.append(
                     str(
                         risk.get("stopLossIssue")
                         or f"Configure a stop loss for {pair} in Risk controls"
@@ -1124,7 +1131,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                     or stop_loss_value <= 0
                     or risk.get("stopLossMode") not in {"price", "pips", "percent"}
                 ):
-                    preflight_issues.append(
+                    issues.append(
                         f"Configure a valid positive price, pips, or percent stop loss for {pair}"
                     )
             if str(risk.get("side", "NONE")).upper() not in {
@@ -1133,11 +1140,55 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "BOTH",
                 "NONE",
             }:
-                preflight_issues.append(
+                issues.append(
                     f"Configure an allowed entry side for {pair} in Risk controls"
                 )
             if not risk.get("maxExposure"):
-                preflight_issues.append(f"Configure maximum exposure for {pair}")
+                issues.append(f"Configure maximum exposure for {pair}")
+            pair_issues[pair] = issues
+        return pair_issues
+
+    def automatic_execution_pair_statuses(
+        settings: OandaSettings | None,
+        *,
+        enabled: bool,
+        worker_running: bool,
+    ) -> list[dict[str, object]]:
+        if settings is None:
+            return []
+        pair_issues = automatic_execution_pair_issues(settings)
+        statuses: list[dict[str, object]] = []
+        for instrument in settings.instruments:
+            pair = instrument.replace("_", "/").upper()
+            issues = pair_issues.get(pair, [])
+            is_ready = not issues
+            is_running = is_ready and enabled and worker_running
+            reasons = list(issues)
+            if is_ready and not enabled:
+                reasons.append("Automatic execution is disabled")
+            elif is_ready and enabled and not worker_running:
+                reasons.append("Automatic execution worker is not running")
+            statuses.append(
+                {
+                    "pair": pair,
+                    "ready": is_ready,
+                    "status": "running" if is_running else "stopped",
+                    "reasons": reasons,
+                }
+            )
+        return statuses
+
+    def automatic_execution_preflight_issues(
+        settings: OandaSettings,
+    ) -> list[str]:
+        preflight_issues: list[str] = []
+        pair_issues = automatic_execution_pair_issues(settings)
+        if not settings.instruments:
+            preflight_issues.append("Configure at least one trading pair in Setup")
+        elif not any(not issues for issues in pair_issues.values()):
+            preflight_issues.extend(
+                issue for issues in pair_issues.values() for issue in issues
+            )
 
         runtime_state_path = Path("user_data/oanda/runtime-state.json")
         if runtime_state_path.exists():
@@ -4311,6 +4362,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 task_error = task.exception()
                 if task_error is not None:
                     last_error = f"Automatic execution worker stopped: {task_error}"
+        settings: OandaSettings | None = None
         try:
             settings = OandaSettings.from_environment()
             environment = settings.environment.value
@@ -4324,6 +4376,11 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             "environment": environment,
             "lastCycleAt": state.get("lastCycleAt"),
             "lastError": last_error,
+            "pairStatuses": automatic_execution_pair_statuses(
+                settings,
+                enabled=state.get("enabled") is True,
+                worker_running=worker_running,
+            ),
             "results": state.get("results", []),
         }
 
@@ -4429,6 +4486,14 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             "environment": settings.environment.value if should_run_worker and settings else None,
             "lastCycleAt": state.get("lastCycleAt"),
             "lastError": state.get("lastError"),
+            "pairStatuses": automatic_execution_pair_statuses(
+                settings,
+                enabled=state.get("enabled") is True,
+                worker_running=(
+                    app.state.strategy_execution_task is not None
+                    and not app.state.strategy_execution_task.done()
+                ),
+            ),
             "results": state.get("results", []),
         }
 

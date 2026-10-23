@@ -126,8 +126,17 @@ export function DashboardPage() {
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ['strategy-auto-execution'] })
     },
+    onError: () => {
+      void queryClient.invalidateQueries({ queryKey: ['strategy-auto-execution'] })
+    },
   })
   const autoExecution = autoExecutionQuery.data
+  const pairStatuses = autoExecution?.pairStatuses ?? []
+  const runningPairCount = pairStatuses.filter((pair) => pair.status === 'running').length
+  const stoppedPairCount = pairStatuses.length - runningPairCount
+  const autoExecutionMutationError = autoExecutionMutation.error instanceof Error
+    ? autoExecutionMutation.error.message
+    : 'Automatic execution update rejected'
 
   const toggleAutoExecution = () => {
     const enable = !autoExecution?.enabled
@@ -741,34 +750,6 @@ export function DashboardPage() {
                   broker tradeability, and available depth are checked before entry.
                 </p>
               </div>
-              <div className="strategy-control-actions">
-                <button
-                  type="button"
-                  className={autoExecution?.enabled ? 'danger-action' : 'primary-action'}
-                  disabled={
-                    userRole === 'viewer' ||
-                    autoExecutionMutation.isPending ||
-                    autoExecutionQuery.isLoading ||
-                    autoExecutionQuery.isError
-                  }
-                  onClick={toggleAutoExecution}
-                >
-                  {autoExecutionMutation.isPending
-                    ? 'Updating…'
-                    : autoExecution?.enabled
-                      ? '⏹ Stop automation'
-                      : '▶ Enable automation'}
-                </button>
-                <button
-                  type="button"
-                  className={`secondary-action strategy-refresh-button ${autoExecutionQuery.isFetching ? 'is-refreshing' : ''}`}
-                  aria-label={autoExecutionQuery.isFetching ? 'Refreshing strategy status' : 'Refresh strategy status'}
-                  onClick={() => void autoExecutionQuery.refetch()}
-                >
-                  <span className="strategy-refresh-icon" aria-hidden="true">↻</span>
-                  <span>Refresh status</span>
-                </button>
-              </div>
               {autoExecutionQuery.isError && (
                 <small className="inline-error strategy-error" role="alert">
                   {autoExecutionQuery.error instanceof Error
@@ -778,9 +759,9 @@ export function DashboardPage() {
               )}
               {autoExecutionMutation.isError && (
                 <small className="inline-error strategy-error" role="alert">
-                  {autoExecutionMutation.error instanceof Error
-                    ? autoExecutionMutation.error.message
-                    : 'Automatic execution update rejected'}
+                  {autoExecutionMutationError.startsWith('Automatic execution was not started.')
+                    ? 'Automation was not started. Review the stopped pairs and their settings below.'
+                    : autoExecutionMutationError}
                 </small>
               )}
             </div>
@@ -808,14 +789,69 @@ export function DashboardPage() {
               </div>
             </div>
 
-            <div className={`strategy-error-message ${autoExecution?.lastError ? '' : 'is-empty'}`} aria-live="polite">
-              {autoExecution?.lastError && (
-                <>
-                  <strong>⚠️ Latest execution issue</strong>
-                  <span title={autoExecution.lastError}>{autoExecution.lastError}</span>
-                </>
-              )}
-            </div>
+            {autoExecution?.lastError
+              && !autoExecution.lastError.startsWith('Automatic execution was not started.') && (
+              <div className="strategy-worker-notice" role="status">
+                <strong>⚠️ Automation notice</strong>
+                <span>{autoExecution.lastError}</span>
+              </div>
+            )}
+
+            <section className="strategy-pair-status" aria-labelledby="strategy-pair-status-title">
+              <div className="strategy-section-heading">
+                <div>
+                  <strong id="strategy-pair-status-title">🧭 Pair execution status</strong>
+                  <small>Pairs with complete settings run independently; blocked pairs remain stopped.</small>
+                </div>
+                <span className="strategy-pair-counts">
+                  <span className="strategy-pair-count-running">🟢 {runningPairCount} running</span>
+                  <span className="strategy-pair-count-stopped">⏸️ {stoppedPairCount} stopped</span>
+                </span>
+              </div>
+              <div className="strategy-pair-status-list" aria-live="polite">
+                {pairStatuses.map((pair) => (
+                  <article
+                    className={`strategy-pair-row ${pair.status}`}
+                    key={pair.pair}
+                  >
+                    <div className="strategy-pair-heading">
+                      <strong>{pair.pair}</strong>
+                      <span className={`strategy-pair-badge ${pair.status}`}>
+                        {pair.status === 'running' ? '🟢 Running' : '⏸️ Stopped'}
+                      </span>
+                    </div>
+                    {pair.reasons.length > 0 && (
+                      <ul className="strategy-pair-reasons">
+                        {pair.reasons.map((reason) => {
+                          const normalizedReason = reason.toLowerCase()
+                          const category = normalizedReason.includes('strategy')
+                            ? 'strategy'
+                            : normalizedReason.includes('risk')
+                              || normalizedReason.includes('stop loss')
+                              || normalizedReason.includes('exposure')
+                              || normalizedReason.includes('entry side')
+                                ? 'risk'
+                                : 'setup'
+                          const icon = category === 'strategy' ? '🧠' : category === 'risk' ? '🛡️' : '⚙️'
+                          return (
+                            <li className={`strategy-pair-reason ${category}`} key={reason}>
+                              <span aria-hidden="true">{icon}</span>
+                              <span>{reason}</span>
+                            </li>
+                          )
+                        })}
+                      </ul>
+                    )}
+                  </article>
+                ))}
+                {!autoExecutionQuery.isLoading && !autoExecutionQuery.isError && pairStatuses.length === 0 && (
+                  <p className="strategy-empty-state">No configured pairs are available for status reporting.</p>
+                )}
+                {autoExecutionQuery.isLoading && (
+                  <p className="strategy-empty-state">Loading pair readiness…</p>
+                )}
+              </div>
+            </section>
 
             <section className="strategy-results" aria-labelledby="strategy-results-title">
               <div className="strategy-section-heading">
@@ -888,6 +924,34 @@ export function DashboardPage() {
                 <p className="strategy-empty-state">No strategy overview is available for the current market.</p>
               )}
             </section>
+            <div className="strategy-control-actions strategy-panel-actions">
+              <button
+                type="button"
+                className={autoExecution?.enabled ? 'danger-action' : 'primary-action'}
+                disabled={
+                  userRole === 'viewer' ||
+                  autoExecutionMutation.isPending ||
+                  autoExecutionQuery.isLoading ||
+                  autoExecutionQuery.isError
+                }
+                onClick={toggleAutoExecution}
+              >
+                {autoExecutionMutation.isPending
+                  ? 'Updating…'
+                  : autoExecution?.enabled
+                    ? '⏹ Stop automation'
+                    : '▶ Enable automation'}
+              </button>
+              <button
+                type="button"
+                className={`secondary-action strategy-refresh-button ${autoExecutionQuery.isFetching ? 'is-refreshing' : ''}`}
+                aria-label={autoExecutionQuery.isFetching ? 'Refreshing strategy status' : 'Refresh strategy status'}
+                onClick={() => void autoExecutionQuery.refetch()}
+              >
+                <span className="strategy-refresh-icon" aria-hidden="true">↻</span>
+                <span>Refresh status</span>
+              </button>
+            </div>
           </div>
         </div>
       </section>

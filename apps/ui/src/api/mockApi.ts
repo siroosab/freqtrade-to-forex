@@ -434,6 +434,13 @@ export type AutoExecutionResult = {
   clientOrderId?: string
 }
 
+export type AutoExecutionPairStatus = {
+  pair: string
+  ready: boolean
+  status: 'running' | 'stopped'
+  reasons: string[]
+}
+
 export type AutoExecutionStatus = {
   enabled: boolean
   pendingStart?: boolean
@@ -441,6 +448,7 @@ export type AutoExecutionStatus = {
   environment: string
   lastCycleAt?: string | null
   lastError?: string | null
+  pairStatuses: AutoExecutionPairStatus[]
   results: AutoExecutionResult[]
 }
 

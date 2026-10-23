@@ -1713,6 +1713,93 @@ def test_auto_execution_reports_missing_stop_loss_for_all_configured_pairs(
     assert "Configure a stop loss for GBP/USD in Risk controls" in detail
     assert status_after_rejection.json()["enabled"] is False
     assert status_after_rejection.json()["lastError"] == detail
+    assert [
+        (pair["pair"], pair["status"], pair["ready"])
+        for pair in status_after_rejection.json()["pairStatuses"]
+    ] == [
+        ("EUR/USD", "stopped", False),
+        ("GBP/USD", "stopped", False),
+    ]
+
+
+def test_auto_execution_runs_ready_pairs_while_stopping_unready_pairs(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OANDA_CONFIG_PATH", str(tmp_path / "config.json"))
+    monkeypatch.setenv("OANDA_AUTO_EXECUTION_STATE_PATH", str(tmp_path / "auto-execution.json"))
+    monkeypatch.setenv("OANDA_TOKEN", "test-token")
+    monkeypatch.setenv("OANDA_ACCOUNT_ID", "test-account")
+    monkeypatch.setenv("OANDA_ENVIRONMENT", "practice")
+    monkeypatch.setenv("OANDA_EXECUTION_MODE", "practice")
+    monkeypatch.setenv("OANDA_INSTRUMENTS", "EUR_USD,GBP_USD")
+    monkeypatch.setenv("OANDA_RISK_CONFIG_PATH", str(tmp_path / "risk-config.json"))
+    setup = {
+        "pair_strategies": {"EUR_USD": "TestStrategy", "GBP_USD": "TestStrategy"},
+        "pair_timeframes": {"EUR_USD": "5m", "GBP_USD": "5m"},
+        "pair_approved_revisions": {
+            "EUR_USD": {
+                "pair": "EUR/USD",
+                "strategyClass": "TestStrategy",
+                "timeframe": "5m",
+            },
+        },
+    }
+    (tmp_path / "config.json").write_text(json.dumps(setup), encoding="utf-8")
+    executed_instruments: list[tuple[str, ...]] = []
+
+    async def capture_execution_instruments(self):
+        executed_instruments.append(self.settings.instruments)
+        return []
+
+    monkeypatch.setattr(
+        "freqtrade.forex.api.OandaAutoStrategyExecutor.run_cycle",
+        capture_execution_instruments,
+    )
+
+    with TestClient(create_app(tmp_path / "api.sqlite")) as client:
+        risk_response = client.post(
+            "/api/v1/account/risk/config",
+            json={
+                "pair": "EUR/USD",
+                "side": "BOTH",
+                "maxExposure": "$10,000",
+                "maxExposureMode": "absolute",
+                "stopLoss": "10",
+                "stopLossMode": "pips",
+            },
+            headers=_auth_headers(client),
+        )
+        enable = client.post(
+            "/api/v1/strategy/auto-execution",
+            json={"enabled": True},
+            headers=_auth_headers(client),
+        )
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline and not executed_instruments:
+            time.sleep(0.01)
+        status = client.get("/api/v1/strategy/auto-execution").json()
+        client.post(
+            "/api/v1/strategy/auto-execution",
+            json={"enabled": False},
+            headers=_auth_headers(client),
+        )
+
+    assert risk_response.status_code == 200, risk_response.text
+    assert enable.status_code == 200, enable.text
+    assert executed_instruments
+    assert executed_instruments[0] == ("EUR_USD",)
+    assert [
+        (pair["pair"], pair["status"], pair["ready"])
+        for pair in status["pairStatuses"]
+    ] == [
+        ("EUR/USD", "running", True),
+        ("GBP/USD", "stopped", False),
+    ]
+    stopped_reasons = status["pairStatuses"][1]["reasons"]
+    assert any("approved strategy revision" in reason for reason in stopped_reasons)
+    assert any("stop loss" in reason.lower() for reason in stopped_reasons)
 
 
 def test_approved_hyperopt_stop_loss_is_risk_default_until_operator_override(
