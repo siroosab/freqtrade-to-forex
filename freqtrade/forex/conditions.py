@@ -8,12 +8,22 @@ import pandas as pd
 import talib.abstract as ta
 
 
-EMA_TREND_EMA_COUNT = 8
-EMA_TREND_TIMEFRAMES = {"H1": "1h", "1H": "1h", "1h": "1h", "H4": "4h", "4H": "4h", "4h": "4h"}
+EMA_TREND_TIMEPERIODS = (7, 9, 14, 19, 21, 37)
+EMA_TREND_TIMEFRAMES = {
+    "H1": "1h",
+    "1H": "1h",
+    "1h": "1h",
+    "H4": "4h",
+    "4H": "4h",
+    "4h": "4h",
+    "D1": "1d",
+    "1D": "1d",
+    "1d": "1d",
+}
 DEFAULT_EMA_TREND_CONDITION: dict[str, object] = {
     "enabled": True,
     "timeframe": "1h",
-    "timeperiod": 4,
+    "timeperiod": 7,
 }
 
 
@@ -30,18 +40,18 @@ def normalize_ema_trend_condition(settings: object | None) -> dict[str, object]:
 
     timeframe_value = settings.get("timeframe", DEFAULT_EMA_TREND_CONDITION["timeframe"])
     if not isinstance(timeframe_value, str):
-        raise ValueError("emaTrendCondition.timeframe must be H1 or H4")
+        raise ValueError("emaTrendCondition.timeframe must be H1, H4, or D1")
     timeframe = EMA_TREND_TIMEFRAMES.get(timeframe_value)
     if timeframe is None:
-        raise ValueError("emaTrendCondition.timeframe must be H1 or H4")
+        raise ValueError("emaTrendCondition.timeframe must be H1, H4, or D1")
 
     timeperiod = settings.get("timeperiod", DEFAULT_EMA_TREND_CONDITION["timeperiod"])
     if (
         not isinstance(timeperiod, Integral)
         or isinstance(timeperiod, bool)
-        or not 2 <= timeperiod <= 13
+        or not 2 <= timeperiod <= 37
     ):
-        raise ValueError("emaTrendCondition.timeperiod must be an integer from 2 to 13")
+        raise ValueError("emaTrendCondition.timeperiod must be an integer from 2 to 37")
 
     return {
         "enabled": enabled,
@@ -53,29 +63,8 @@ def normalize_ema_trend_condition(settings: object | None) -> dict[str, object]:
 def normalize_approved_ema_trend_condition(settings: object | None) -> dict[str, object]:
     """Keep pre-condition approvals behaviorally unchanged until they are re-approved."""
     if settings is None:
-        return {"enabled": False, "timeframe": "1h", "timeperiod": 4}
+        return {"enabled": False, "timeframe": "1h", "timeperiod": 7}
     return normalize_ema_trend_condition(settings)
-
-
-def add_ema_trend_indicators(dataframe: pd.DataFrame, *, timeperiod: int) -> pd.DataFrame:
-    """Add chained EMA columns from ``ema_x_2`` through ``ema_x_9``."""
-    if (
-        not isinstance(timeperiod, Integral)
-        or isinstance(timeperiod, bool)
-        or not 2 <= timeperiod <= 13
-    ):
-        raise ValueError("timeperiod must be an integer from 2 to 13")
-    if "close" not in dataframe:
-        raise ValueError("EMA trend candles must include a close column")
-
-    dataframe["ema_x_2"] = ta.EMA(dataframe["close"], timeperiod=2)
-    for index in range(1, EMA_TREND_EMA_COUNT):
-        column = f"ema_x_{index + 2}"
-        dataframe[column] = ta.EMA(
-            dataframe[f"ema_x_{index + 1}"],
-            timeperiod=int(timeperiod),
-        )
-    return dataframe
 
 
 def apply_ema_trend_condition(
@@ -86,31 +75,47 @@ def apply_ema_trend_condition(
     condition_timeframe: str,
     timeperiod: int,
 ) -> pd.DataFrame:
-    """Gate entries using higher-timeframe chained EMA 9 versus base-timeframe EMA 7."""
+    """Gate entries using completed higher-timeframe EMA bands."""
     from freqtrade.strategy.strategy_helper import merge_informative_pair
 
-    if "close" not in dataframe:
-        raise ValueError("EMA trend candles must include a close column")
+    required_base = {"date", "high", "low"}
+    missing_base = required_base - set(dataframe.columns)
+    if missing_base:
+        raise ValueError(
+            "EMA trend candles must include date, high, and low columns"
+        )
+    required_informative = {"date", "high", "low"}
+    missing_informative = required_informative - set(informative_candles.columns)
+    if missing_informative:
+        raise ValueError(
+            "EMA trend informative candles must include date, high, and low columns"
+        )
+    if (
+        not isinstance(timeperiod, Integral)
+        or isinstance(timeperiod, bool)
+        or not 2 <= timeperiod <= 37
+    ):
+        raise ValueError("timeperiod must be an integer from 2 to 37")
 
-    base_frame = dataframe.copy()
-    base_frame["ema_7"] = ta.EMA(base_frame["close"], timeperiod=7)
-    ema_frame = add_ema_trend_indicators(informative_candles.copy(), timeperiod=timeperiod)
+    ema_frame = informative_candles.loc[:, ["date", "high", "low"]].copy()
+    ema_frame["ema_high"] = ta.EMA(ema_frame["high"], timeperiod=int(timeperiod))
+    ema_frame["ema_low"] = ta.EMA(ema_frame["low"], timeperiod=int(timeperiod))
     result = merge_informative_pair(
-        base_frame,
-        ema_frame.loc[:, ["date", "ema_x_9"]],
+        dataframe.copy(),
+        ema_frame.loc[:, ["date", "ema_high", "ema_low"]],
         base_timeframe,
         condition_timeframe,
         ffill=True,
     )
     suffix = condition_timeframe.lower()
-    higher_timeframe_ema = result[f"ema_x_9_{suffix}"]
-    base_timeframe_ema = result["ema_7"]
+    higher_timeframe_ema_high = result[f"ema_high_{suffix}"]
+    higher_timeframe_ema_low = result[f"ema_low_{suffix}"]
     if "enter_long" in result:
         result["enter_long"] = result["enter_long"].fillna(False).astype(bool) & (
-            base_timeframe_ema > higher_timeframe_ema
+            result["low"] > higher_timeframe_ema_high
         )
     if "enter_short" in result:
         result["enter_short"] = result["enter_short"].fillna(False).astype(bool) & (
-            base_timeframe_ema < higher_timeframe_ema
+            result["high"] < higher_timeframe_ema_low
         )
     return result

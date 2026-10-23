@@ -16,6 +16,7 @@ from rich.table import Table
 
 from freqtrade.forex.backtest import ForexBacktester
 from freqtrade.forex.conditions import (
+    EMA_TREND_TIMEPERIODS,
     normalize_approved_ema_trend_condition,
     normalize_ema_trend_condition,
 )
@@ -149,8 +150,10 @@ def build_parser() -> argparse.ArgumentParser:
     backtest.add_argument("--slippage", type=Decimal, default=Decimal("0"))
     backtest.add_argument("--financing-rate-per-day", type=Decimal, default=Decimal("0"))
     backtest.add_argument("--disable-ema-trend-condition", action="store_true")
-    backtest.add_argument("--ema-trend-timeframe", choices=("H1", "H4"), default="H1")
-    backtest.add_argument("--ema-trend-timeperiod", type=int, choices=range(2, 14), default=4)
+    backtest.add_argument("--ema-trend-timeframe", choices=("H1", "H4", "D1"), default="H1")
+    backtest.add_argument(
+        "--ema-trend-timeperiod", type=int, choices=EMA_TREND_TIMEPERIODS, default=7
+    )
     hyperopt = subparsers.add_parser(
         "hyperopt", help="Optimize a Freqtrade strategy's declared parameters"
     )
@@ -177,8 +180,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Freqtrade strategy class whose declared parameters should be optimized",
     )
     hyperopt.add_argument("--disable-ema-trend-condition", action="store_true")
-    hyperopt.add_argument("--ema-trend-timeframe", choices=("H1", "H4"), default="H1")
-    hyperopt.add_argument("--ema-trend-timeperiod", type=int, choices=range(2, 14), default=4)
+    hyperopt.add_argument("--ema-trend-timeframe", choices=("H1", "H4", "D1"), default="H1")
+    hyperopt.add_argument(
+        "--ema-trend-timeperiod", type=int, choices=EMA_TREND_TIMEPERIODS, default=7
+    )
     hyperopt.add_argument(
         "--hyperopt-loss", choices=HYPEROPT_LOSS_FUNCTIONS, default=DEFAULT_HYPEROPT_LOSS
     )
@@ -735,7 +740,7 @@ async def run_backtest(settings: OandaSettings, args: argparse.Namespace) -> int
                 {
                     "enabled": not getattr(args, "disable_ema_trend_condition", False),
                     "timeframe": getattr(args, "ema_trend_timeframe", "H1"),
-                    "timeperiod": getattr(args, "ema_trend_timeperiod", 4),
+                    "timeperiod": getattr(args, "ema_trend_timeperiod", 7),
                 }
             )
             timeframe = freqtrade_timeframe(args.timeframe)
@@ -896,7 +901,7 @@ async def run_hyperopt(settings: OandaSettings, args: argparse.Namespace) -> int
             {
                 "enabled": not getattr(args, "disable_ema_trend_condition", False),
                 "timeframe": getattr(args, "ema_trend_timeframe", "H1"),
-                "timeperiod": getattr(args, "ema_trend_timeperiod", 4),
+                "timeperiod": getattr(args, "ema_trend_timeperiod", 7),
             }
         )
         informative_candles = await _fetch_strategy_informative_candles(

@@ -33,6 +33,7 @@ from fastapi.responses import FileResponse, HTMLResponse, Response
 from freqtrade.forex.auto_execution import OandaAutoStrategyExecutor
 from freqtrade.forex.backtest import ForexBacktester
 from freqtrade.forex.conditions import (
+    EMA_TREND_TIMEPERIODS,
     normalize_approved_ema_trend_condition,
     normalize_ema_trend_condition,
 )
@@ -5819,7 +5820,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    "EMA chain timeperiod can only be optimized when the EMA trend condition "
+                    "EMA timeperiod can only be optimized when the EMA trend condition "
                     "is enabled"
                 ),
             )
@@ -5990,7 +5991,10 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                             informative_timeframe,
                             len(candles),
                             (
-                                {**ema_trend_condition, "timeperiod": 13}
+                                {
+                                    **ema_trend_condition,
+                                    "timeperiod": max(EMA_TREND_TIMEPERIODS),
+                                }
                                 if optimize_ema_trend_timeperiod
                                 and informative_timeframe == ema_trend_condition["timeframe"]
                                 else ema_trend_condition

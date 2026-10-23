@@ -151,21 +151,24 @@ Freqtrade parameters; custom strategies without optimizable parameters are
 rejected. Approval, reports, and scheduled Hyperopt retain their pair, class,
 and timeframe scope.
 
-The Manual Hyperopt panel also includes a global EMA trend condition, enabled
-by default and independent of strategy source code. Choose H1 or H4 and either
-a fixed EMA `timeperiod` from 2 through 13 or **Automatic** in Manual Hyperopt.
-Automatic mode cycles through all 12 periods in randomized order; runs with at
-least 12 attempts evaluate every period and select the best-performing value.
-The condition builds the chained `ema_x_2` through `ema_x_9` series without the
-`count_hi` or `count_low` columns, then permits long entries only when EMA 7
-calculated from the strategy timeframe's candles is above the selected
-higher-timeframe `ema_x_9`, and short entries only when it is below. The
-selected timeframe must be strictly higher than the strategy timeframe. The
-condition is evaluated during Manual and Scheduled Hyperopt; scheduled runs
-reuse the approved period. The chosen setting is saved with the manual result
-and applied to Backtest and runtime signals after approval. Previously
-approved revisions without this setting retain their existing behavior until
-they are re-approved.
+The Manual Hyperopt panel also includes a global EMA higher-timeframe condition,
+enabled by default and independent of strategy source code. Choose H1, H4, or
+D1 and a fixed EMA `timeperiod` of 7, 9, 14, 19, 21, or 37, or choose
+**Automatic** in Manual Hyperopt. Automatic mode tests those six periods in
+randomized order; runs with at least six attempts evaluate every period and
+select the best-performing value.
+
+The condition calculates EMA of the higher-timeframe `high` and `low`. It
+permits a long entry only when the strategy-timeframe candle's `low` is above
+the higher-timeframe EMA of `high`, and a short entry only when the strategy
+candle's `high` is below the higher-timeframe EMA of `low`. Higher-timeframe
+candles are merged with Freqtrade's informative-pair alignment, so a candle is
+used only after it has closed. The selected timeframe must be strictly higher
+than the strategy timeframe. The condition is evaluated during Manual and
+Scheduled Hyperopt; scheduled runs reuse the approved period. The chosen
+setting is saved with the manual result and applied to Backtest and runtime
+signals after approval. Previously approved revisions without this setting
+retain their existing behavior until they are re-approved.
 
 Scheduled Hyperopt approval is configured in **Auto Hyperopt → Schedule**.
 Successful scheduled results are automatically approved by default. Select

@@ -15,7 +15,10 @@ import pandas as pd
 from joblib import cpu_count
 
 from freqtrade.forex.backtest import BacktestResult, ForexBacktester
-from freqtrade.forex.conditions import normalize_ema_trend_condition
+from freqtrade.forex.conditions import (
+    EMA_TREND_TIMEPERIODS,
+    normalize_ema_trend_condition,
+)
 from freqtrade.forex.models import OandaInstrument
 from freqtrade.forex.strategy_execution import (
     FreqtradeStrategyAdapter,
@@ -731,7 +734,7 @@ def run_strategy_hyperopt(
     condition_settings = (
         normalize_ema_trend_condition(ema_trend_condition)
         if ema_trend_condition is not None
-        else {"enabled": False, "timeframe": "1h", "timeperiod": 4}
+        else {"enabled": False, "timeframe": "1h", "timeperiod": 7}
     )
     optimize_ema_trend_timeperiod = (
         optimize_ema_trend_timeperiod and condition_settings["enabled"] is True
@@ -770,7 +773,7 @@ def run_strategy_hyperopt(
     train = candles.iloc[:split_index]
     validation = candles.iloc[split_index:]
     rng = random.Random()  # noqa: S311
-    ema_timeperiods = list(range(2, 14)) if optimize_ema_trend_timeperiod else []
+    ema_timeperiods = list(EMA_TREND_TIMEPERIODS) if optimize_ema_trend_timeperiod else []
     if ema_timeperiods:
         rng.shuffle(ema_timeperiods)
     worker_context = _HyperoptWorkerContext(

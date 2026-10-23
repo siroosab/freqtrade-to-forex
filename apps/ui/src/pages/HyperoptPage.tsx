@@ -22,6 +22,7 @@ import {
 import { useUiStore } from '../store/useUiStore'
 
 const TIMEFRAMES = ['M1', 'M5', 'M15', 'M30', 'H1', 'H2', 'H4', 'H6', 'H8', 'H12', 'D1', 'W1', 'MN1']
+const EMA_TREND_TIMEPERIODS = [7, 9, 14, 19, 21, 37]
 
 function describePair(quote: {
   pair: string
@@ -140,8 +141,8 @@ export function HyperoptPage() {
   const [optimizeRoi, setOptimizeRoi] = useState(true)
   const [useExitSignal, setUseExitSignal] = useState(true)
   const [emaTrendEnabled, setEmaTrendEnabled] = useState(true)
-  const [emaTrendTimeframe, setEmaTrendTimeframe] = useState<'1h' | '4h'>('1h')
-  const [emaTrendTimeperiod, setEmaTrendTimeperiod] = useState(4)
+  const [emaTrendTimeframe, setEmaTrendTimeframe] = useState<'1h' | '4h' | '1d'>('1h')
+  const [emaTrendTimeperiod, setEmaTrendTimeperiod] = useState(7)
   const [emaTrendTimeperiodMode, setEmaTrendTimeperiodMode] = useState<'fixed' | 'automatic'>('fixed')
   const [stopLossPips, setStopLossPips] = useState('25')
   const [backtestStopLossPipsOverride, setBacktestStopLossPipsOverride] = useState<{
@@ -254,7 +255,11 @@ export function HyperoptPage() {
     if (!condition) return
     setEmaTrendEnabled(condition.enabled)
     setEmaTrendTimeframe(condition.timeframe)
-    setEmaTrendTimeperiod(condition.timeperiod)
+    setEmaTrendTimeperiod(
+      EMA_TREND_TIMEPERIODS.includes(condition.timeperiod)
+        ? condition.timeperiod
+        : 7,
+    )
     setEmaTrendTimeperiodMode(runSettings?.emaTrendTimeperiodMode === 'automatic' ? 'automatic' : 'fixed')
   }, [pair, reviewQuery.data?.approvedRevision, strategyClass, timeframe])
   const backtestQuery = useQuery({
@@ -977,60 +982,66 @@ export function HyperoptPage() {
                 When enabled, signal-based and explicit strategy exits are evaluated. The approved setting overrides the strategy default in Backtest and live trading.
               </small>
             </label>
-            <label className="field-block">
-              <span>EMA higher-timeframe trend condition</span>
-              <input
-                className="trailing-stop-checkbox"
-                type="checkbox"
-                checked={emaTrendEnabled}
-                onChange={(event) => setEmaTrendEnabled(event.target.checked)}
-              />
-              <small>
-                Enabled by default. Long entries require EMA 7 on the strategy timeframe above the selected higher-timeframe chained EMA 9; short entries require EMA 7 below it. This global condition does not require edits to the strategy.
-              </small>
-            </label>
-            {emaTrendEnabled && (
-              <>
-                <label className="field-block">
-                  <span>EMA trend timeframe</span>
-                  <select
-                    value={emaTrendTimeframe}
-                    onChange={(event) => setEmaTrendTimeframe(event.target.value as '1h' | '4h')}
-                  >
-                    <option value="1h">1 hour (H1)</option>
-                    <option value="4h">4 hours (H4)</option>
-                  </select>
-                  <small>The condition timeframe must be higher than the strategy timeframe.</small>
+            <section className="hyperopt-ema-condition-group" aria-labelledby="hyperopt-ema-condition-title">
+              <div className="hyperopt-ema-condition-heading">
+                <div>
+                  <h4 id="hyperopt-ema-condition-title">📈 EMA higher-timeframe trend condition</h4>
+                  <p>Filter strategy entries using the completed higher-timeframe candle data.</p>
+                </div>
+                <label className="hyperopt-ema-condition-toggle">
+                  <span>Enable filter</span>
+                  <input
+                    className="trailing-stop-checkbox"
+                    type="checkbox"
+                    checked={emaTrendEnabled}
+                    onChange={(event) => setEmaTrendEnabled(event.target.checked)}
+                  />
                 </label>
-                <label className="field-block">
-                  <span>🔗 EMA chain timeperiod</span>
-                  <select
-                    value={emaTrendTimeperiodMode === 'automatic' ? 'automatic' : String(emaTrendTimeperiod)}
-                    onChange={(event) => {
-                      if (event.target.value === 'automatic') {
-                        setEmaTrendTimeperiodMode('automatic')
-                      } else {
-                        setEmaTrendTimeperiodMode('fixed')
-                        setEmaTrendTimeperiod(Number(event.target.value))
-                      }
-                    }}
-                  >
-                    <option value="automatic">✨ Automatic — optimize with Hyperopt</option>
-                    {Array.from({ length: 12 }, (_, index) => index + 2).map((period) => (
-                      <option key={period} value={period}>{period}</option>
-                    ))}
-                  </select>
-                  <small>
-                    {emaTrendTimeperiodMode === 'automatic'
-                      ? 'Hyperopt cycles through periods 2–13; 12 or more attempts test every value and select the best-performing higher-timeframe EMA chain period.'
-                      : 'Fixed for this run. It controls the higher-timeframe EMA chain ending at ema_x_9; EMA 7 uses strategy-timeframe candles.'}
-                  </small>
-                </label>
-              </>
-            )}
+              </div>
+              {emaTrendEnabled && (
+                <div className="hyperopt-ema-condition-fields">
+                  <label className="field-block">
+                    <span>EMA trend timeframe</span>
+                    <select
+                      value={emaTrendTimeframe}
+                      onChange={(event) => setEmaTrendTimeframe(event.target.value as '1h' | '4h' | '1d')}
+                    >
+                      <option value="1h">1 hour (H1)</option>
+                      <option value="4h">4 hours (H4)</option>
+                      <option value="1d">1 day (D1)</option>
+                    </select>
+                    <small>The condition timeframe must be higher than the strategy timeframe.</small>
+                  </label>
+                  <label className="field-block">
+                    <span>🔗 EMA timeperiod</span>
+                    <select
+                      value={emaTrendTimeperiodMode === 'automatic' ? 'automatic' : String(emaTrendTimeperiod)}
+                      onChange={(event) => {
+                        if (event.target.value === 'automatic') {
+                          setEmaTrendTimeperiodMode('automatic')
+                        } else {
+                          setEmaTrendTimeperiodMode('fixed')
+                          setEmaTrendTimeperiod(Number(event.target.value))
+                        }
+                      }}
+                    >
+                      <option value="automatic">✨ Automatic — optimize with Hyperopt</option>
+                      {EMA_TREND_TIMEPERIODS.map((period) => (
+                        <option key={period} value={period}>{period}</option>
+                      ))}
+                    </select>
+                    <small>
+                      {emaTrendTimeperiodMode === 'automatic'
+                        ? 'Hyperopt tests periods 7, 9, 14, 19, 21, and 37 in randomized order; six or more attempts test every value and select the best-performing EMA period.'
+                        : 'Long entries require main-timeframe low above EMA(high, period); shorts require main-timeframe high below EMA(low, period).'}
+                    </small>
+                  </label>
+                </div>
+              )}
+            </section>
             {!emaTrendTimeframeValid && (
               <p className="field-block" role="alert">
-                Select H1 or H4 above the strategy timeframe, or disable the EMA condition.
+                Select H1, H4, or D1 above the strategy timeframe, or disable the EMA condition.
               </p>
             )}
             <label className="field-block">

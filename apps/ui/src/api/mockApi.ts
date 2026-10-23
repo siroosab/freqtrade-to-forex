@@ -189,7 +189,7 @@ export type StrategyReview = {
 
 export type EmaTrendConditionSettings = {
   enabled: boolean
-  timeframe: '1h' | '4h'
+  timeframe: '1h' | '4h' | '1d'
   timeperiod: number
 }
 

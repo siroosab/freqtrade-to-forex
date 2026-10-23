@@ -16,7 +16,6 @@ import pandas as pd
 
 from freqtrade.enums import CandleType, RunMode
 from freqtrade.forex.conditions import (
-    EMA_TREND_EMA_COUNT,
     apply_ema_trend_condition,
     normalize_ema_trend_condition,
 )
@@ -213,9 +212,7 @@ def strategy_informative_candle_count(
         ) == timeframe_to_minutes(str(condition["timeframe"])):
             warmup_candles = max(
                 warmup_candles,
-                2
-                + (EMA_TREND_EMA_COUNT - 1) * (int(condition["timeperiod"]) - 1)
-                + 5,
+                int(condition["timeperiod"]) + 5,
             )
     return max(10, covered_candles + 5, warmup_candles)
 
@@ -240,7 +237,7 @@ class FreqtradeStrategyAdapter:
         self.ema_trend_condition = (
             normalize_ema_trend_condition(ema_trend_condition)
             if ema_trend_condition is not None
-            else {"enabled": False, "timeframe": "1h", "timeperiod": 4}
+            else {"enabled": False, "timeframe": "1h", "timeperiod": 7}
         )
         strategy_required_informative_timeframes(
             strategy, pair, self.ema_trend_condition

@@ -299,7 +299,7 @@ def test_precomputed_ema_backtest_matches_prefix_only_signals() -> None:
             )
 
 
-def test_hyperopt_automatically_searches_ema_chain_timeperiods(
+def test_hyperopt_automatically_searches_allowed_ema_timeperiods(
     tmp_path,
     monkeypatch,
 ) -> None:
@@ -393,9 +393,9 @@ class EmaConditionStrategy(IStrategy):
         optimize_ema_trend_timeperiod=True,
     )
 
-    assert set(tested_periods) == set(range(2, 14))
+    assert set(tested_periods) == {7, 9, 14, 19, 21, 37}
     assert {candidate["emaTrendCondition"]["timeperiod"] for candidate in candidates} == set(
-        range(2, 14)
+        (7, 9, 14, 19, 21, 37)
     )
 
 
