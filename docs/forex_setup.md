@@ -134,6 +134,29 @@ place and the failure is reported. Dashboard **Trade monitor** labels fixed
 and trailing protection separately, shows the active stop and trailing gap,
 and displays the latest broker-data sync time.
 
+### Dashboard trailing recovery
+
+For a losing position, **Trade monitor → Close → Try 15-minute trailing
+recovery** is enabled by default. It records the executable-side broker price
+and P/L at selection, including the broker quote timestamp. If the weekly FX
+market is closed, it waits for the scheduled New York market open; after that,
+it also waits until the specific instrument reports `tradeable` before placing
+a broker-native trailing stop or starting the timer. Thus a closed market or
+inactive pair does not consume the 10- or 15-minute monitoring window.
+
+The timer counts only intervals when both the FX session is scheduled open and
+the selected instrument is tradeable; it pauses again if either condition
+stops being true. At 10 active minutes, the position is closed unless P/L is
+better than at activation and has also improved over the most recent active
+minute. A clearly improving position gets five more active minutes of
+trailing-distance tightening; afterward, the broker-hosted trailing stop
+remains active. The Trade monitor's **Close** column compares the current or
+final executable price and P/L with the values recorded when recovery was
+selected, marking whether the exit price improved, worsened, or stayed
+unchanged. This comparison is informational and cannot guarantee a better
+execution price. Manual dashboard positions are Practice-only; a Live
+automatic position requires an administrator to start recovery.
+
 ## Pair strategies and research runs
 
 In Setup, assign each configured pair its own candle timeframe and strategy

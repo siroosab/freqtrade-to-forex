@@ -92,6 +92,31 @@ def _is_trailing_recovery_improving(
     return current_pnl > initial_pnl and current_pnl > minute_ago_pnl
 
 
+def _trailing_recovery_price_result(
+    side: str,
+    selection_price: Decimal,
+    current_price: Decimal,
+    selection_pnl: Decimal,
+    current_pnl: Decimal,
+) -> dict[str, str | bool | None]:
+    price_change = current_price - selection_price
+    favorable = (
+        None
+        if price_change == 0
+        else price_change > 0
+        if side == "BUY"
+        else price_change < 0
+    )
+    row = {
+        "selectionPrice": str(selection_price),
+        "currentPrice": str(current_price),
+        "priceChange": str(price_change),
+        "priceImproved": favorable,
+        "pnlChange": str(current_pnl - selection_pnl),
+    }
+    return row
+
+
 def _parse_hyperopt_workers(value: object) -> int:
     available_workers = hyperopt_worker_limit()
     if (
@@ -1721,7 +1746,7 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             if stop_loss
             else "none"
         )
-        return {
+        row = {
             "id": str(trade.get("id", "")),
             "symbol": normalize_pair(instrument),
             "side": side,
@@ -1737,9 +1762,6 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             "takeProfit": str(take_profit.get("price", "")) or None,
             "pnl": str(trade.get("realizedPL" if closed else "unrealizedPL", "0")),
             "financing": str(trade.get("financing") or "0"),
-            "trailingRecovery": app.state.trailing_recovery_status.get(
-                str(trade.get("id", ""))
-            ),
             "openedAt": trade.get("openTime"),
             "closedAt": trade.get("closeTime") if closed else None,
             "status": "closed" if closed else "open",
@@ -1747,6 +1769,41 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             "source": source,
             "clientOrderId": client_order_id or None,
         }
+        recovery = app.state.trailing_recovery_status.get(str(trade.get("id", "")))
+        if recovery is not None:
+            recovery_view = dict(recovery)
+            reference_price = Decimal(str(recovery["selectionPrice"]))
+            current_recovery_price = (
+                Decimal(str(recovery["fillPrice"]))
+                if closed
+                and recovery.get("fillPrice") is not None
+                else Decimal(str(current_price))
+                if current_price is not None
+                else Decimal(str(trade["averageClosePrice"]))
+                if closed and trade.get("averageClosePrice") is not None
+                else None
+            )
+            current_recovery_pnl = Decimal(
+                str(trade.get("realizedPL" if closed else "unrealizedPL", "0"))
+            )
+            if current_recovery_price is not None:
+                recovery_view.update(
+                    _trailing_recovery_price_result(
+                        side,
+                        reference_price,
+                        current_recovery_price,
+                        Decimal(str(recovery["selectionPnl"])),
+                        current_recovery_pnl,
+                    )
+                )
+            else:
+                recovery_view["priceChange"] = None
+                recovery_view["priceImproved"] = None
+                recovery_view["pnlChange"] = str(
+                    current_recovery_pnl - Decimal(str(recovery["selectionPnl"]))
+                )
+            row["trailingRecovery"] = recovery_view
+        return row
 
     async def broker_trade_rows(client: OandaClient) -> tuple[list[dict], list[dict]]:
         open_trades = await client.get_open_trades()
@@ -3508,24 +3565,50 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
     async def run_trailing_recovery(
         trade_id: str,
         instrument: str,
-        initial_pnl: Decimal,
-        initial_distance: Decimal,
+        selection_price: Decimal,
+        selection_pnl: Decimal,
         pip_size: Decimal,
         minimum_distance: Decimal,
     ) -> None:
-        started_at = datetime.now(UTC)
-        samples: list[tuple[datetime, Decimal]] = [(started_at, initial_pnl)]
-        current_distance = initial_distance
+        started_at: datetime | None = None
+        active_seconds = 0.0
+        last_active_at: datetime | None = None
+        samples: list[tuple[float, Decimal]] = []
+        current_distance: Decimal | None = None
         status = app.state.trailing_recovery_status[trade_id]
+        first_iteration = True
         try:
             settings = OandaSettings.from_environment()
             async with OandaClient(
                 settings.token, settings.account_id, environment=settings.environment
             ) as client:
                 while True:
-                    await asyncio.sleep(TRAILING_RECOVERY_SAMPLE_INTERVAL_SECONDS)
+                    if not first_iteration:
+                        await asyncio.sleep(TRAILING_RECOVERY_SAMPLE_INTERVAL_SECONDS)
+                    first_iteration = False
                     now = datetime.now(UTC)
-                    elapsed = (now - started_at).total_seconds()
+                    schedule = market_schedule(now)
+                    if not schedule["scheduledOpen"]:
+                        status.update(
+                            {
+                                "status": "waiting_market",
+                                "message": (
+                                    "Waiting for the scheduled FX market open; "
+                                    "recovery timer is paused."
+                                ),
+                                "nextMarketOpenAt": schedule["nextTransitionAt"],
+                            }
+                        )
+                        last_active_at = None
+                        next_open = datetime.fromisoformat(
+                            str(schedule["nextTransitionAt"])
+                        )
+                        await asyncio.sleep(
+                            max(0.0, (next_open - now).total_seconds())
+                        )
+                        first_iteration = True
+                        continue
+
                     open_trades = await client.get_open_trades()
                     trade = next(
                         (item for item in open_trades if str(item.get("id")) == trade_id),
@@ -3538,17 +3621,89 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                         return
 
                     current_pnl = Decimal(str(trade.get("unrealizedPL", "0")))
-                    samples.append((now, current_pnl))
                     prices = await client.get_prices((instrument,))
                     if not prices:
-                        raise OandaAPIError(
-                            f"OANDA returned no current price for {instrument}"
+                        status.update(
+                            {
+                                "status": "waiting_pair",
+                                "message": (
+                                    f"Waiting for a live {instrument} quote; "
+                                    "recovery timer is paused."
+                                ),
+                            }
                         )
+                        last_active_at = None
+                        continue
                     quote = prices[0]
                     units = Decimal(str(trade.get("currentUnits", "0")))
                     current_price = quote.bid if units > 0 else quote.ask
+                    status.update(
+                        _trailing_recovery_price_result(
+                            "BUY" if units > 0 else "SELL",
+                            selection_price,
+                            current_price,
+                            selection_pnl,
+                            current_pnl,
+                        )
+                    )
+                    if not quote.tradeable:
+                        status.update(
+                            {
+                                "status": "waiting_pair",
+                                "message": (
+                                    f"Waiting for {instrument} to become tradeable; "
+                                    "recovery timer is paused."
+                                ),
+                            }
+                        )
+                        last_active_at = None
+                        continue
+
                     entry_price = Decimal(str(trade.get("price", "0")))
                     loss_distance = abs(entry_price - current_price)
+                    if started_at is None:
+                        current_distance = max(
+                            minimum_distance,
+                            pip_size,
+                            quote.spread * Decimal(3),
+                        )
+                        await client.modify_trade_orders(
+                            trade_id,
+                            trailing_stop_loss_distance=str(current_distance),
+                            instrument=instrument,
+                        )
+                        started_at = datetime.now(UTC)
+                        active_seconds = 0.0
+                        current_pnl = Decimal(str(trade.get("unrealizedPL", "0")))
+                        samples = [(active_seconds, current_pnl)]
+                        status.update(
+                            {
+                                "status": "monitoring",
+                                "phase": "monitoring",
+                                "startedAt": started_at.isoformat(),
+                                "initialPnl": str(current_pnl),
+                                "trailingDistance": str(current_distance),
+                                "elapsedSeconds": 0,
+                                "trailingStopActive": True,
+                                "nextMarketOpenAt": None,
+                                "message": (
+                                    "Broker trailing stop activated on a live, "
+                                    "tradeable quote; the 10-minute timer has started."
+                                ),
+                            }
+                        )
+                        last_active_at = started_at
+                        continue
+
+                    if last_active_at is not None:
+                        active_seconds += min(
+                            2 * TRAILING_RECOVERY_SAMPLE_INTERVAL_SECONDS,
+                            (now - last_active_at).total_seconds(),
+                        )
+                    last_active_at = now
+                    samples.append((active_seconds, current_pnl))
+
+                    assert current_distance is not None
                     next_distance = max(
                         minimum_distance,
                         min(current_distance, max(pip_size, loss_distance)),
@@ -3563,26 +3718,30 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
 
                     status.update(
                         {
+                            "status": status["phase"],
                             "currentPnl": str(current_pnl),
                             "trailingDistance": str(current_distance),
-                            "elapsedSeconds": int(elapsed),
+                            "elapsedSeconds": int(active_seconds),
+                            "priceImproved": status["priceImproved"],
+                            "priceChange": status["priceChange"],
+                            "pnlChange": status["pnlChange"],
                         }
                     )
 
                     if (
-                        elapsed >= TRAILING_RECOVERY_DECISION_SECONDS
-                        and status["status"] == "monitoring"
+                        active_seconds >= TRAILING_RECOVERY_DECISION_SECONDS
+                        and status["phase"] == "monitoring"
                     ):
                         minute_ago = next(
                             (
                                 pnl
-                                for sample_time, pnl in reversed(samples)
-                                if (now - sample_time).total_seconds() >= 60
+                                for sample_seconds, pnl in reversed(samples)
+                                if active_seconds - sample_seconds >= 60
                             ),
-                            initial_pnl,
+                            Decimal(str(status["initialPnl"])),
                         )
                         clearly_improving = _is_trailing_recovery_improving(
-                            initial_pnl,
+                            Decimal(str(status["initialPnl"])),
                             current_pnl,
                             minute_ago,
                         )
@@ -3602,7 +3761,8 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                                 {
                                     "status": "closed",
                                     "message": (
-                                        "No clear improvement after 10 minutes; position closed."
+                                        "No clear improvement after 10 active market minutes; "
+                                        "position closed."
                                     ),
                                     "closedAt": now.isoformat(),
                                     "fillPrice": fill.get("price"),
@@ -3623,16 +3783,17 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                         status.update(
                             {
                                 "status": "extended",
+                                "phase": "extended",
                                 "message": "Loss improved; monitoring for the final 5 minutes.",
                             }
                         )
 
-                    if elapsed >= TRAILING_RECOVERY_MAX_SECONDS:
+                    if active_seconds >= TRAILING_RECOVERY_MAX_SECONDS:
                         status.update(
                             {
                                 "status": "completed",
                                 "message": (
-                                    "15-minute trailing adjustment finished; "
+                                    "15 active market minutes complete; "
                                     "broker trailing stop remains active."
                                 ),
                                 "elapsedSeconds": TRAILING_RECOVERY_MAX_SECONDS,
@@ -3643,7 +3804,14 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             status.update(
                 {
                     "status": "interrupted",
-                    "message": "Server stopped; the broker trailing stop remains active.",
+                    "message": (
+                        "Server stopped; broker trailing stop remains active."
+                        if status.get("trailingStopActive")
+                        else (
+                            "Server stopped before recovery activation; "
+                            "existing broker protection was left unchanged."
+                        )
+                    ),
                 }
             )
             raise
@@ -3672,11 +3840,6 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             environment_name = str(
                 getattr(settings.environment, "value", settings.environment)
             ).lower()
-            if environment_name != "practice":
-                raise HTTPException(
-                    status_code=403,
-                    detail="Trailing recovery is available only in the OANDA Practice environment",
-                )
             async with OandaClient(
                 settings.token, settings.account_id, environment=settings.environment
             ) as client:
@@ -3696,17 +3859,33 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 client_order_id = (
                     str(extension.get("id", "")) if isinstance(extension, dict) else ""
                 )
+                is_manual = client_order_id.startswith("manual-ui-")
                 is_automated = (
                     isinstance(extension, dict)
                     and extension.get("tag") == "auto"
                     and client_order_id.startswith("auto-")
                 )
-                if not client_order_id.startswith("manual-ui-") and not is_automated:
+                if not is_manual and not is_automated:
                     raise HTTPException(
                         status_code=403,
                         detail=(
                             "Trailing recovery is limited to dashboard manual "
                             "and automatic trades"
+                        ),
+                    )
+                if is_manual and environment_name != "practice":
+                    raise HTTPException(
+                        status_code=403,
+                        detail=(
+                            "Manual dashboard positions can only use trailing recovery "
+                            "in the OANDA Practice environment"
+                        ),
+                    )
+                if is_automated and environment_name == "live" and user_role != "admin":
+                    raise HTTPException(
+                        status_code=403,
+                        detail=(
+                            "Trailing recovery on a Live automatic trade requires admin role"
                         ),
                     )
                 instrument = str(trade.get("instrument", ""))
@@ -3716,17 +3895,17 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 metadata = await client.get_instruments((instrument,))
                 if not quotes or not metadata:
                     raise OandaAPIError(
-                        f"OANDA quote or instrument metadata is unavailable for {instrument}"
+                        f"OANDA quote or instrument metadata is unavailable for {instrument}; "
+                        "a selection-time reference price is required"
                     )
                 pip_size = metadata[0].pip_size
                 minimum_distance = metadata[0].minimum_trailing_stop_distance or Decimal(0)
-                initial_distance = max(
-                    minimum_distance,
-                    pip_size,
-                    quotes[0].spread * Decimal(3),
-                )
-                initial_pnl = Decimal(str(trade.get("unrealizedPL", "0")))
-                if initial_pnl >= 0:
+                quote = quotes[0]
+                trade_units = Decimal(str(trade.get("currentUnits", "0")))
+                side = "BUY" if trade_units > 0 else "SELL"
+                selection_price = quote.bid if side == "BUY" else quote.ask
+                selection_pnl = Decimal(str(trade.get("unrealizedPL", "0")))
+                if selection_pnl >= 0:
                     raise HTTPException(
                         status_code=409,
                         detail=(
@@ -3734,27 +3913,49 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                             "currently in a loss"
                         ),
                     )
-                await client.modify_trade_orders(
-                    trade_id,
-                    trailing_stop_loss_distance=str(initial_distance),
-                    instrument=instrument,
-                )
+            selected_at = datetime.now(UTC)
+            schedule = market_schedule(selected_at)
+            status_name = (
+                "waiting_market"
+                if not schedule["scheduledOpen"]
+                else "waiting_pair"
+                if not quote.tradeable
+                else "starting"
+            )
             status = {
-                "status": "monitoring",
-                "startedAt": datetime.now(UTC).isoformat(),
-                "initialPnl": str(initial_pnl),
-                "currentPnl": str(initial_pnl),
-                "trailingDistance": str(initial_distance),
+                "status": status_name,
+                "phase": "monitoring",
+                "selectedAt": selected_at.isoformat(),
+                "selectionPrice": str(selection_price),
+                "selectionQuoteTime": quote.time,
+                "selectionPnl": str(selection_pnl),
+                "startedAt": None,
+                "initialPnl": None,
+                "currentPnl": str(selection_pnl),
+                "trailingDistance": None,
+                "trailingStopActive": False,
                 "elapsedSeconds": 0,
-                "message": "Broker trailing stop is active; monitoring the first 10 minutes.",
+                "nextMarketOpenAt": schedule["nextTransitionAt"]
+                if not schedule["scheduledOpen"]
+                else None,
+                "message": (
+                    "Waiting for the scheduled FX market open; recovery timer has not started."
+                    if status_name == "waiting_market"
+                    else (
+                        "Waiting for this instrument to become tradeable; "
+                        "recovery timer has not started."
+                    )
+                    if status_name == "waiting_pair"
+                    else "Starting recovery when the broker confirms the instrument is tradeable."
+                ),
             }
             app.state.trailing_recovery_status[trade_id] = status
             app.state.trailing_recovery_tasks[trade_id] = asyncio.create_task(
                 run_trailing_recovery(
                     trade_id,
                     instrument,
-                    initial_pnl,
-                    initial_distance,
+                    selection_price,
+                    selection_pnl,
                     pip_size,
                     minimum_distance,
                 )
@@ -3763,8 +3964,10 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
                 "positions.trailing_recovery.start",
                 details={
                     "tradeId": trade_id,
-                    "initialPnl": str(initial_pnl),
-                    "trailingDistance": str(initial_distance),
+                    "selectionPnl": str(selection_pnl),
+                    "selectionPrice": str(selection_price),
+                    "selectionQuoteTime": quote.time,
+                    "status": status_name,
                 },
                 username=(resolve_session_user(session_token) or {}).get(
                     "username", "anonymous"

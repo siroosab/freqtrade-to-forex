@@ -1269,6 +1269,19 @@
   color: #94a3b8;
 }
 
+.trade-close-recovery {
+  display: grid;
+  gap: 4px;
+  min-width: 220px;
+  margin-top: 8px;
+  font-size: 0.7rem;
+  line-height: 1.4;
+}
+
+.trade-close-recovery small {
+  white-space: normal;
+}
+
 .positions-sync-status {
   color: #86efac;
   font-size: 0.73rem;

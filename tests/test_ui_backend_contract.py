@@ -1,5 +1,6 @@
 import json
 import sqlite3
+import threading
 import time
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -10,10 +11,11 @@ import pandas as pd
 from fastapi.testclient import TestClient
 
 from freqtrade.forex.api import (
+    _is_trailing_recovery_improving,
+    _trailing_recovery_price_result,
     app,
     create_app,
     format_hyperopt_report,
-    _is_trailing_recovery_improving,
 )
 from freqtrade.forex.models import OandaInstrument
 
@@ -37,6 +39,32 @@ def test_trailing_recovery_requires_improvement_from_start_and_recent_rise(
         Decimal(current_pnl),
         Decimal(minute_ago_pnl),
     ) is expected
+
+
+@pytest.mark.parametrize(
+    ("side", "selected", "current", "expected_change", "expected_improved"),
+    [
+        ("BUY", "1.1000", "1.1010", "0.0010", True),
+        ("SELL", "1.1000", "1.0990", "-0.0010", True),
+        ("BUY", "1.1000", "1.0990", "-0.0010", False),
+        ("SELL", "1.1000", "1.1010", "0.0010", False),
+        ("BUY", "1.1000", "1.1000", "0.0000", None),
+    ],
+)
+def test_trailing_recovery_outcome_uses_selection_price(
+    side, selected, current, expected_change, expected_improved
+):
+    outcome = _trailing_recovery_price_result(
+        side,
+        Decimal(selected),
+        Decimal(current),
+        Decimal("-2.00"),
+        Decimal("-1.25"),
+    )
+
+    assert outcome["priceChange"] == expected_change
+    assert outcome["priceImproved"] is expected_improved
+    assert outcome["pnlChange"] == "0.75"
 
 
 def test_auto_hyperopt_clears_stale_trigger_marker_after_restart(tmp_path):
@@ -492,6 +520,42 @@ def test_broker_positions_returns_open_and_closed_trade_details(monkeypatch):
     )()
     monkeypatch.setattr("freqtrade.forex.api.OandaClient", FakeClient)
     monkeypatch.setattr("freqtrade.forex.api.OandaSettings.from_environment", lambda: settings)
+    monkeypatch.setitem(
+        app.state.trailing_recovery_status,
+        "open-1",
+        {
+            "status": "monitoring",
+            "phase": "monitoring",
+            "selectedAt": "2026-09-28T09:01:00+00:00",
+            "selectionPrice": "1.0990",
+            "selectionQuoteTime": "2026-09-28T09:01:00+00:00",
+            "selectionPnl": "-1.00",
+            "startedAt": "2026-09-28T09:01:01+00:00",
+            "initialPnl": "-1.00",
+            "currentPnl": "6.00",
+            "trailingDistance": "0.0006",
+            "elapsedSeconds": 60,
+            "message": "monitoring",
+        },
+    )
+    monkeypatch.setitem(
+        app.state.trailing_recovery_status,
+        "closed-1",
+        {
+            "status": "closed",
+            "phase": "monitoring",
+            "selectedAt": "2026-09-27T10:00:00+00:00",
+            "selectionPrice": "1.1000",
+            "selectionQuoteTime": "2026-09-27T10:00:00+00:00",
+            "selectionPnl": "-3.00",
+            "startedAt": "2026-09-27T10:00:01+00:00",
+            "initialPnl": "-3.00",
+            "currentPnl": "-1.50",
+            "trailingDistance": "0.0006",
+            "elapsedSeconds": 600,
+            "message": "closed",
+        },
+    )
 
     response = client.get("/api/v1/positions")
 
@@ -500,12 +564,20 @@ def test_broker_positions_returns_open_and_closed_trade_details(monkeypatch):
     assert payload["open"][0]["currentPrice"] == "1.1000"
     assert payload["open"][0]["pnl"] == "6.00"
     assert payload["open"][0]["financing"] == "-0.25"
+    assert payload["open"][0]["trailingRecovery"]["currentPrice"] == "1.1000"
+    assert payload["open"][0]["trailingRecovery"]["priceChange"] == "0.0010"
+    assert payload["open"][0]["trailingRecovery"]["priceImproved"] is True
+    assert payload["open"][0]["trailingRecovery"]["pnlChange"] == "7.00"
     assert payload["open"][0]["manual"] is True
     assert payload["open"][0]["stopLoss"] == "1.0895"
     assert payload["closed"][0]["side"] == "SELL"
     assert payload["closed"][0]["exitPrice"] == "1.0970"
     assert payload["closed"][0]["pnl"] == "-1.50"
     assert payload["closed"][0]["financing"] == "-0.10"
+    assert payload["closed"][0]["trailingRecovery"]["currentPrice"] == "1.0970"
+    assert payload["closed"][0]["trailingRecovery"]["priceChange"] == "-0.0030"
+    assert payload["closed"][0]["trailingRecovery"]["priceImproved"] is True
+    assert payload["closed"][0]["trailingRecovery"]["pnlChange"] == "1.50"
     assert payload["accountCurrency"] == "GBP"
 
 
@@ -2197,10 +2269,19 @@ def test_close_endpoint_closes_manual_trade_only(monkeypatch):
     assert closed_ids == ["manual-1"]
 
 
-def test_trailing_recovery_starts_broker_trailing_for_losing_manual_trade(
-    monkeypatch, tmp_path
+@pytest.mark.parametrize(
+    ("scheduled_open", "tradeable", "expected_status"),
+    [
+        (False, False, "waiting_market"),
+        (True, False, "waiting_pair"),
+        (True, True, "starting"),
+    ],
+)
+def test_trailing_recovery_waits_for_market_and_pair_activation(
+    monkeypatch, tmp_path, scheduled_open, tradeable, expected_status
 ):
     modified = []
+    modified_event = threading.Event()
 
     class FakeClient:
         def __init__(self, token, account_id, environment):
@@ -2225,7 +2306,19 @@ def test_trailing_recovery_starts_broker_trailing_for_losing_manual_trade(
             ]
 
         async def get_prices(self, instruments):
-            return [type("Price", (), {"spread": Decimal("0.0002")})()]
+            return [
+                type(
+                    "Price",
+                    (),
+                    {
+                        "spread": Decimal("0.0002"),
+                        "bid": Decimal("1.0995"),
+                        "ask": Decimal("1.0997"),
+                        "time": "2026-10-25T21:00:00+00:00",
+                        "tradeable": tradeable,
+                    },
+                )()
+            ]
 
         async def get_instruments(self, instruments):
             return [
@@ -2250,6 +2343,7 @@ def test_trailing_recovery_starts_broker_trailing_for_losing_manual_trade(
             instrument=None,
         ):
             modified.append((trade_id, trailing_stop_loss_distance, instrument))
+            modified_event.set()
             return {"lastTransactionID": "trailing-tx"}
 
     environment = type("Env", (), {"value": "practice"})()
@@ -2258,6 +2352,16 @@ def test_trailing_recovery_starts_broker_trailing_for_losing_manual_trade(
     )()
     monkeypatch.setattr("freqtrade.forex.api.OandaClient", FakeClient)
     monkeypatch.setattr("freqtrade.forex.api.OandaSettings.from_environment", lambda: settings)
+    monkeypatch.setattr(
+        "freqtrade.forex.api.market_schedule",
+        lambda now=None: {
+            "scheduledOpen": scheduled_open,
+            "nextTransition": "open" if not scheduled_open else "close",
+            "nextTransitionAt": "2026-10-25T21:00:00+00:00",
+            "timezone": "America/New_York",
+            "schedule": "test schedule",
+        },
+    )
     recovery_app = create_app(tmp_path / "trailing-recovery.sqlite")
 
     with TestClient(recovery_app) as test_client:
@@ -2266,9 +2370,20 @@ def test_trailing_recovery_starts_broker_trailing_for_losing_manual_trade(
             headers=_auth_headers(test_client),
         )
         assert response.status_code == 200, response.text
-        assert response.json()["status"] == "monitoring"
-        assert modified == [("manual-loss-1", "0.0006", "EUR_USD")]
-        assert recovery_app.state.trailing_recovery_status["manual-loss-1"]["initialPnl"] == "-2.00"
+        assert response.json()["status"] == expected_status
+        assert response.json()["startedAt"] is None
+        assert response.json()["selectionPrice"] == "1.0995"
+        assert response.json()["selectionPnl"] == "-2.00"
+        if tradeable:
+            assert modified_event.wait(timeout=2)
+            time.sleep(0.02)
+            active_status = recovery_app.state.trailing_recovery_status["manual-loss-1"]
+            assert active_status["status"] == "monitoring"
+            assert active_status["startedAt"] is not None
+            assert active_status["trailingStopActive"] is True
+            assert modified == [("manual-loss-1", "0.0006", "EUR_USD")]
+        else:
+            assert modified == []
 
 
 def test_modify_endpoint_updates_manual_trade_protection_only(monkeypatch):

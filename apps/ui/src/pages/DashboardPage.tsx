@@ -45,16 +45,45 @@ function formatExecutionResultStatus(status: string): { label: string; icon: str
 function formatTrailingRecoveryStatus(position: BrokerTrade): string | null {
   const recovery = position.trailingRecovery
   if (!recovery) return null
+  if (recovery.status === 'starting') return '🔄 Checking live market and pair availability…'
+  if (recovery.status === 'waiting_market') {
+    const openAt = recovery.nextMarketOpenAt
+      ? new Date(recovery.nextMarketOpenAt).toLocaleString()
+      : null
+    return `🌙 Waiting for market open${openAt ? ` · ${openAt}` : ''} · timer paused`
+  }
+  if (recovery.status === 'waiting_pair') return '⏳ Waiting for pair to become tradeable · timer paused'
   if (recovery.status === 'monitoring' || recovery.status === 'extended') {
     const remainingSeconds = Math.max(0, 900 - recovery.elapsedSeconds)
     const minutes = Math.floor(remainingSeconds / 60)
     const seconds = remainingSeconds % 60
-    return `⏱️ ${recovery.status === 'extended' ? 'Final 5 min' : 'Trailing monitor'} · ${minutes}:${String(seconds).padStart(2, '0')} left`
+    return `⏱️ ${recovery.status === 'extended' ? 'Final 5 active market min' : 'Trailing monitor'} · ${minutes}:${String(seconds).padStart(2, '0')} active time left`
   }
-  if (recovery.status === 'completed') return '✅ 15 min complete · broker trailing active'
-  if (recovery.status === 'closed') return '🔒 Closed by trailing recovery'
+  if (recovery.status === 'completed') return '✅ 15 active market min complete · broker trailing active'
+  if (recovery.status === 'closed') return `🔒 ${recovery.message}`
   if (recovery.status === 'interrupted') return '⚠️ Monitor stopped · broker trailing remains active'
   return `⚠️ Trailing recovery failed: ${recovery.message}`
+}
+
+function formatTrailingRecoveryOutcome(
+  position: BrokerTrade,
+  accountCurrency: string | undefined,
+): string | null {
+  const recovery = position.trailingRecovery
+  if (!recovery) return null
+  if (recovery.priceChange == null || recovery.priceImproved == null) {
+    return `Selected reference: ${recovery.selectionPrice} · waiting for a current broker price`
+  }
+  const priceChange = Number(recovery.priceChange)
+  const pnlChange = Number(recovery.pnlChange ?? 0)
+  const signedPriceChange = priceChange > 0 ? `+${recovery.priceChange}` : recovery.priceChange
+  const formattedPnlChange = Number.isFinite(pnlChange) ? pnlChange.toFixed(2) : recovery.pnlChange
+  const signedPnlChange = pnlChange > 0 ? `+${formattedPnlChange}` : formattedPnlChange
+  const comparison = recovery.priceImproved === null
+    ? 'unchanged exit price'
+    : recovery.priceImproved ? 'better exit price' : 'worse exit price'
+  const quoteAt = new Date(recovery.selectionQuoteTime).toLocaleString()
+  return `Since ${recovery.selectionPrice} (broker quote ${quoteAt}): ${signedPriceChange} (${comparison}) · P/L ${signedPnlChange}${accountCurrency ? ` ${accountCurrency}` : ''}`
 }
 
 function getSignalPresentation(signal: string | undefined): { label: string; icon: string; tone: string } {
@@ -599,6 +628,11 @@ export function DashboardPage() {
                               {formatTrailingRecoveryStatus(position)}
                             </small>
                           )}
+                          {position.trailingRecovery && (
+                            <small className={position.trailingRecovery.priceImproved === false ? 'negative' : position.trailingRecovery.priceImproved === true ? 'positive' : 'trailing-recovery-status'}>
+                              {formatTrailingRecoveryOutcome(position, positionsQuery.data?.accountCurrency)}
+                            </small>
+                          )}
                         </div>
                       </td>
                       <td>{position.takeProfit ?? '—'}</td>
@@ -607,7 +641,24 @@ export function DashboardPage() {
                         {Number(position.financing) < 0 ? '🔻 ' : Number(position.financing) > 0 ? '🟢 +' : ''}
                         {position.financing && Number(position.financing) !== 0 ? position.financing : '—'}
                       </td>
-                      <td>{positionView === 'open' && (position.manual || position.source === 'auto') && userRole !== 'viewer' ? <div className="trade-actions">{position.manual && <button className="modify-position-button" type="button" onClick={() => { setModifyError(null); setModifyStopLoss(position.stopLoss ?? ''); setModifyTakeProfit(position.takeProfit ?? ''); setModifyTrailingStopPips(''); setModifyPositionTarget(position) }}>Modify</button>}<button className="close-position-button" type="button" onClick={() => { setCloseError(null); setCloseFollowEnabled(true); setCloseTarget(position) }}>Close</button></div> : positionView === 'closed' ? <span className="muted-cell">Closed</span> : '—'}</td>
+                      <td>
+                        {positionView === 'open' && (position.manual || position.source === 'auto') && userRole !== 'viewer' ? (
+                          <div className="trade-actions">
+                            {position.manual && <button className="modify-position-button" type="button" onClick={() => { setModifyError(null); setModifyStopLoss(position.stopLoss ?? ''); setModifyTakeProfit(position.takeProfit ?? ''); setModifyTrailingStopPips(''); setModifyPositionTarget(position) }}>Modify</button>}
+                            <button className="close-position-button" type="button" onClick={() => { setCloseError(null); setCloseFollowEnabled(true); setCloseTarget(position) }}>Close</button>
+                          </div>
+                        ) : positionView === 'closed' ? <span className="muted-cell">Closed</span> : '—'}
+                        {position.trailingRecovery && (
+                          <div className="trade-close-recovery">
+                            <small className={position.trailingRecovery.status === 'failed' || position.trailingRecovery.status === 'interrupted' ? 'negative' : 'trailing-recovery-status'}>
+                              {formatTrailingRecoveryStatus(position)}
+                            </small>
+                            <small className={position.trailingRecovery.priceImproved === false ? 'negative' : position.trailingRecovery.priceImproved === true ? 'positive' : 'trailing-recovery-status'}>
+                              {formatTrailingRecoveryOutcome(position, positionsQuery.data?.accountCurrency)}
+                            </small>
+                          </div>
+                        )}
+                      </td>
                     </tr>
                   ))}
                   {!positionsQuery.isLoading && visiblePositions.length === 0 && <tr><td className="empty-cell" colSpan={11}>{positionsQuery.isError ? 'Broker positions could not be loaded.' : `No ${positionView} broker trades.`}</td></tr>}
