@@ -28,29 +28,24 @@ class ForexEmaCrossStrategy(IStrategy):
     process_only_new_candles = True
     use_exit_signal = True
     #Entry
-    entry_fast_ema_index = CategoricalParameter(
-        list(range(5, 7)),
-        default=6,
-        space="buy",
-    )
-    entry_slow_ema_index = CategoricalParameter(
-        list(range(19, 21)),
-        default=20,
-        space="buy",
-    )
+    #entry_fast_ema_index = CategoricalParameter(
+    #    list(range(5, 7)),
+    #    default=6,
+    #    space="buy",
+    #)
+    #entry_slow_ema_index = CategoricalParameter(
+    #    list(range(19, 21)),
+    #    default=20,
+    #    space="buy",
+    #)
     entry_ema_timeperiod = CategoricalParameter(  #ema_timeperiod
-        list(range(12, 16)),
-        default=14,
+        list(range(3, 16)),
+        default=7,
         space="buy",
     )
     rolling_mean = CategoricalParameter(
-        list(range(2, 11)),
+        list(range(3, 12)),
         default=5,
-        space="buy",
-    )
-    caunt_ex = CategoricalParameter(
-        list(range(1, 5)),
-        default=3,
         space="buy",
     )
 
@@ -74,8 +69,8 @@ class ForexEmaCrossStrategy(IStrategy):
     def __init__(self, config: dict | None = None) -> None:
         super().__init__(config or {})
         for parameter_name in (
-            "entry_fast_ema_index",
-            "entry_slow_ema_index",
+            #"entry_fast_ema_index",
+            #"entry_slow_ema_index",
             "entry_ema_timeperiod",
             "exit_fast_ema_index",
             "exit_slow_ema_index",
@@ -99,30 +94,29 @@ class ForexEmaCrossStrategy(IStrategy):
         return dataframe
 
     def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
-        fast_ema = dataframe[f"ema_x_{self.entry_fast_ema_index.value}"]
-        slow_ema = dataframe[f"ema_x_{self.entry_slow_ema_index.value}"]
+        #fast_ema = dataframe[f"ema_x_{self.entry_fast_ema_index.value}"]
+        #slow_ema = dataframe[f"ema_x_{self.entry_slow_ema_index.value}"]
         #test mode##
         #dataframe["enter_long"] = qtpylib.crossed_above(fast_ema, slow_ema).fillna(False)
         #dataframe["enter_short"] = qtpylib.crossed_below(fast_ema, slow_ema).fillna(False)
-        
         dataframe["enter_long"] = (
-        (dataframe["count_low"] > self.rolling_mean.value)
+        (dataframe["count_low"] > 0)
         & dataframe["count_low"]
         .shift(1)
-        .rolling(self.caunt_ex.value)
-        .apply(lambda x: (x <self.rolling_mean.value).all(), raw=True)
+        .rolling(self.rolling_mean.value)
+        .apply(lambda x: (x == 0).all(), raw=True)
         .eq(1)
-        & (slow_ema > fast_ema)
+        #& (slow_ema > fast_ema)
         )
 
         dataframe["enter_short"] = (
-        (dataframe["count_hi"] > self.rolling_mean.value)
+        (dataframe["count_hi"] > 0)
         & dataframe["count_hi"]
         .shift(1)
-        .rolling(self.caunt_ex.value)
-        .apply(lambda x: (x <self.rolling_mean.value).all(), raw=True)
+        .rolling(self.rolling_mean.value)
+        .apply(lambda x: (x == 0).all(), raw=True)
         .eq(1)
-        ) & (slow_ema < fast_ema)
+        ) #& (slow_ema < fast_ema)
 
         return dataframe
 
