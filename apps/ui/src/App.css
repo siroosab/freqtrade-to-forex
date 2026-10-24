@@ -1232,7 +1232,7 @@
 }
 
 .broker-positions-table {
-  min-width: 940px;
+  min-width: 1020px;
 }
 
 .broker-positions-table td.positive {
@@ -1243,6 +1243,30 @@
 .broker-positions-table td.negative {
   color: #fca5a5;
   font-weight: 700;
+}
+
+.trailing-recovery-status {
+  color: #93c5fd;
+}
+
+.trailing-recovery-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 16px 0;
+  color: #e2e8f0;
+  cursor: pointer;
+}
+
+.trailing-recovery-option input {
+  margin-top: 5px;
+  accent-color: #38bdf8;
+}
+
+.trailing-recovery-option small {
+  display: block;
+  margin-top: 3px;
+  color: #94a3b8;
 }
 
 .positions-sync-status {

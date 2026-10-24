@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { ForexChart } from '../components/ForexChart'
 import { ChartDataControls } from '../components/ChartDataControls'
 import { chartCandleCount, chartTimeframeFromStrategy } from '../components/chartOptions'
-import { closeManualPosition, createManualClientOrderId, getAccountSummary, getAutoExecutionStatus, getBrokerPendingOrders, getBrokerPositions, getMarketQuote, getMarketStatus, getMarketSummary, getOrdersChart, getRiskSummary, getSetupStatus, modifyManualPosition, modifyPendingOrder, setAutoExecution, submitLimitOrder, submitMarketOrder, type BrokerPendingOrder, type BrokerTrade } from '../api/mockApi'
+import { closeManualPosition, createManualClientOrderId, getAccountSummary, getAutoExecutionStatus, getBrokerPendingOrders, getBrokerPositions, getMarketQuote, getMarketStatus, getMarketSummary, getOrdersChart, getRiskSummary, getSetupStatus, modifyManualPosition, modifyPendingOrder, setAutoExecution, startTrailingRecovery, submitLimitOrder, submitMarketOrder, type BrokerPendingOrder, type BrokerTrade } from '../api/mockApi'
 import { convertTrailingStopPipsToDistance, validateTrailingStopInput } from '../utils/trailingStopLoss'
 import { useForexSocket } from '../hooks/useForexSocket'
 import { useUiStore } from '../store/useUiStore'
@@ -42,6 +42,21 @@ function formatExecutionResultStatus(status: string): { label: string; icon: str
   }
 }
 
+function formatTrailingRecoveryStatus(position: BrokerTrade): string | null {
+  const recovery = position.trailingRecovery
+  if (!recovery) return null
+  if (recovery.status === 'monitoring' || recovery.status === 'extended') {
+    const remainingSeconds = Math.max(0, 900 - recovery.elapsedSeconds)
+    const minutes = Math.floor(remainingSeconds / 60)
+    const seconds = remainingSeconds % 60
+    return `⏱️ ${recovery.status === 'extended' ? 'Final 5 min' : 'Trailing monitor'} · ${minutes}:${String(seconds).padStart(2, '0')} left`
+  }
+  if (recovery.status === 'completed') return '✅ 15 min complete · broker trailing active'
+  if (recovery.status === 'closed') return '🔒 Closed by trailing recovery'
+  if (recovery.status === 'interrupted') return '⚠️ Monitor stopped · broker trailing remains active'
+  return `⚠️ Trailing recovery failed: ${recovery.message}`
+}
+
 function getSignalPresentation(signal: string | undefined): { label: string; icon: string; tone: string } {
   switch (signal?.toLowerCase()) {
     case 'long':
@@ -60,6 +75,7 @@ export function DashboardPage() {
   const queryClient = useQueryClient()
   const [confirmOpen, setConfirmOpen] = useState(false)
   const [closeTarget, setCloseTarget] = useState<BrokerTrade | null>(null)
+  const [closeFollowEnabled, setCloseFollowEnabled] = useState(true)
   const [isClosing, setIsClosing] = useState(false)
   const [closeError, setCloseError] = useState<string | null>(null)
   const [modifyPositionTarget, setModifyPositionTarget] = useState<BrokerTrade | null>(null)
@@ -311,7 +327,11 @@ export function DashboardPage() {
     setIsClosing(true)
     setCloseError(null)
     try {
-      await closeManualPosition(closeTarget.id)
+      if (Number(closeTarget.pnl) < 0 && closeFollowEnabled) {
+        await startTrailingRecovery(closeTarget.id)
+      } else {
+        await closeManualPosition(closeTarget.id)
+      }
       await queryClient.invalidateQueries({ queryKey: ['broker-positions'] })
       setCloseTarget(null)
     } catch (error) {
@@ -545,7 +565,7 @@ export function DashboardPage() {
                 <thead>
                   <tr>
                     <th>Source</th><th>Symbol</th><th>Side</th><th>Units</th><th>Entry</th>
-                    <th>{positionView === 'open' ? 'Current' : 'Exit'}</th><th>Protection</th><th>TP</th><th>P/L {positionsQuery.data?.accountCurrency ? `(${positionsQuery.data.accountCurrency})` : ''}</th><th>Action</th>
+                    <th>{positionView === 'open' ? 'Current' : 'Exit'}</th><th>Protection</th><th>TP</th><th>P/L {positionsQuery.data?.accountCurrency ? `(${positionsQuery.data.accountCurrency})` : ''}</th><th>Financing {positionsQuery.data?.accountCurrency ? `(${positionsQuery.data.accountCurrency})` : ''}</th><th>Action</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -574,14 +594,23 @@ export function DashboardPage() {
                           {position.stopLossType === 'trailing' && position.trailingStopDistance && (
                             <small>Gap {position.trailingStopDistance}</small>
                           )}
+                          {position.trailingRecovery && (
+                            <small className={position.trailingRecovery.status === 'failed' || position.trailingRecovery.status === 'interrupted' ? 'negative' : 'trailing-recovery-status'}>
+                              {formatTrailingRecoveryStatus(position)}
+                            </small>
+                          )}
                         </div>
                       </td>
                       <td>{position.takeProfit ?? '—'}</td>
                       <td className={Number(position.pnl) < 0 ? 'negative' : 'positive'}>{Number(position.pnl) > 0 ? '+' : ''}{position.pnl}</td>
-                      <td>{positionView === 'open' && (position.manual || position.source === 'auto') && userRole !== 'viewer' ? <div className="trade-actions">{position.manual && <button className="modify-position-button" type="button" onClick={() => { setModifyError(null); setModifyStopLoss(position.stopLoss ?? ''); setModifyTakeProfit(position.takeProfit ?? ''); setModifyTrailingStopPips(''); setModifyPositionTarget(position) }}>Modify</button>}<button className="close-position-button" type="button" onClick={() => { setCloseError(null); setCloseTarget(position) }}>Close</button></div> : positionView === 'closed' ? <span className="muted-cell">Closed</span> : '—'}</td>
+                      <td className={Number(position.financing) < 0 ? 'negative' : Number(position.financing) > 0 ? 'positive' : 'muted-cell'}>
+                        {Number(position.financing) < 0 ? '🔻 ' : Number(position.financing) > 0 ? '🟢 +' : ''}
+                        {position.financing && Number(position.financing) !== 0 ? position.financing : '—'}
+                      </td>
+                      <td>{positionView === 'open' && (position.manual || position.source === 'auto') && userRole !== 'viewer' ? <div className="trade-actions">{position.manual && <button className="modify-position-button" type="button" onClick={() => { setModifyError(null); setModifyStopLoss(position.stopLoss ?? ''); setModifyTakeProfit(position.takeProfit ?? ''); setModifyTrailingStopPips(''); setModifyPositionTarget(position) }}>Modify</button>}<button className="close-position-button" type="button" onClick={() => { setCloseError(null); setCloseFollowEnabled(true); setCloseTarget(position) }}>Close</button></div> : positionView === 'closed' ? <span className="muted-cell">Closed</span> : '—'}</td>
                     </tr>
                   ))}
-                  {!positionsQuery.isLoading && visiblePositions.length === 0 && <tr><td className="empty-cell" colSpan={10}>{positionsQuery.isError ? 'Broker positions could not be loaded.' : `No ${positionView} broker trades.`}</td></tr>}
+                  {!positionsQuery.isLoading && visiblePositions.length === 0 && <tr><td className="empty-cell" colSpan={11}>{positionsQuery.isError ? 'Broker positions could not be loaded.' : `No ${positionView} broker trades.`}</td></tr>}
                 </tbody>
               </table>
             </div>
@@ -1161,11 +1190,22 @@ export function DashboardPage() {
           <div className="confirm-modal" onClick={(event) => event.stopPropagation()}>
             <p className="eyebrow">{closeTarget.source === 'auto' ? 'Automatic strategy position' : 'Manual position'}</p>
             <h3>Close {closeTarget.symbol} {closeTarget.side}?</h3>
-            <p>Close all {Number(closeTarget.units).toLocaleString()} units at the broker’s current market price. This cannot be undone.</p>
+            {Number(closeTarget.pnl) < 0 && (
+              <>
+                <p>This position is currently losing ({closeTarget.pnl}). Start a 15-minute broker trailing-stop attempt instead of closing immediately. The initial gap uses the live spread (at least one pip and the broker minimum) and tightens as price recovers toward entry. If P/L is not better than the start and rising over the final minute at minute 10, it will be closed. Otherwise, gap updates continue for 5 more minutes and the broker trailing stop remains active. A better fill is not guaranteed.</p>
+                <label className="trailing-recovery-option">
+                  <input type="checkbox" checked={closeFollowEnabled} onChange={(event) => setCloseFollowEnabled(event.target.checked)} />
+                  <span>🛡️ Try 15-minute trailing recovery <small>(enabled by default)</small></span>
+                </label>
+              </>
+            )}
+            {(Number(closeTarget.pnl) >= 0 || !closeFollowEnabled) && (
+              <p>Close all {Number(closeTarget.units).toLocaleString()} units at the broker’s current market price. This cannot be undone.</p>
+            )}
             {closeError && <p className="inline-error">{closeError}</p>}
             <div className="modal-actions">
               <button className="secondary-action" disabled={isClosing} onClick={() => setCloseTarget(null)}>Cancel</button>
-              <button className="danger-action" disabled={isClosing} onClick={handlePositionClose}>{isClosing ? 'Closing…' : 'Confirm close'}</button>
+              <button className={Number(closeTarget.pnl) < 0 && closeFollowEnabled ? 'primary-action' : 'danger-action'} disabled={isClosing} onClick={handlePositionClose}>{isClosing ? (closeFollowEnabled && Number(closeTarget.pnl) < 0 ? 'Starting trailing…' : 'Closing…') : closeFollowEnabled && Number(closeTarget.pnl) < 0 ? 'Start trailing recovery' : 'Confirm close'}</button>
             </div>
           </div>
         </div>

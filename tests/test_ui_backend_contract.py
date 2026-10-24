@@ -13,11 +13,30 @@ from freqtrade.forex.api import (
     app,
     create_app,
     format_hyperopt_report,
+    _is_trailing_recovery_improving,
 )
 from freqtrade.forex.models import OandaInstrument
 
 
 client = TestClient(app)
+
+
+@pytest.mark.parametrize(
+    ("current_pnl", "minute_ago_pnl", "expected"),
+    [
+        ("-1.00", "-1.10", True),
+        ("-1.20", "-1.10", False),
+        ("-0.90", "-0.80", False),
+    ],
+)
+def test_trailing_recovery_requires_improvement_from_start_and_recent_rise(
+    current_pnl, minute_ago_pnl, expected
+):
+    assert _is_trailing_recovery_improving(
+        Decimal("-1.50"),
+        Decimal(current_pnl),
+        Decimal(minute_ago_pnl),
+    ) is expected
 
 
 def test_auto_hyperopt_clears_stale_trigger_marker_after_restart(tmp_path):
@@ -441,6 +460,7 @@ def test_broker_positions_returns_open_and_closed_trade_details(monkeypatch):
                     "price": "1.0950",
                     "openTime": "2026-09-28T09:00:00Z",
                     "unrealizedPL": "6.00",
+                    "financing": "-0.25",
                     "clientExtensions": {"id": "manual-ui-1"},
                     "stopLossOrder": {"price": "1.0895"},
                     "takeProfitOrder": {"price": "1.1060"},
@@ -459,6 +479,7 @@ def test_broker_positions_returns_open_and_closed_trade_details(monkeypatch):
                     "openTime": "2026-09-27T09:00:00Z",
                     "closeTime": "2026-09-27T11:00:00Z",
                     "realizedPL": "-1.50",
+                    "financing": "-0.10",
                 }
             ]
 
@@ -478,11 +499,13 @@ def test_broker_positions_returns_open_and_closed_trade_details(monkeypatch):
     payload = response.json()
     assert payload["open"][0]["currentPrice"] == "1.1000"
     assert payload["open"][0]["pnl"] == "6.00"
+    assert payload["open"][0]["financing"] == "-0.25"
     assert payload["open"][0]["manual"] is True
     assert payload["open"][0]["stopLoss"] == "1.0895"
     assert payload["closed"][0]["side"] == "SELL"
     assert payload["closed"][0]["exitPrice"] == "1.0970"
     assert payload["closed"][0]["pnl"] == "-1.50"
+    assert payload["closed"][0]["financing"] == "-0.10"
     assert payload["accountCurrency"] == "GBP"
 
 
@@ -2172,6 +2195,80 @@ def test_close_endpoint_closes_manual_trade_only(monkeypatch):
     assert manual.json()["transactionId"] == "close-tx"
     assert strategy.status_code == 403
     assert closed_ids == ["manual-1"]
+
+
+def test_trailing_recovery_starts_broker_trailing_for_losing_manual_trade(
+    monkeypatch, tmp_path
+):
+    modified = []
+
+    class FakeClient:
+        def __init__(self, token, account_id, environment):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+        async def get_open_trades(self):
+            return [
+                {
+                    "id": "manual-loss-1",
+                    "instrument": "EUR_USD",
+                    "currentUnits": "1000",
+                    "price": "1.1000",
+                    "unrealizedPL": "-2.00",
+                    "clientExtensions": {"id": "manual-ui-1"},
+                }
+            ]
+
+        async def get_prices(self, instruments):
+            return [type("Price", (), {"spread": Decimal("0.0002")})()]
+
+        async def get_instruments(self, instruments):
+            return [
+                OandaInstrument.from_payload(
+                    {
+                        "name": "EUR_USD",
+                        "pipLocation": -4,
+                        "displayPrecision": 5,
+                        "tradeUnitsPrecision": 0,
+                        "minimumTradeSize": "1",
+                    }
+                )
+            ]
+
+        async def modify_trade_orders(
+            self,
+            trade_id,
+            *,
+            stop_loss_price=None,
+            take_profit_price=None,
+            trailing_stop_loss_distance=None,
+            instrument=None,
+        ):
+            modified.append((trade_id, trailing_stop_loss_distance, instrument))
+            return {"lastTransactionID": "trailing-tx"}
+
+    environment = type("Env", (), {"value": "practice"})()
+    settings = type(
+        "Settings", (), {"token": "token", "account_id": "account", "environment": environment}
+    )()
+    monkeypatch.setattr("freqtrade.forex.api.OandaClient", FakeClient)
+    monkeypatch.setattr("freqtrade.forex.api.OandaSettings.from_environment", lambda: settings)
+    recovery_app = create_app(tmp_path / "trailing-recovery.sqlite")
+
+    with TestClient(recovery_app) as test_client:
+        response = test_client.post(
+            "/api/v1/positions/manual-loss-1/trailing-recovery",
+            headers=_auth_headers(test_client),
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["status"] == "monitoring"
+        assert modified == [("manual-loss-1", "0.0006", "EUR_USD")]
+        assert recovery_app.state.trailing_recovery_status["manual-loss-1"]["initialPnl"] == "-2.00"
 
 
 def test_modify_endpoint_updates_manual_trade_protection_only(monkeypatch):

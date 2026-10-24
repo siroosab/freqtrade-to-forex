@@ -79,6 +79,17 @@ logger = logging.getLogger(__name__)
 
 SYSTEMD_SERVICE_NAME = "freqtrade-forex"
 STRATEGY_EXECUTION_PENDING_CHECK_INTERVAL = 15
+TRAILING_RECOVERY_DECISION_SECONDS = 600
+TRAILING_RECOVERY_MAX_SECONDS = 900
+TRAILING_RECOVERY_SAMPLE_INTERVAL_SECONDS = 3
+
+
+def _is_trailing_recovery_improving(
+    initial_pnl: Decimal,
+    current_pnl: Decimal,
+    minute_ago_pnl: Decimal,
+) -> bool:
+    return current_pnl > initial_pnl and current_pnl > minute_ago_pnl
 
 
 def _parse_hyperopt_workers(value: object) -> int:
@@ -428,6 +439,8 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
     )
     app = FastAPI(title="Forex Dry-Run API", version="0.1.0")
     app.state.strategy_execution_task = None
+    app.state.trailing_recovery_tasks = {}
+    app.state.trailing_recovery_status = {}
     strategy_execution_state_path = Path(
         os.environ.get(
             "OANDA_AUTO_EXECUTION_STATE_PATH",
@@ -1723,6 +1736,10 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             ),
             "takeProfit": str(take_profit.get("price", "")) or None,
             "pnl": str(trade.get("realizedPL" if closed else "unrealizedPL", "0")),
+            "financing": str(trade.get("financing") or "0"),
+            "trailingRecovery": app.state.trailing_recovery_status.get(
+                str(trade.get("id", ""))
+            ),
             "openedAt": trade.get("openTime"),
             "closedAt": trade.get("closeTime") if closed else None,
             "status": "closed" if closed else "open",
@@ -3487,6 +3504,281 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
             raise
         except (OandaAPIError, ValueError) as exc:
             raise HTTPException(status_code=502, detail=f"Broker close rejected: {exc}") from exc
+
+    async def run_trailing_recovery(
+        trade_id: str,
+        instrument: str,
+        initial_pnl: Decimal,
+        initial_distance: Decimal,
+        pip_size: Decimal,
+        minimum_distance: Decimal,
+    ) -> None:
+        started_at = datetime.now(UTC)
+        samples: list[tuple[datetime, Decimal]] = [(started_at, initial_pnl)]
+        current_distance = initial_distance
+        status = app.state.trailing_recovery_status[trade_id]
+        try:
+            settings = OandaSettings.from_environment()
+            async with OandaClient(
+                settings.token, settings.account_id, environment=settings.environment
+            ) as client:
+                while True:
+                    await asyncio.sleep(TRAILING_RECOVERY_SAMPLE_INTERVAL_SECONDS)
+                    now = datetime.now(UTC)
+                    elapsed = (now - started_at).total_seconds()
+                    open_trades = await client.get_open_trades()
+                    trade = next(
+                        (item for item in open_trades if str(item.get("id")) == trade_id),
+                        None,
+                    )
+                    if trade is None:
+                        status.update(
+                            {"status": "closed", "message": "Position closed by broker."}
+                        )
+                        return
+
+                    current_pnl = Decimal(str(trade.get("unrealizedPL", "0")))
+                    samples.append((now, current_pnl))
+                    prices = await client.get_prices((instrument,))
+                    if not prices:
+                        raise OandaAPIError(
+                            f"OANDA returned no current price for {instrument}"
+                        )
+                    quote = prices[0]
+                    units = Decimal(str(trade.get("currentUnits", "0")))
+                    current_price = quote.bid if units > 0 else quote.ask
+                    entry_price = Decimal(str(trade.get("price", "0")))
+                    loss_distance = abs(entry_price - current_price)
+                    next_distance = max(
+                        minimum_distance,
+                        min(current_distance, max(pip_size, loss_distance)),
+                    )
+                    if next_distance < current_distance:
+                        await client.modify_trade_orders(
+                            trade_id,
+                            trailing_stop_loss_distance=str(next_distance),
+                            instrument=instrument,
+                        )
+                        current_distance = next_distance
+
+                    status.update(
+                        {
+                            "currentPnl": str(current_pnl),
+                            "trailingDistance": str(current_distance),
+                            "elapsedSeconds": int(elapsed),
+                        }
+                    )
+
+                    if (
+                        elapsed >= TRAILING_RECOVERY_DECISION_SECONDS
+                        and status["status"] == "monitoring"
+                    ):
+                        minute_ago = next(
+                            (
+                                pnl
+                                for sample_time, pnl in reversed(samples)
+                                if (now - sample_time).total_seconds() >= 60
+                            ),
+                            initial_pnl,
+                        )
+                        clearly_improving = _is_trailing_recovery_improving(
+                            initial_pnl,
+                            current_pnl,
+                            minute_ago,
+                        )
+                        if not clearly_improving:
+                            close_result = await client.close_trade(trade_id)
+                            fill = close_result.get("orderFillTransaction") or {}
+                            if not fill:
+                                cancel = close_result.get("orderCancelTransaction") or {}
+                                reason = str(
+                                    cancel.get("reason")
+                                    or "OANDA did not confirm a close fill"
+                                )
+                                raise OandaAPIError(
+                                    f"Broker did not confirm trade close: {reason}"
+                                )
+                            status.update(
+                                {
+                                    "status": "closed",
+                                    "message": (
+                                        "No clear improvement after 10 minutes; position closed."
+                                    ),
+                                    "closedAt": now.isoformat(),
+                                    "fillPrice": fill.get("price"),
+                                }
+                            )
+                            record_audit_event(
+                                "positions.trailing_recovery.close",
+                                details={
+                                    "tradeId": trade_id,
+                                    "reason": "no_clear_improvement_after_10_minutes",
+                                    "fillPrice": fill.get("price"),
+                                },
+                                username="system",
+                                role="system",
+                                allowed=True,
+                            )
+                            return
+                        status.update(
+                            {
+                                "status": "extended",
+                                "message": "Loss improved; monitoring for the final 5 minutes.",
+                            }
+                        )
+
+                    if elapsed >= TRAILING_RECOVERY_MAX_SECONDS:
+                        status.update(
+                            {
+                                "status": "completed",
+                                "message": (
+                                    "15-minute trailing adjustment finished; "
+                                    "broker trailing stop remains active."
+                                ),
+                                "elapsedSeconds": TRAILING_RECOVERY_MAX_SECONDS,
+                            }
+                        )
+                        return
+        except asyncio.CancelledError:
+            status.update(
+                {
+                    "status": "interrupted",
+                    "message": "Server stopped; the broker trailing stop remains active.",
+                }
+            )
+            raise
+        except (OandaAPIError, InvalidOperation, ValueError) as exc:
+            logger.exception("Trailing recovery failed for broker trade %s", trade_id)
+            status.update({"status": "failed", "message": str(exc)})
+        finally:
+            app.state.trailing_recovery_tasks.pop(trade_id, None)
+
+    @app.post("/api/v1/positions/{trade_id}/trailing-recovery")
+    async def start_trailing_recovery(
+        trade_id: str,
+        user_role: str | None = Header(default=None, alias="X-User-Role"),
+        csrf_token: str | None = Header(default=None, alias="X-CSRF-Token"),
+        session_token: str | None = Header(default=None, alias="X-Session-Token"),
+    ) -> dict:
+        validate_write_access(user_role, csrf_token, session_token)
+        if trade_id in app.state.trailing_recovery_tasks:
+            task = app.state.trailing_recovery_tasks[trade_id]
+            if not task.done():
+                raise HTTPException(
+                    status_code=409, detail="Trailing recovery is already active for this trade"
+                )
+        try:
+            settings = OandaSettings.from_environment()
+            environment_name = str(
+                getattr(settings.environment, "value", settings.environment)
+            ).lower()
+            if environment_name != "practice":
+                raise HTTPException(
+                    status_code=403,
+                    detail="Trailing recovery is available only in the OANDA Practice environment",
+                )
+            async with OandaClient(
+                settings.token, settings.account_id, environment=settings.environment
+            ) as client:
+                trade = next(
+                    (
+                        item
+                        for item in await client.get_open_trades()
+                        if str(item.get("id")) == trade_id
+                    ),
+                    None,
+                )
+                if trade is None:
+                    raise HTTPException(status_code=404, detail="Open broker trade not found")
+                extension = (
+                    trade.get("tradeClientExtensions") or trade.get("clientExtensions") or {}
+                )
+                client_order_id = (
+                    str(extension.get("id", "")) if isinstance(extension, dict) else ""
+                )
+                is_automated = (
+                    isinstance(extension, dict)
+                    and extension.get("tag") == "auto"
+                    and client_order_id.startswith("auto-")
+                )
+                if not client_order_id.startswith("manual-ui-") and not is_automated:
+                    raise HTTPException(
+                        status_code=403,
+                        detail=(
+                            "Trailing recovery is limited to dashboard manual "
+                            "and automatic trades"
+                        ),
+                    )
+                instrument = str(trade.get("instrument", ""))
+                if not instrument:
+                    raise HTTPException(status_code=409, detail="Trade has no broker instrument")
+                quotes = await client.get_prices((instrument,))
+                metadata = await client.get_instruments((instrument,))
+                if not quotes or not metadata:
+                    raise OandaAPIError(
+                        f"OANDA quote or instrument metadata is unavailable for {instrument}"
+                    )
+                pip_size = metadata[0].pip_size
+                minimum_distance = metadata[0].minimum_trailing_stop_distance or Decimal(0)
+                initial_distance = max(
+                    minimum_distance,
+                    pip_size,
+                    quotes[0].spread * Decimal(3),
+                )
+                initial_pnl = Decimal(str(trade.get("unrealizedPL", "0")))
+                if initial_pnl >= 0:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            "Trailing recovery is only available for positions "
+                            "currently in a loss"
+                        ),
+                    )
+                await client.modify_trade_orders(
+                    trade_id,
+                    trailing_stop_loss_distance=str(initial_distance),
+                    instrument=instrument,
+                )
+            status = {
+                "status": "monitoring",
+                "startedAt": datetime.now(UTC).isoformat(),
+                "initialPnl": str(initial_pnl),
+                "currentPnl": str(initial_pnl),
+                "trailingDistance": str(initial_distance),
+                "elapsedSeconds": 0,
+                "message": "Broker trailing stop is active; monitoring the first 10 minutes.",
+            }
+            app.state.trailing_recovery_status[trade_id] = status
+            app.state.trailing_recovery_tasks[trade_id] = asyncio.create_task(
+                run_trailing_recovery(
+                    trade_id,
+                    instrument,
+                    initial_pnl,
+                    initial_distance,
+                    pip_size,
+                    minimum_distance,
+                )
+            )
+            record_audit_event(
+                "positions.trailing_recovery.start",
+                details={
+                    "tradeId": trade_id,
+                    "initialPnl": str(initial_pnl),
+                    "trailingDistance": str(initial_distance),
+                },
+                username=(resolve_session_user(session_token) or {}).get(
+                    "username", "anonymous"
+                ),
+                role=user_role,
+                allowed=True,
+            )
+            return {"tradeId": trade_id, **status}
+        except HTTPException:
+            raise
+        except (OandaAPIError, InvalidOperation, ValueError) as exc:
+            raise HTTPException(
+                status_code=502, detail=f"Trailing recovery could not start: {exc}"
+            ) from exc
 
     @app.post("/api/v1/positions/{trade_id}/modify")
     async def modify_manual_position(
@@ -7301,6 +7593,11 @@ def create_app(ledger_path: Path = Path("user_data/oanda/paper.sqlite")) -> Fast
     @app.on_event("shutdown")
     async def stop_background_tasks() -> None:
         AUTO_HYPEROPT_SCHEDULER["running"] = False
+        trailing_recovery_tasks = list(app.state.trailing_recovery_tasks.values())
+        for task in trailing_recovery_tasks:
+            task.cancel()
+        if trailing_recovery_tasks:
+            await asyncio.gather(*trailing_recovery_tasks, return_exceptions=True)
         for task_name in (
             "auto_hyperopt_scheduler_task",
             "average_order_cleanup_task",

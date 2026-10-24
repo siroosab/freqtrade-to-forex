@@ -13,7 +13,8 @@ import type { ForexChartData } from '../components/ForexChart'
 export type RiskConfig = { pair: string; leverage: string; maxExposure: string; maxExposureMode: 'margin_gbp' | 'margin_percent' | 'units' | 'percent' | 'absolute'; side: 'LONG' | 'SHORT' | 'BOTH' | 'NONE'; stopLoss: string | null; stopLossMode: 'percent' | 'price' | 'pips'; stopLossOverride?: boolean; stopLossSource?: string; stopLossIssue?: string; takeProfit: string | null; takeProfitMode: 'percent' | 'price' | 'pips'; averageEntry: string | null; averageEntryMode: 'percent' | 'price' | 'pips'; maxAdds: string; source: string }
 export type LiquidityLevel = { price: string; units: string }
 export type LiveQuote = { pair: string; bid: string; ask: string; spread: string; time: string; tradeable: boolean; environment: string; displayName?: string; instrumentType?: string | null; displayPrecision: number; tradeUnitsPrecision: number; minimumTradeSize: string; baseCurrency?: string | null; quoteCurrency?: string | null; pipSize?: string; marginRate?: string | null; bids?: LiquidityLevel[]; asks?: LiquidityLevel[]; unitsAvailable?: Record<string, Record<string, string>> | null; accountCurrency?: string; marginAvailable?: string; marginUsed?: string | null; marginAvailableGbp?: string | null; marginConversionError?: string | null; quoteToAccountRate?: string | null; conversionError?: string | null }
-export type BrokerTrade = { id: string; symbol: string; side: 'BUY' | 'SELL'; units: string; entryPrice: string; currentPrice: string | null; exitPrice: string | null; stopLoss: string | null; stopLossType?: 'fixed' | 'trailing' | 'none'; trailingStopDistance?: string | null; takeProfit: string | null; pnl: string; openedAt: string | null; closedAt: string | null; status: 'open' | 'closed'; manual: boolean; source: string; clientOrderId: string | null }
+export type TrailingRecoveryStatus = { status: 'monitoring' | 'extended' | 'completed' | 'closed' | 'failed' | 'interrupted'; startedAt: string; initialPnl: string; currentPnl: string; trailingDistance: string; elapsedSeconds: number; message: string; closedAt?: string; fillPrice?: string }
+export type BrokerTrade = { id: string; symbol: string; side: 'BUY' | 'SELL'; units: string; entryPrice: string; currentPrice: string | null; exitPrice: string | null; stopLoss: string | null; stopLossType?: 'fixed' | 'trailing' | 'none'; trailingStopDistance?: string | null; takeProfit: string | null; pnl: string; financing?: string | null; trailingRecovery?: TrailingRecoveryStatus; openedAt: string | null; closedAt: string | null; status: 'open' | 'closed'; manual: boolean; source: string; clientOrderId: string | null }
 export type BrokerPositions = { open: BrokerTrade[]; closed: BrokerTrade[]; accountCurrency?: string }
 export type BrokerPendingOrder = { id: string; symbol: string; side: 'BUY' | 'SELL'; volume: string; price: string; status: string; createdAt: string | null; risk: string; manual: boolean }
 export type ServerMetrics = {
@@ -852,6 +853,18 @@ export async function closeManualPosition(tradeId: string) {
     throw new Error(detail)
   }
   return response.json() as Promise<{ status: string; tradeId: string; transactionId?: string; fillPrice?: string; environment?: string }>
+}
+
+export async function startTrailingRecovery(tradeId: string) {
+  const response = await fetch(buildApiUrl(`/api/v1/positions/${encodeURIComponent(tradeId)}/trailing-recovery`), {
+    method: 'POST',
+  })
+  if (!response.ok) {
+    let detail = 'Trailing recovery could not be started'
+    try { detail = ((await response.json()) as { detail?: string }).detail ?? detail } catch { /* keep default detail */ }
+    throw new Error(detail)
+  }
+  return response.json() as Promise<TrailingRecoveryStatus & { tradeId: string }>
 }
 
 export async function modifyManualPosition(
