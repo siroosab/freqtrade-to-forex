@@ -44,7 +44,7 @@ class ForexEmaCrossStrategy(IStrategy):
         space="buy",
     )
     rolling_mean = CategoricalParameter(
-        list(range(2, 9)),
+        list(range(2, 11)),
         default=5,
         space="buy",
     )
