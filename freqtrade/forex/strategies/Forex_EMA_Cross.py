@@ -44,8 +44,8 @@ class ForexEmaCrossStrategy(IStrategy):
         space="buy",
     )
     rolling_mean = CategoricalParameter(
-        list(range(3, 12)),
-        default=5,
+        list(range(0, 12)),
+        default=0,
         space="buy",
     )
 
@@ -100,22 +100,13 @@ class ForexEmaCrossStrategy(IStrategy):
         #dataframe["enter_long"] = qtpylib.crossed_above(fast_ema, slow_ema).fillna(False)
         #dataframe["enter_short"] = qtpylib.crossed_below(fast_ema, slow_ema).fillna(False)
         dataframe["enter_long"] = (
-        (dataframe["count_low"] > 0)
-        & dataframe["count_low"]
-        .shift(1)
-        .rolling(self.rolling_mean.value)
-        .apply(lambda x: (x == 0).all(), raw=True)
-        .eq(1)
-        #& (slow_ema > fast_ema)
+        (dataframe["count_low"] > dataframe["count_low"].shift(1))
+        & (dataframe["count_low"].shift(1)>=self.rolling_mean.value)
         )
 
         dataframe["enter_short"] = (
-        (dataframe["count_hi"] > 0)
-        & dataframe["count_hi"]
-        .shift(1)
-        .rolling(self.rolling_mean.value)
-        .apply(lambda x: (x == 0).all(), raw=True)
-        .eq(1)
+        (dataframe["count_hi"] > dataframe["count_hi"].shift(1))
+        & (dataframe["count_hi"].shift(1)>=self.rolling_mean.value)
         ) #& (slow_ema < fast_ema)
 
         return dataframe
