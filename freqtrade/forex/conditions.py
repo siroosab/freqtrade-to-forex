@@ -8,8 +8,14 @@ import pandas as pd
 import talib.abstract as ta
 
 
-EMA_TREND_TIMEPERIODS = (7, 9, 14, 19, 21, 37)
+EMA_TREND_TIMEPERIODS = (3, 5, 7, 9, 11, 13, 17, 19)
 EMA_TREND_TIMEFRAMES = {
+    "M15": "15m",
+    "15M": "15m",
+    "15m": "15m",
+    "M30": "30m",
+    "30M": "30m",
+    "30m": "30m",
     "H1": "1h",
     "1H": "1h",
     "1h": "1h",
@@ -40,10 +46,10 @@ def normalize_ema_trend_condition(settings: object | None) -> dict[str, object]:
 
     timeframe_value = settings.get("timeframe", DEFAULT_EMA_TREND_CONDITION["timeframe"])
     if not isinstance(timeframe_value, str):
-        raise ValueError("emaTrendCondition.timeframe must be H1, H4, or D1")
+        raise ValueError("emaTrendCondition.timeframe must be M15, M30, H1, H4, or D1")
     timeframe = EMA_TREND_TIMEFRAMES.get(timeframe_value)
     if timeframe is None:
-        raise ValueError("emaTrendCondition.timeframe must be H1, H4, or D1")
+        raise ValueError("emaTrendCondition.timeframe must be M15, M30, H1, H4, or D1")
 
     timeperiod = settings.get("timeperiod", DEFAULT_EMA_TREND_CONDITION["timeperiod"])
     if (

@@ -152,11 +152,11 @@ rejected. Approval, reports, and scheduled Hyperopt retain their pair, class,
 and timeframe scope.
 
 The Manual Hyperopt panel also includes a global EMA higher-timeframe condition,
-enabled by default and independent of strategy source code. Choose H1, H4, or
-D1 and a fixed EMA `timeperiod` of 7, 9, 14, 19, 21, or 37, or choose
-**Automatic** in Manual Hyperopt. Automatic mode tests those six periods in
-randomized order; runs with at least six attempts evaluate every period and
-select the best-performing value.
+enabled by default and independent of strategy source code. Choose M15, M30,
+H1, or H4 and a fixed EMA `timeperiod` of 3, 5, 7, 9, 11, 13, 17, or 19, or
+choose **Automatic** in Manual Hyperopt. Automatic mode tests those eight
+periods in randomized order; runs with at least eight attempts evaluate every
+period and select the best-performing value.
 
 The condition calculates EMA of the higher-timeframe `high` and `low`. It
 permits a long entry only when the strategy-timeframe candle's `low` is above

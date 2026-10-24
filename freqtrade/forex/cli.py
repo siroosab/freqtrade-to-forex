@@ -150,7 +150,9 @@ def build_parser() -> argparse.ArgumentParser:
     backtest.add_argument("--slippage", type=Decimal, default=Decimal("0"))
     backtest.add_argument("--financing-rate-per-day", type=Decimal, default=Decimal("0"))
     backtest.add_argument("--disable-ema-trend-condition", action="store_true")
-    backtest.add_argument("--ema-trend-timeframe", choices=("H1", "H4", "D1"), default="H1")
+    backtest.add_argument(
+        "--ema-trend-timeframe", choices=("M15", "M30", "H1", "H4", "D1"), default="H1"
+    )
     backtest.add_argument(
         "--ema-trend-timeperiod", type=int, choices=EMA_TREND_TIMEPERIODS, default=7
     )
@@ -180,7 +182,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Freqtrade strategy class whose declared parameters should be optimized",
     )
     hyperopt.add_argument("--disable-ema-trend-condition", action="store_true")
-    hyperopt.add_argument("--ema-trend-timeframe", choices=("H1", "H4", "D1"), default="H1")
+    hyperopt.add_argument(
+        "--ema-trend-timeframe", choices=("M15", "M30", "H1", "H4", "D1"), default="H1"
+    )
     hyperopt.add_argument(
         "--ema-trend-timeperiod", type=int, choices=EMA_TREND_TIMEPERIODS, default=7
     )

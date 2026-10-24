@@ -5807,6 +5807,14 @@
   flex-direction: column;
 }
 
+.hyperopt-active-pair-strategy {
+  display: block;
+  margin-top: 5px;
+  color: #86efac;
+  font-size: 0.7rem;
+  line-height: 1.45;
+}
+
 .hyperopt-scope-fields {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 14px;
@@ -5993,6 +6001,28 @@
     radial-gradient(circle at 100% 0, rgba(124, 58, 237, 0.12), transparent 32%),
     linear-gradient(155deg, rgba(18, 26, 48, 0.96), rgba(11, 18, 32, 0.94));
   box-shadow: inset 0 1px 0 rgba(196, 181, 253, 0.08), 0 16px 36px rgba(2, 6, 23, 0.18);
+}
+
+.hyperopt-backtest-panel {
+  min-width: 0;
+  border-color: rgba(56, 189, 248, 0.34);
+  background:
+    radial-gradient(circle at 100% 0, rgba(14, 165, 233, 0.16), transparent 34%),
+    linear-gradient(155deg, rgba(13, 35, 54, 0.96), rgba(10, 17, 30, 0.94));
+  box-shadow: inset 0 1px 0 rgba(125, 211, 252, 0.08), 0 16px 36px rgba(2, 6, 23, 0.18);
+}
+
+.hyperopt-backtest-header {
+  border-bottom-color: rgba(56, 189, 248, 0.2);
+}
+
+.hyperopt-backtest-header h3 {
+  color: #e0f2fe;
+}
+
+.hyperopt-backtest-header > button {
+  border-color: rgba(56, 189, 248, 0.38);
+  background: linear-gradient(135deg, #0284c7, #0369a1);
 }
 
 .hyperopt-results-panel {
@@ -6444,6 +6474,42 @@
   height: 100%;
   border-color: rgba(167, 139, 250, 0.15);
   background: rgba(2, 6, 23, 0.34);
+}
+
+.hyperopt-exit-options-fields .hyperopt-exit-option--trailing {
+  border-color: rgba(56, 189, 248, 0.24);
+  background: linear-gradient(145deg, rgba(8, 47, 73, 0.28), rgba(2, 6, 23, 0.42));
+}
+
+.hyperopt-exit-options-fields .hyperopt-exit-option--trailing > span {
+  color: #7dd3fc;
+}
+
+.hyperopt-exit-options-fields .hyperopt-exit-option--roi {
+  border-color: rgba(251, 191, 36, 0.24);
+  background: linear-gradient(145deg, rgba(120, 53, 15, 0.2), rgba(2, 6, 23, 0.42));
+}
+
+.hyperopt-exit-options-fields .hyperopt-exit-option--roi > span {
+  color: #fcd34d;
+}
+
+.hyperopt-exit-options-fields .hyperopt-exit-option--signals {
+  border-color: rgba(52, 211, 153, 0.24);
+  background: linear-gradient(145deg, rgba(6, 78, 59, 0.22), rgba(2, 6, 23, 0.42));
+}
+
+.hyperopt-exit-options-fields .hyperopt-exit-option--signals > span {
+  color: #6ee7b7;
+}
+
+.hyperopt-exit-options-fields .hyperopt-exit-option--objective {
+  border-color: rgba(192, 132, 252, 0.24);
+  background: linear-gradient(145deg, rgba(88, 28, 135, 0.2), rgba(2, 6, 23, 0.42));
+}
+
+.hyperopt-exit-options-fields .hyperopt-exit-option--objective > span {
+  color: #d8b4fe;
 }
 
 .hyperopt-exit-options-fields .trailing-stop-checkbox {

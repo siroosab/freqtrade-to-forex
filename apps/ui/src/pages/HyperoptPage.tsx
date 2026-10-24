@@ -23,7 +23,8 @@ import {
 import { useUiStore } from '../store/useUiStore'
 
 const TIMEFRAMES = ['M1', 'M5', 'M15', 'M30', 'H1', 'H2', 'H4', 'H6', 'H8', 'H12', 'D1', 'W1', 'MN1']
-const EMA_TREND_TIMEPERIODS = [7, 9, 14, 19, 21, 37]
+const EMA_TREND_TIMEFRAMES = ['15m', '30m', '1h', '4h'] as const
+const EMA_TREND_TIMEPERIODS = [3, 5, 7, 9, 11, 13, 17, 19]
 
 function describePair(quote: {
   pair: string
@@ -139,10 +140,10 @@ export function HyperoptPage() {
   const [stopLossMode, setStopLossMode] = useState<'pips' | 'percent' | 'money'>('pips')
   const [stopDistanceMode, setStopDistanceMode] = useState<'static' | 'automatic'>('automatic')
   const [trailingStopLoss, setTrailingStopLoss] = useState(true)
-  const [optimizeRoi, setOptimizeRoi] = useState(true)
+  const [optimizeRoi, setOptimizeRoi] = useState(false)
   const [useExitSignal, setUseExitSignal] = useState(true)
   const [emaTrendEnabled, setEmaTrendEnabled] = useState(true)
-  const [emaTrendTimeframe, setEmaTrendTimeframe] = useState<'1h' | '4h' | '1d'>('1h')
+  const [emaTrendTimeframe, setEmaTrendTimeframe] = useState<(typeof EMA_TREND_TIMEFRAMES)[number]>('1h')
   const [emaTrendTimeperiod, setEmaTrendTimeperiod] = useState(7)
   const [emaTrendTimeperiodMode, setEmaTrendTimeperiodMode] = useState<'fixed' | 'automatic'>('fixed')
   const [stopLossPips, setStopLossPips] = useState('25')
@@ -254,8 +255,11 @@ export function HyperoptPage() {
     const condition = revision.hyperopt?.emaTrendCondition
       ?? runSettings?.emaTrendCondition
     if (!condition) return
+    const approvedTimeframe = EMA_TREND_TIMEFRAMES.find(
+      (supportedTimeframe) => supportedTimeframe === condition.timeframe,
+    )
     setEmaTrendEnabled(condition.enabled)
-    setEmaTrendTimeframe(condition.timeframe)
+    setEmaTrendTimeframe(approvedTimeframe ?? '1h')
     setEmaTrendTimeperiod(
       EMA_TREND_TIMEPERIODS.includes(condition.timeperiod)
         ? condition.timeperiod
@@ -389,6 +393,9 @@ export function HyperoptPage() {
     || clearCacheMutation.isPending
     || autoHyperoptRunning
   const strategies = strategiesQuery.data ?? []
+  const pairKey = pair.replace(/\//g, '_').toUpperCase()
+  const activePairStrategy = setupQuery.data?.pairStrategies[pairKey]
+  const activePairTimeframe = setupQuery.data?.pairTimeframes[pairKey]
   const dateRangeValid = Boolean(dateRange.startDate && dateRange.endDate)
     && dateRange.startDate <= dateRange.endDate
   const selectedDateCount = dateRangeValid
@@ -552,6 +559,12 @@ export function HyperoptPage() {
               <small className="pair-description" aria-live="polite">
                 {describePair(quoteQuery.data, pair, quoteQuery.isPending)}
               </small>
+              {activePairStrategy && (
+                <small className="hyperopt-active-pair-strategy" aria-live="polite">
+                  ✅ Active strategy: {activePairStrategy}
+                  {activePairTimeframe ? ` · ⏱️ ${activePairTimeframe}` : ' · timeframe unavailable'}
+                </small>
+              )}
             </label>
             <label className="field-block">
               <span>⏱️ Timeframe</span>
@@ -674,11 +687,11 @@ export function HyperoptPage() {
           </div>
         </div>
 
-        <div className="panel research-panel">
-          <div className="panel-header compact">
-            <div><p className="eyebrow">Research · 01</p><h3>Backtest</h3></div>
+        <div className="panel research-panel hyperopt-backtest-panel">
+          <div className="panel-header compact hyperopt-backtest-header">
+            <div><p className="eyebrow">🧪 Research · 01</p><h3>📊 Backtest</h3></div>
             <button className="primary-action" type="button" onClick={runResearch} disabled={!scopeEnabled || !dateRangeValid || !costSettingsValid || !positionSizeValid || !backtestStopLossValid || !emaTrendTimeframeValid || quoteQuery.isPending || quoteQuery.isError || setupQuery.isPending || setupQuery.isError || researchBusy}>
-              {backtestMutation.isPending || backtestRunning ? 'Backtest running…' : 'Run backtest'}
+              {backtestMutation.isPending || backtestRunning ? '⏳ Backtest running…' : '▶️ Run backtest'}
             </button>
           </div>
           <p>{pair} · {timeframe} · {strategyClass || 'Select a strategy'}</p>
@@ -970,8 +983,8 @@ export function HyperoptPage() {
                 </div>
               </div>
               <div className="hyperopt-exit-options-fields">
-                <label className="field-block">
-                  <span>Trailing stop loss</span>
+                <label className="field-block hyperopt-exit-option hyperopt-exit-option--trailing">
+                  <span>🛡️ Trailing stop loss</span>
                   <input
                     className="trailing-stop-checkbox"
                     type="checkbox"
@@ -982,8 +995,8 @@ export function HyperoptPage() {
                     When enabled, Hyperopt evaluates a trailing stop using the selected stop distance. Approved trades use OANDA's native trailing-stop order; when disabled, the fixed stop loss remains in effect.
                   </small>
                 </label>
-                <label className="field-block">
-                  <span>Include ROI in optimization</span>
+                <label className="field-block hyperopt-exit-option hyperopt-exit-option--roi">
+                  <span>💰 Include ROI in optimization</span>
                   <input
                     className="trailing-stop-checkbox"
                     type="checkbox"
@@ -994,8 +1007,8 @@ export function HyperoptPage() {
                     When enabled, Hyperopt searches ROI targets and includes the approved ROI schedule in Backtest and live trading. Disabled means ROI exits are off, regardless of the strategy default.
                   </small>
                 </label>
-                <label className="field-block">
-                  <span>Use strategy exit signals</span>
+                <label className="field-block hyperopt-exit-option hyperopt-exit-option--signals">
+                  <span>🚪 Use strategy exit signals</span>
                   <input
                     className="trailing-stop-checkbox"
                     type="checkbox"
@@ -1006,8 +1019,8 @@ export function HyperoptPage() {
                     When enabled, signal-based and explicit strategy exits are evaluated. The approved setting overrides the strategy default in Backtest and live trading.
                   </small>
                 </label>
-                <label className="field-block">
-                  <span>Objective</span>
+                <label className="field-block hyperopt-exit-option hyperopt-exit-option--objective">
+                  <span>🏆 Objective</span>
                   <select value={lossFunction} onChange={(event) => setLossFunction(event.target.value)}>
                     {(lossFunctionsQuery.data?.options ?? [lossFunction]).map((item) => <option key={item}>{item}</option>)}
                   </select>
@@ -1039,11 +1052,12 @@ export function HyperoptPage() {
                     <span>EMA trend timeframe</span>
                     <select
                       value={emaTrendTimeframe}
-                      onChange={(event) => setEmaTrendTimeframe(event.target.value as '1h' | '4h' | '1d')}
+                      onChange={(event) => setEmaTrendTimeframe(event.target.value as (typeof EMA_TREND_TIMEFRAMES)[number])}
                     >
+                      <option value="15m">15 minutes (M15)</option>
+                      <option value="30m">30 minutes (M30)</option>
                       <option value="1h">1 hour (H1)</option>
                       <option value="4h">4 hours (H4)</option>
-                      <option value="1d">1 day (D1)</option>
                     </select>
                     <small>The condition timeframe must be higher than the strategy timeframe.</small>
                   </label>
@@ -1067,7 +1081,7 @@ export function HyperoptPage() {
                     </select>
                     <small>
                       {emaTrendTimeperiodMode === 'automatic'
-                        ? 'Hyperopt tests periods 7, 9, 14, 19, 21, and 37 in randomized order; six or more attempts test every value and select the best-performing EMA period.'
+                        ? 'Hyperopt tests periods 3, 5, 7, 9, 11, 13, 17, and 19 in randomized order; eight or more attempts test every value and select the best-performing EMA period.'
                         : 'Long entries require main-timeframe low above EMA(high, period); shorts require main-timeframe high below EMA(low, period).'}
                     </small>
                   </label>
@@ -1076,7 +1090,7 @@ export function HyperoptPage() {
             </section>
             {!emaTrendTimeframeValid && (
               <p className="field-block" role="alert">
-                Select H1, H4, or D1 above the strategy timeframe, or disable the EMA condition.
+                Select M15, M30, H1, or H4 above the strategy timeframe, or disable the EMA condition.
               </p>
             )}
           </div>

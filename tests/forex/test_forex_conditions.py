@@ -5,6 +5,7 @@ import pytest
 
 from freqtrade.forex.cli import build_parser
 from freqtrade.forex.conditions import (
+    EMA_TREND_TIMEPERIODS,
     apply_ema_trend_condition,
     normalize_ema_trend_condition,
 )
@@ -231,9 +232,16 @@ def test_strategy_adapter_applies_the_shared_condition_without_strategy_changes(
 
 
 def test_ema_trend_condition_settings_are_normalized_and_validated() -> None:
+    assert EMA_TREND_TIMEPERIODS == (3, 5, 7, 9, 11, 13, 17, 19)
     assert normalize_ema_trend_condition(
         {"enabled": True, "timeframe": "D1", "timeperiod": 37}
     ) == {"enabled": True, "timeframe": "1d", "timeperiod": 37}
+    assert normalize_ema_trend_condition(
+        {"enabled": True, "timeframe": "M15", "timeperiod": 3}
+    ) == {"enabled": True, "timeframe": "15m", "timeperiod": 3}
+    assert normalize_ema_trend_condition(
+        {"enabled": True, "timeframe": "M30", "timeperiod": 19}
+    ) == {"enabled": True, "timeframe": "30m", "timeperiod": 19}
     assert normalize_ema_trend_condition(None) == {
         "enabled": True,
         "timeframe": "1h",
@@ -241,19 +249,25 @@ def test_ema_trend_condition_settings_are_normalized_and_validated() -> None:
     }
 
 
-def test_hyperopt_cli_accepts_ema_trend_timeperiod_seven_and_daily_timeframe() -> None:
+@pytest.mark.parametrize("timeframe", ["M15", "M30", "D1"])
+def test_hyperopt_cli_accepts_ema_trend_timeframes(timeframe: str) -> None:
     args = build_parser().parse_args(
-        ["hyperopt", "--ema-trend-timeperiod", "7", "--ema-trend-timeframe", "D1"]
+        ["hyperopt", "--ema-trend-timeperiod", "7", "--ema-trend-timeframe", timeframe]
     )
 
     assert args.ema_trend_timeperiod == 7
-    assert args.ema_trend_timeframe == "D1"
+    assert args.ema_trend_timeframe == timeframe
 
 
 def test_condition_timeframe_and_warmup_are_included_in_required_history() -> None:
     strategy = load_strategy("ForexMasterStrategy", "15m", "EUR/USD")
     condition = {"enabled": True, "timeframe": "1h", "timeperiod": 37}
 
+    assert "30m" in strategy_required_informative_timeframes(
+        strategy,
+        "EUR/USD",
+        {"enabled": True, "timeframe": "30m", "timeperiod": 7},
+    )
     assert "1h" in strategy_required_informative_timeframes(strategy, "EUR/USD", condition)
     assert strategy_informative_candle_count(strategy, "1h", 40, condition) >= 42
     assert "1d" in strategy_required_informative_timeframes(
